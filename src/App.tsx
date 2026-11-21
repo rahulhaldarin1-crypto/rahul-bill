@@ -58,19 +58,44 @@ export default function App() {
     }, 2600);
   }, []);
 
-  // Load Admin Panel workspace directly (no login required)
+  // Load from Cloud Firestore and keep synced across all devices in real time
   useEffect(() => {
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+
     api
       .fetchWorkspace()
       .then((data) => {
+        if (!active) return;
         setWorkspace(data);
+        unsubscribe = api.subscribeWorkspace(
+          (updater) => {
+            if (active) setWorkspace(updater);
+          },
+          (err) => {
+            const msg = err.message || '';
+            if (msg.includes('permission-denied') || msg.includes('Missing or insufficient permissions')) {
+              showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
+            }
+          }
+        );
       })
-      .catch(() => {
-        showToast('Could not connect to server. Please refresh.');
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : '';
+        if (msg.includes('permission-denied') || msg.includes('Missing or insufficient permissions')) {
+          showToast('Firestore permission denied. Update Firestore Rules in Firebase Console.');
+        } else {
+          showToast('Could not connect to Cloud Firestore. Please refresh.');
+        }
       })
       .finally(() => {
-        setLoading(false);
+        if (active) setLoading(false);
       });
+
+    return () => {
+      active = false;
+      if (unsubscribe) unsubscribe();
+    };
   }, [showToast]);
 
   const navigateTo = useCallback(

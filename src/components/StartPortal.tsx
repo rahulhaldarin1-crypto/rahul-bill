@@ -9,7 +9,7 @@ import {
   Truck,
 } from 'lucide-react';
 import { BusinessSettings, Invoice } from '../types/business';
-import { api } from '../utils/api';
+import { api, formatApiError } from '../utils/api';
 import { exportInvoiceElementToPdf, formatCurrency } from '../utils/calculations';
 import { AppBackground } from './AppBackground';
 import { BrandLogo } from './BrandLogo';
@@ -56,7 +56,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) =>
         setSelectedMatch(data.results[0]);
       }
     } catch (err) {
-      setSearchError(err instanceof Error ? err.message : 'Failed to search bills.');
+      setSearchError(formatApiError(err, 'Failed to search bills.'));
       setResults([]);
     } finally {
       setSearching(false);

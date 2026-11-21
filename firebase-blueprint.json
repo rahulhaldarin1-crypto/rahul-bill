@@ -1,0 +1,167 @@
+{
+  "entities": {
+    "BusinessSettings": {
+      "title": "BusinessSettings",
+      "description": "Storefront branding, contact details, invoice defaults, UPI and bank details.",
+      "type": "object",
+      "properties": {
+        "businessName": { "type": "string", "maxLength": 120 },
+        "tagline": { "type": "string", "maxLength": 160 },
+        "logoDataUrl": { "type": "string", "maxLength": 500000 },
+        "address": { "type": "string", "maxLength": 300 },
+        "mobile": { "type": "string", "maxLength": 40 },
+        "whatsapp": { "type": "string", "maxLength": 40 },
+        "gstin": { "type": "string", "maxLength": 30 },
+        "currencySymbol": { "type": "string", "maxLength": 10 },
+        "currencyCode": { "type": "string", "maxLength": 10 },
+        "invoicePrefix": { "type": "string", "maxLength": 20 },
+        "upiId": { "type": "string", "maxLength": 120 },
+        "upiNumber": { "type": "string", "maxLength": 40 },
+        "bankAccountName": { "type": "string", "maxLength": 120 },
+        "bankAccountNo": { "type": "string", "maxLength": 60 },
+        "bankIfscBranch": { "type": "string", "maxLength": 160 },
+        "invoiceFooterNote": { "type": "string", "maxLength": 600 },
+        "socialTagLine": { "type": "string", "maxLength": 240 },
+        "lowStockThreshold": { "type": "number" }
+      },
+      "required": ["businessName", "currencySymbol", "currencyCode", "invoicePrefix"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Customer profile for billing and delivery.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "mobile": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "whatsapp": { "type": "string", "maxLength": 40 },
+        "address": { "type": "string", "maxLength": 400 },
+        "state": { "type": "string", "maxLength": 80 },
+        "city": { "type": "string", "maxLength": 80 },
+        "pinCode": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "name", "mobile", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Product catalog item with stock and pricing.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "imageDataUrl": { "type": "string", "maxLength": 500000 },
+        "category": { "type": "string", "maxLength": 80 },
+        "purchasePrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "stockQty": { "type": "number" },
+        "lowStockAlert": { "type": "number" },
+        "size": { "type": "string", "maxLength": 60 },
+        "color": { "type": "string", "maxLength": 60 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "name", "purchasePrice", "sellingPrice", "stockQty", "createdAt", "updatedAt"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Customer bill, line items, delivery tracking, and totals.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "maxLength": 80 },
+        "invoiceDate": { "type": "string", "maxLength": 30 },
+        "deliveryDate": { "type": "string", "maxLength": 30 },
+        "orderVia": { "type": "string", "maxLength": 60 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "customerMobile": { "type": "string", "maxLength": 40 },
+        "customerWhatsapp": { "type": "string", "maxLength": 40 },
+        "customerAddress": { "type": "string", "maxLength": 400 },
+        "customerCityStatePin": { "type": "string", "maxLength": 160 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "discount": { "type": "number" },
+        "gstPercent": { "type": "number" },
+        "gstAmount": { "type": "number" },
+        "deliveryCharge": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "dueAmount": { "type": "number" },
+        "totalPurchaseCost": { "type": "number" },
+        "profitAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Transfer"] },
+        "courierName": { "type": "string", "maxLength": 120 },
+        "trackingNumber": { "type": "string", "maxLength": 120 },
+        "trackingUrl": { "type": "string", "maxLength": 300 },
+        "deliveryStatus": { "type": "string", "enum": ["Pending", "Processing", "Shipped", "Delivered", "Returned"] },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "invoiceNumber", "invoiceDate", "customerName", "items", "totalAmount", "paymentMethod", "deliveryStatus"]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Payment transaction linked to an invoice.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "invoiceId": { "type": "string", "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "maxLength": 80 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 160 },
+        "totalBill": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "remainingDueAfter": { "type": "number" },
+        "paymentDate": { "type": "string", "maxLength": 30 },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Transfer"] },
+        "note": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "invoiceId", "amountPaid", "paymentDate", "paymentMethod", "createdAt"]
+    },
+    "ExpenseRecord": {
+      "title": "ExpenseRecord",
+      "description": "Business operating expense for Profit & Loss reporting.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category": { "type": "string", "enum": ["Delivery", "Packaging", "Marketing", "Rent & Utilities", "Staff", "Other"] },
+        "amount": { "type": "number" },
+        "expenseDate": { "type": "string", "maxLength": 30 },
+        "note": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "title", "category", "amount", "expenseDate", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/settings/business": {
+      "schema": { "$ref": "#/entities/BusinessSettings" },
+      "description": "Primary business settings document."
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Customer profiles collection."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Product catalog collection."
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "Client bills and invoices collection."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentRecord" },
+      "description": "Payment history collection."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseRecord" },
+      "description": "Business expenses collection."
+    }
+  }
+}

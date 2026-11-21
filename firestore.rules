@@ -1,0 +1,106 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['businessName', 'currencySymbol', 'currencyCode', 'invoicePrefix'])
+        && data.businessName is string && data.businessName.size() <= 120
+        && data.currencySymbol is string && data.currencySymbol.size() <= 10
+        && data.currencyCode is string && data.currencyCode.size() <= 10
+        && data.invoicePrefix is string && data.invoicePrefix.size() <= 20;
+    }
+
+    function isValidClient(data) {
+      return data.keys().hasAll(['id', 'name', 'mobile', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.mobile is string && data.mobile.size() >= 1 && data.mobile.size() <= 40;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'name', 'purchasePrice', 'sellingPrice', 'stockQty', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
+        && data.purchasePrice is number && data.purchasePrice >= 0
+        && data.sellingPrice is number && data.sellingPrice >= 0
+        && data.stockQty is number && data.stockQty >= 0;
+    }
+
+    function isValidInvoice(data) {
+      return data.keys().hasAll(['id', 'invoiceNumber', 'invoiceDate', 'customerName', 'items', 'totalAmount', 'paymentMethod', 'deliveryStatus'])
+        && data.id is string && data.id.size() <= 128
+        && data.invoiceNumber is string && data.invoiceNumber.size() <= 80
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160
+        && data.items is list && data.items.size() <= 100
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.paymentMethod in ['Cash', 'UPI', 'Bank Transfer']
+        && data.deliveryStatus in ['Pending', 'Processing', 'Shipped', 'Delivered', 'Returned'];
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['id', 'invoiceId', 'amountPaid', 'paymentDate', 'paymentMethod', 'createdAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.invoiceId is string && data.invoiceId.size() <= 128
+        && data.amountPaid is number && data.amountPaid > 0
+        && data.paymentMethod in ['Cash', 'UPI', 'Bank Transfer'];
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['id', 'title', 'category', 'amount', 'expenseDate', 'createdAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.amount is number && data.amount > 0;
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow create, update: if isValidId(settingId) && isValidSettings(request.resource.data);
+    }
+
+    match /clients/{clientId} {
+      allow list: if true;
+      allow get: if isValidId(clientId);
+      allow create, update: if isValidId(clientId) && isValidClient(request.resource.data);
+      allow delete: if isValidId(clientId);
+    }
+
+    match /products/{productId} {
+      allow list: if true;
+      allow get: if isValidId(productId);
+      allow create, update: if isValidId(productId) && isValidProduct(request.resource.data);
+      allow delete: if isValidId(productId);
+    }
+
+    match /invoices/{invoiceId} {
+      allow list: if true;
+      allow get: if isValidId(invoiceId);
+      allow create, update: if isValidId(invoiceId) && isValidInvoice(request.resource.data);
+      allow delete: if isValidId(invoiceId);
+    }
+
+    match /payments/{paymentId} {
+      allow list: if true;
+      allow get: if isValidId(paymentId);
+      allow create, update: if isValidId(paymentId) && isValidPayment(request.resource.data);
+      allow delete: if isValidId(paymentId);
+    }
+
+    match /expenses/{expenseId} {
+      allow list: if true;
+      allow get: if isValidId(expenseId);
+      allow create, update: if isValidId(expenseId) && isValidExpense(request.resource.data);
+      allow delete: if isValidId(expenseId);
+    }
+
+    match /test/connection {
+      allow get: if true;
+    }
+  }
+}
