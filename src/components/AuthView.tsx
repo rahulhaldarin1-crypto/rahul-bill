@@ -80,9 +80,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
   };
 
   const formCard = (
-    <div className="w-full max-w-md rounded-3xl border border-[#EFE2F5] bg-white/90 backdrop-blur-md shadow-xl shadow-[#7E22CE]/10 p-6 sm:p-8 space-y-6">
-      <div className="flex flex-col items-center text-center gap-2">
-        <BrandLogo size={embedded ? 60 : 72} />
+    <div className="w-full max-w-md rounded-3xl border border-[#EFE2F5] bg-white/90 backdrop-blur-md shadow-xl shadow-[#7E22CE]/10 p-5 sm:p-8 space-y-4 sm:space-y-5">
+      <div className="flex flex-col items-center text-center gap-1.5">
+        <BrandLogo size={embedded ? 56 : 68} />
         <div>
           <h1 className="font-display-serif text-2xl sm:text-3xl font-bold text-[#1F122B]">
             Glamour Galleria
