@@ -30,6 +30,7 @@ import {
   suggestTrackingUrl,
   todayIsoDate,
 } from '../utils/calculations';
+import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 import { ScaledInvoicePreview } from './ScaledInvoicePreview';
 
@@ -46,17 +47,60 @@ interface ClientBillViewProps {
   onDeleteInvoice: (id: string) => Promise<void>;
 }
 
-function makeEmptyLine(index: number): InvoiceLineItem {
-  return computeLineItem({
+interface LineItemDraft {
+  id: string;
+  productId?: string;
+  productName: string;
+  size: string;
+  color: string;
+  quantity: string;
+  originalPrice: string;
+  purchasePrice: string;
+  sellingPrice: string;
+}
+
+function makeEmptyLine(index: number): LineItemDraft {
+  return {
     id: `line-${Date.now()}-${index}`,
     productId: undefined,
     productName: '',
     size: '',
     color: '',
-    quantity: 1,
-    originalPrice: undefined,
-    purchasePrice: 0,
-    sellingPrice: 0,
+    quantity: '1',
+    originalPrice: '',
+    purchasePrice: '',
+    sellingPrice: '',
+  };
+}
+
+function lineItemToDraft(item: InvoiceLineItem): LineItemDraft {
+  return {
+    id: item.id,
+    productId: item.productId,
+    productName: item.productName,
+    size: item.size || '',
+    color: item.color || '',
+    quantity: String(Math.max(1, item.quantity || 1)),
+    originalPrice: formatNumericFieldValue(item.originalPrice),
+    purchasePrice: formatNumericFieldValue(item.purchasePrice),
+    sellingPrice: formatNumericFieldValue(item.sellingPrice),
+  };
+}
+
+function draftToComputedLineItem(row: LineItemDraft): InvoiceLineItem {
+  return computeLineItem({
+    id: row.id,
+    productId: row.productId,
+    productName: row.productName,
+    size: row.size,
+    color: row.color,
+    quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+    originalPrice:
+      row.originalPrice.trim() !== ''
+        ? Math.max(0, Number(row.originalPrice) || 0)
+        : undefined,
+    purchasePrice: Math.max(0, Number(row.purchasePrice) || 0),
+    sellingPrice: Math.max(0, Number(row.sellingPrice) || 0),
   });
 }
 
@@ -89,11 +133,11 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
   const [customerAddress, setCustomerAddress] = useState('');
   const [customerCityStatePin, setCustomerCityStatePin] = useState('');
 
-  const [items, setItems] = useState<InvoiceLineItem[]>([makeEmptyLine(0)]);
-  const [discount, setDiscount] = useState<string>('0');
-  const [gstPercent, setGstPercent] = useState<string>('0');
-  const [deliveryCharge, setDeliveryCharge] = useState<string>('0');
-  const [paidAmount, setPaidAmount] = useState<string>('0');
+  const [items, setItems] = useState<LineItemDraft[]>([makeEmptyLine(0)]);
+  const [discount, setDiscount] = useState<string>('');
+  const [gstPercent, setGstPercent] = useState<string>('');
+  const [deliveryCharge, setDeliveryCharge] = useState<string>('');
+  const [paidAmount, setPaidAmount] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('UPI');
   const [courierName, setCourierName] = useState('');
   const [trackingNumber, setTrackingNumber] = useState('');
@@ -135,13 +179,13 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
       setCustomerCityStatePin(editingInvoice.customerCityStatePin);
       setItems(
         editingInvoice.items.length > 0
-          ? editingInvoice.items
+          ? editingInvoice.items.map(lineItemToDraft)
           : [makeEmptyLine(0)]
       );
-      setDiscount(String(editingInvoice.discount));
-      setGstPercent(String(editingInvoice.gstPercent || 0));
-      setDeliveryCharge(String(editingInvoice.deliveryCharge));
-      setPaidAmount(String(editingInvoice.paidAmount));
+      setDiscount(formatNumericFieldValue(editingInvoice.discount));
+      setGstPercent(formatNumericFieldValue(editingInvoice.gstPercent));
+      setDeliveryCharge(formatNumericFieldValue(editingInvoice.deliveryCharge));
+      setPaidAmount(formatNumericFieldValue(editingInvoice.paidAmount));
       setPaymentMethod(editingInvoice.paymentMethod);
       setCourierName(editingInvoice.courierName);
       setTrackingNumber(editingInvoice.trackingNumber);
@@ -171,10 +215,10 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
     setCustomerAddress('');
     setCustomerCityStatePin('');
     setItems([makeEmptyLine(0)]);
-    setDiscount('0');
-    setGstPercent('0');
-    setDeliveryCharge('0');
-    setPaidAmount('0');
+    setDiscount('');
+    setGstPercent('');
+    setDeliveryCharge('');
+    setPaidAmount('');
     setPaymentMethod('UPI');
     setCourierName('');
     setTrackingNumber('');
@@ -185,16 +229,21 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
     setSubView('editor');
   };
 
+  const computedItems = useMemo(
+    () => items.map(draftToComputedLineItem),
+    [items]
+  );
+
   const totals = useMemo(
     () =>
       computeInvoiceTotals({
-        items,
+        items: computedItems,
         discount: Number(discount) || 0,
         gstPercent: Number(gstPercent) || 0,
         deliveryCharge: Number(deliveryCharge) || 0,
         paidAmount: Number(paidAmount) || 0,
       }),
-    [items, discount, gstPercent, deliveryCharge, paidAmount]
+    [computedItems, discount, gstPercent, deliveryCharge, paidAmount]
   );
 
   const previewInvoice: Invoice = useMemo(
@@ -210,7 +259,7 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
       customerWhatsapp,
       customerAddress,
       customerCityStatePin,
-      items,
+      items: computedItems,
       ...totals,
       paymentMethod,
       courierName,
@@ -233,7 +282,7 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
       customerWhatsapp,
       customerAddress,
       customerCityStatePin,
-      items,
+      computedItems,
       totals,
       paymentMethod,
       courierName,
@@ -263,16 +312,16 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
     setItems((prev) =>
       prev.map((row, i) =>
         i === rowIdx
-          ? computeLineItem({
-              id: row.id,
+          ? {
+              ...row,
               productId: prod.id,
               productName: prod.name,
-              size: prod.size,
-              color: prod.color,
-              quantity: row.quantity || 1,
-              purchasePrice: prod.purchasePrice,
-              sellingPrice: prod.sellingPrice,
-            })
+              size: prod.size || '',
+              color: prod.color || '',
+              quantity: row.quantity || '1',
+              purchasePrice: formatNumericFieldValue(prod.purchasePrice),
+              sellingPrice: formatNumericFieldValue(prod.sellingPrice),
+            }
           : row
       )
     );
@@ -282,7 +331,7 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
     rowIdx: number,
     patch: Partial<
       Pick<
-        InvoiceLineItem,
+        LineItemDraft,
         | 'productName'
         | 'size'
         | 'color'
@@ -294,13 +343,7 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
     >
   ) => {
     setItems((prev) =>
-      prev.map((row, i) => {
-        if (i !== rowIdx) return row;
-        return computeLineItem({
-          ...row,
-          ...patch,
-        });
-      })
+      prev.map((row, i) => (i === rowIdx ? { ...row, ...patch } : row))
     );
   };
 
@@ -310,7 +353,7 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
       setError('Please select a customer or enter customer name.');
       return null;
     }
-    const validItems = items.filter((i) => i.productName.trim() !== '');
+    const validItems = computedItems.filter((i) => i.productName.trim() !== '');
     if (validItems.length === 0) {
       setError('Please add at least one product with a name.');
       return null;
@@ -497,11 +540,15 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                             setCustomerWhatsapp(inv.customerWhatsapp);
                             setCustomerAddress(inv.customerAddress);
                             setCustomerCityStatePin(inv.customerCityStatePin);
-                            setItems(inv.items.length > 0 ? inv.items : [makeEmptyLine(0)]);
-                            setDiscount(String(inv.discount));
-                            setGstPercent(String(inv.gstPercent || 0));
-                            setDeliveryCharge(String(inv.deliveryCharge));
-                            setPaidAmount(String(inv.paidAmount));
+                            setItems(
+                              inv.items.length > 0
+                                ? inv.items.map(lineItemToDraft)
+                                : [makeEmptyLine(0)]
+                            );
+                            setDiscount(formatNumericFieldValue(inv.discount));
+                            setGstPercent(formatNumericFieldValue(inv.gstPercent));
+                            setDeliveryCharge(formatNumericFieldValue(inv.deliveryCharge));
+                            setPaidAmount(formatNumericFieldValue(inv.paidAmount));
                             setPaymentMethod(inv.paymentMethod);
                             setCourierName(inv.courierName);
                             setTrackingNumber(inv.trackingNumber);
@@ -684,7 +731,9 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
               </div>
 
               <div className="space-y-3">
-                {items.map((row, idx) => (
+                {items.map((row, idx) => {
+                  const computedRow = computedItems[idx];
+                  return (
                   <div
                     key={row.id}
                     className="rounded-xl border border-[#EFE2F5] bg-[#FDF9FC] p-3 space-y-2.5"
@@ -752,14 +801,22 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                           Qty
                         </label>
                         <input
-                          type="number"
-                          min={1}
+                          type="text"
+                          inputMode="numeric"
                           value={row.quantity}
                           onChange={(e) =>
                             updateRowField(idx, {
-                              quantity: Math.max(1, Number(e.target.value) || 1),
+                              quantity: sanitizeNumericInput(e.target.value, {
+                                allowDecimal: false,
+                              }),
                             })
                           }
+                          onBlur={() => {
+                            if (row.quantity.trim() === '' || Number(row.quantity) < 1) {
+                              updateRowField(idx, { quantity: '1' });
+                            }
+                          }}
+                          placeholder="1"
                           className={`${inputClass} font-mono-num`}
                         />
                       </div>
@@ -768,16 +825,12 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                           Original ({sym})
                         </label>
                         <input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={row.originalPrice ?? ''}
+                          type="text"
+                          inputMode="decimal"
+                          value={row.originalPrice}
                           onChange={(e) =>
                             updateRowField(idx, {
-                              originalPrice:
-                                e.target.value === ''
-                                  ? undefined
-                                  : Math.max(0, Number(e.target.value) || 0),
+                              originalPrice: sanitizeNumericInput(e.target.value),
                             })
                           }
                           placeholder="MRP"
@@ -789,15 +842,15 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                           Selling ({sym})
                         </label>
                         <input
-                          type="number"
-                          min={0}
-                          step="0.01"
+                          type="text"
+                          inputMode="decimal"
                           value={row.sellingPrice}
                           onChange={(e) =>
                             updateRowField(idx, {
-                              sellingPrice: Math.max(0, Number(e.target.value) || 0),
+                              sellingPrice: sanitizeNumericInput(e.target.value),
                             })
                           }
+                          placeholder="0"
                           className={`${inputClass} font-mono-num`}
                         />
                       </div>
@@ -806,28 +859,29 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                           Cost ({sym})
                         </label>
                         <input
-                          type="number"
-                          min={0}
-                          step="0.01"
+                          type="text"
+                          inputMode="decimal"
                           value={row.purchasePrice}
                           onChange={(e) =>
                             updateRowField(idx, {
-                              purchasePrice: Math.max(0, Number(e.target.value) || 0),
+                              purchasePrice: sanitizeNumericInput(e.target.value),
                             })
                           }
+                          placeholder="0"
                           className={`${inputClass} font-mono-num`}
                         />
                       </div>
                     </div>
 
                     <div className="flex items-center justify-between text-[11px] font-mono-num text-[#5B4B6B] pt-1">
-                      <span>Line Profit: {formatCurrency(row.lineProfit, sym)}</span>
+                      <span>Line Profit: {formatCurrency(computedRow.lineProfit, sym)}</span>
                       <span className="font-bold text-[#1F122B]">
-                        Line Total: {formatCurrency(row.lineTotal, sym)}
+                        Line Total: {formatCurrency(computedRow.lineTotal, sym)}
                       </span>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -839,11 +893,11 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                     Discount ({sym})
                   </label>
                   <input
-                    type="number"
-                    min={0}
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={discount}
-                    onChange={(e) => setDiscount(e.target.value)}
+                    onChange={(e) => setDiscount(sanitizeNumericInput(e.target.value))}
+                    placeholder="0"
                     className={`${inputClass} font-mono-num`}
                   />
                 </div>
@@ -852,11 +906,11 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                     GST (%)
                   </label>
                   <input
-                    type="number"
-                    min={0}
-                    step="0.1"
+                    type="text"
+                    inputMode="decimal"
                     value={gstPercent}
-                    onChange={(e) => setGstPercent(e.target.value)}
+                    onChange={(e) => setGstPercent(sanitizeNumericInput(e.target.value))}
+                    placeholder="0"
                     className={`${inputClass} font-mono-num`}
                   />
                 </div>
@@ -865,11 +919,11 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                     Delivery ({sym})
                   </label>
                   <input
-                    type="number"
-                    min={0}
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={deliveryCharge}
-                    onChange={(e) => setDeliveryCharge(e.target.value)}
+                    onChange={(e) => setDeliveryCharge(sanitizeNumericInput(e.target.value))}
+                    placeholder="0"
                     className={`${inputClass} font-mono-num`}
                   />
                 </div>
@@ -880,18 +934,20 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
                     </label>
                     <button
                       type="button"
-                      onClick={() => setPaidAmount(String(totals.totalAmount))}
+                      onClick={() =>
+                        setPaidAmount(totals.totalAmount > 0 ? String(totals.totalAmount) : '')
+                      }
                       className="text-[10px] font-semibold text-[#7E22CE] hover:underline cursor-pointer"
                     >
                       Full
                     </button>
                   </div>
                   <input
-                    type="number"
-                    min={0}
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={paidAmount}
-                    onChange={(e) => setPaidAmount(e.target.value)}
+                    onChange={(e) => setPaidAmount(sanitizeNumericInput(e.target.value))}
+                    placeholder="0"
                     className={`${inputClass} font-mono-num`}
                   />
                 </div>

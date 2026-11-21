@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ArrowLeft, Plus, Search, Trash2, X } from 'lucide-react';
 import { Invoice, PaymentMethod, PaymentRecord } from '../types/business';
 import { formatCurrency, todayIsoDate } from '../utils/calculations';
+import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
 interface PaymentHistoryViewProps {
@@ -74,7 +75,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
   const openPaymentModal = (inv: Invoice) => {
     setModalInvoice(inv);
-    setPayAmount(String(inv.dueAmount));
+    setPayAmount(formatNumericFieldValue(inv.dueAmount));
     setPayDate(todayIsoDate());
     setPayMethod(inv.paymentMethod);
     setPayNote('');
@@ -387,12 +388,12 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                 Amount Paid ({currencySymbol})
               </label>
               <input
-                type="number"
-                min={0.01}
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 required
                 value={payAmount}
-                onChange={(e) => setPayAmount(e.target.value)}
+                onChange={(e) => setPayAmount(sanitizeNumericInput(e.target.value))}
+                placeholder="0"
                 className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
               />
             </div>

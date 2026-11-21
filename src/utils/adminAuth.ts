@@ -95,6 +95,28 @@ async function computeSaltedSha256(passcode: string): Promise<string> {
   return sha256Fallback(input);
 }
 
+const ADMIN_UNLOCKED_KEY = 'gg_admin_unlocked_v1';
+
+export function isAdminUnlockedStored(): boolean {
+  try {
+    return localStorage.getItem(ADMIN_UNLOCKED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function setAdminUnlockedStored(unlocked: boolean): void {
+  try {
+    if (unlocked) {
+      localStorage.setItem(ADMIN_UNLOCKED_KEY, 'true');
+    } else {
+      localStorage.removeItem(ADMIN_UNLOCKED_KEY);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
 export async function verifyAdminPasscode(passcode: string): Promise<boolean> {
   const trimmed = passcode.trim();
   if (!trimmed) return false;

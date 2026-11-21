@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { ExpenseCategory, ExpenseRecord, Invoice } from '../types/business';
 import { formatCurrency, todayIsoDate } from '../utils/calculations';
+import { sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
 interface ProfitLossViewProps {
@@ -283,12 +284,11 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
               ))}
             </select>
             <input
-              type="number"
-              min={0.01}
-              step="0.01"
+              type="text"
+              inputMode="decimal"
               required
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => setAmount(sanitizeNumericInput(e.target.value))}
               placeholder={`Amount (${currencySymbol})`}
               className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
             />

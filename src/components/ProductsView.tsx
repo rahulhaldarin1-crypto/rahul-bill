@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Product } from '../types/business';
 import { formatCurrency, resizeImageFileToDataUrl } from '../utils/calculations';
+import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
 interface ProductsViewProps {
@@ -83,10 +84,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setName(prod.name);
     setImageDataUrl(prod.imageDataUrl || '');
     setCategory(prod.category || CATEGORIES[0]);
-    setPurchasePrice(String(prod.purchasePrice));
-    setSellingPrice(String(prod.sellingPrice));
-    setStockQty(String(prod.stockQty));
-    setLowStockAlert(String(prod.lowStockAlert || defaultLowStock || 5));
+    setPurchasePrice(formatNumericFieldValue(prod.purchasePrice));
+    setSellingPrice(formatNumericFieldValue(prod.sellingPrice));
+    setStockQty(formatNumericFieldValue(prod.stockQty));
+    setLowStockAlert(formatNumericFieldValue(prod.lowStockAlert || defaultLowStock || 5));
     setSize(prod.size || '');
     setColor(prod.color || '');
     setError('');
@@ -316,11 +317,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 Purchase Price ({currencySymbol})
               </label>
               <input
-                type="number"
-                min={0}
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={purchasePrice}
-                onChange={(e) => setPurchasePrice(e.target.value)}
+                onChange={(e) => setPurchasePrice(sanitizeNumericInput(e.target.value))}
                 placeholder="0"
                 className={`${inputClass} font-mono-num`}
               />
@@ -331,12 +331,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 Selling Price ({currencySymbol}) <span className="text-[#DB2777]">*</span>
               </label>
               <input
-                type="number"
-                min={0}
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 required
                 value={sellingPrice}
-                onChange={(e) => setSellingPrice(e.target.value)}
+                onChange={(e) => setSellingPrice(sanitizeNumericInput(e.target.value))}
                 placeholder="0"
                 className={`${inputClass} font-mono-num`}
               />
@@ -347,10 +346,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 Stock Quantity
               </label>
               <input
-                type="number"
-                min={0}
+                type="text"
+                inputMode="numeric"
                 value={stockQty}
-                onChange={(e) => setStockQty(e.target.value)}
+                onChange={(e) =>
+                  setStockQty(sanitizeNumericInput(e.target.value, { allowDecimal: false }))
+                }
                 placeholder="0"
                 className={`${inputClass} font-mono-num`}
               />
@@ -387,10 +388,15 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 Low Stock Alert At
               </label>
               <input
-                type="number"
-                min={1}
+                type="text"
+                inputMode="numeric"
                 value={lowStockAlert}
-                onChange={(e) => setLowStockAlert(e.target.value)}
+                onChange={(e) =>
+                  setLowStockAlert(
+                    sanitizeNumericInput(e.target.value, { allowDecimal: false })
+                  )
+                }
+                placeholder="5"
                 className={`${inputClass} font-mono-num`}
               />
             </div>

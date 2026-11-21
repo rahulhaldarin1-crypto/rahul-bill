@@ -15,6 +15,7 @@ import {
   incrementInvoiceNumber,
   parseCustomerText,
 } from '../utils/invoiceHelpers';
+import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 
 interface InvoiceFormProps {
   invoice: InvoiceData;
@@ -469,17 +470,21 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
                       {t.qty}
                     </label>
                     <input
-                      type="number"
-                      min={1}
-                      value={item.qty}
-                      onChange={(e) =>
+                      type="text"
+                      inputMode="numeric"
+                      value={item.qty === '' ? '' : String(item.qty)}
+                      onChange={(e) => {
+                        const cleaned = sanitizeNumericInput(e.target.value, {
+                          allowDecimal: false,
+                        });
                         updateItem(item.id, {
-                          qty: e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value, 10) || 1),
-                        })
-                      }
+                          qty: cleaned === '' ? '' : Math.max(1, parseInt(cleaned, 10) || 1),
+                        });
+                      }}
                       onBlur={() => {
                         if (item.qty === '') updateItem(item.id, { qty: 1 });
                       }}
+                      placeholder="1"
                       className={`${inputClass} font-mono-num`}
                     />
                   </div>
@@ -489,14 +494,15 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
                       {t.originalPrice}
                     </label>
                     <input
-                      type="number"
-                      min={0}
-                      value={item.originalPrice}
-                      onChange={(e) =>
+                      type="text"
+                      inputMode="decimal"
+                      value={formatNumericFieldValue(item.originalPrice)}
+                      onChange={(e) => {
+                        const cleaned = sanitizeNumericInput(e.target.value);
                         updateItem(item.id, {
-                          originalPrice: e.target.value === '' ? '' : Number(e.target.value),
-                        })
-                      }
+                          originalPrice: cleaned === '' ? '' : Number(cleaned),
+                        });
+                      }}
                       placeholder="Optional"
                       className={`${inputClass} font-mono-num`}
                     />
@@ -507,14 +513,15 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
                       {t.discountedPrice}
                     </label>
                     <input
-                      type="number"
-                      min={0}
-                      value={item.discountedPrice}
-                      onChange={(e) =>
+                      type="text"
+                      inputMode="decimal"
+                      value={formatNumericFieldValue(item.discountedPrice)}
+                      onChange={(e) => {
+                        const cleaned = sanitizeNumericInput(e.target.value);
                         updateItem(item.id, {
-                          discountedPrice: e.target.value === '' ? '' : Number(e.target.value),
-                        })
-                      }
+                          discountedPrice: cleaned === '' ? '' : Number(cleaned),
+                        });
+                      }}
                       placeholder="570"
                       className={`${inputClass} font-mono-num`}
                     />
@@ -581,17 +588,17 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
           <div>
             <label className={labelClass}>{t.deliveryCharge}</label>
             <input
-              type="number"
-              min={0}
-              value={invoice.deliveryCharge}
-              onChange={(e) =>
+              type="text"
+              inputMode="decimal"
+              value={formatNumericFieldValue(invoice.deliveryCharge)}
+              onChange={(e) => {
+                const cleaned = sanitizeNumericInput(e.target.value);
                 onChange({
                   ...invoice,
-                  deliveryCharge:
-                    e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0),
+                  deliveryCharge: cleaned === '' ? '' : Math.max(0, Number(cleaned) || 0),
                   updatedAt: new Date().toISOString(),
-                })
-              }
+                });
+              }}
               placeholder="0"
               className={`${inputClass} font-mono-num`}
             />
@@ -599,19 +606,17 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
           <div>
             <label className={labelClass}>{t.gstPercent}</label>
             <input
-              type="number"
-              min={0}
-              max={100}
-              step="0.5"
-              value={invoice.gstPercent}
-              onChange={(e) =>
+              type="text"
+              inputMode="decimal"
+              value={formatNumericFieldValue(invoice.gstPercent)}
+              onChange={(e) => {
+                const cleaned = sanitizeNumericInput(e.target.value);
                 onChange({
                   ...invoice,
-                  gstPercent:
-                    e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0),
+                  gstPercent: cleaned === '' ? '' : Math.max(0, Number(cleaned) || 0),
                   updatedAt: new Date().toISOString(),
-                })
-              }
+                });
+              }}
               placeholder="0"
               className={`${inputClass} font-mono-num`}
             />
@@ -654,16 +659,17 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
           <div>
             <label className={labelClass}>{t.codAmountHelper}</label>
             <input
-              type="number"
-              min={0}
-              value={invoice.codAmountOverride}
-              onChange={(e) =>
+              type="text"
+              inputMode="decimal"
+              value={formatNumericFieldValue(invoice.codAmountOverride)}
+              onChange={(e) => {
+                const cleaned = sanitizeNumericInput(e.target.value);
                 onChange({
                   ...invoice,
-                  codAmountOverride: e.target.value === '' ? '' : Number(e.target.value),
+                  codAmountOverride: cleaned === '' ? '' : Number(cleaned),
                   updatedAt: new Date().toISOString(),
-                })
-              }
+                });
+              }}
               placeholder={`Auto: ₹ ${formatMoney(totals.grandTotal)}`}
               className={`${inputClass} font-mono-num`}
             />

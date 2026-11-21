@@ -21,6 +21,7 @@ import { BrandLogo } from './BrandLogo';
 import { ScaledInvoicePreview } from './ScaledInvoicePreview';
 
 interface StartPortalProps {
+  isAdminUnlocked?: boolean;
   onOpenAdminPanel: () => void;
 }
 
@@ -29,7 +30,10 @@ interface BillMatch {
   settings: BusinessSettings;
 }
 
-export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) => {
+export const StartPortal: React.FC<StartPortalProps> = ({
+  isAdminUnlocked = false,
+  onOpenAdminPanel,
+}) => {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -48,6 +52,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) =>
   const sheetRef = useRef<HTMLDivElement | null>(null);
 
   const openPasswordPrompt = () => {
+    if (isAdminUnlocked) {
+      onOpenAdminPanel();
+      return;
+    }
     setAdminPassword('');
     setPasswordError('');
     setShowPassword(false);

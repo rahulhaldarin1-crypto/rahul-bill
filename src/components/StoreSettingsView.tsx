@@ -3,6 +3,7 @@ import { ArrowLeft, RotateCcw, Upload, X } from 'lucide-react';
 import { COURIER_PRESETS, DEFAULT_STORE_SETTINGS } from '../data/defaults';
 import { Translations } from '../i18n/translations';
 import { StoreSettings } from '../types/invoice';
+import { sanitizeNumericInput } from '../utils/numberInput';
 import { GoldCrestLogo } from './GoldCrestLogo';
 
 interface StoreSettingsViewProps {
@@ -19,6 +20,9 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
   t,
 }) => {
   const [draft, setDraft] = useState<StoreSettings>(settings);
+  const [minTableRowsInput, setMinTableRowsInput] = useState<string>(
+    settings.minTableRows ? String(settings.minTableRows) : ''
+  );
   const [savedNotice, setSavedNotice] = useState(false);
 
   const handleImageUpload = (
@@ -38,13 +42,18 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSaveSettings(draft);
+    const rows = Math.min(12, Math.max(1, Number(minTableRowsInput) || 6));
+    const nextDraft = { ...draft, minTableRows: rows };
+    setDraft(nextDraft);
+    setMinTableRowsInput(String(rows));
+    onSaveSettings(nextDraft);
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
   };
 
   const handleReset = () => {
     setDraft(DEFAULT_STORE_SETTINGS);
+    setMinTableRowsInput(String(DEFAULT_STORE_SETTINGS.minTableRows));
     onSaveSettings(DEFAULT_STORE_SETTINGS);
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
@@ -159,13 +168,22 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
             <div>
               <label className={labelClass}>Minimum Table Rows</label>
               <input
-                type="number"
-                min={1}
-                max={12}
-                value={draft.minTableRows}
-                onChange={(e) =>
-                  setDraft({ ...draft, minTableRows: Math.max(1, Number(e.target.value || 6)) })
-                }
+                type="text"
+                inputMode="numeric"
+                value={minTableRowsInput}
+                onChange={(e) => {
+                  const cleaned = sanitizeNumericInput(e.target.value, {
+                    allowDecimal: false,
+                  });
+                  setMinTableRowsInput(cleaned);
+                  if (cleaned !== '') {
+                    setDraft({
+                      ...draft,
+                      minTableRows: Math.min(12, Math.max(1, Number(cleaned))),
+                    });
+                  }
+                }}
+                placeholder="6"
                 className={`${inputClass} font-mono-num`}
               />
             </div>

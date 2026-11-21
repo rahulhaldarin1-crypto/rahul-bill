@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   FilePlus2,
   Home,
+  Lock,
   Package,
   Settings,
   Users,
@@ -29,6 +30,7 @@ import {
   Product,
   WorkspaceData,
 } from './types/business';
+import { isAdminUnlockedStored, setAdminUnlockedStored } from './utils/adminAuth';
 import { api } from './utils/api';
 import { createEmptyWorkspace } from './utils/calculations';
 
@@ -40,8 +42,8 @@ interface HistoryEntry {
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
-  const [showViewPanel, setShowViewPanel] = useState(true);
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() => isAdminUnlockedStored());
+  const [showViewPanel, setShowViewPanel] = useState<boolean>(() => !isAdminUnlockedStored());
 
   const [route, setRoute] = useState<AppRoute>('dashboard');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -343,6 +345,22 @@ export default function App() {
     showToast('Backup restored successfully.');
   };
 
+  const handleUnlockAdmin = () => {
+    setAdminUnlockedStored(true);
+    setAdminUnlocked(true);
+    setShowViewPanel(false);
+    setRoute('dashboard');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleLockAdmin = () => {
+    setAdminUnlockedStored(false);
+    setAdminUnlocked(false);
+    setShowViewPanel(true);
+    setRoute('dashboard');
+    showToast('Admin Panel locked.');
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#FDF9FC] flex items-center justify-center">
@@ -356,12 +374,8 @@ export default function App() {
   if (showViewPanel || !adminUnlocked) {
     return (
       <StartPortal
-        onOpenAdminPanel={() => {
-          setAdminUnlocked(true);
-          setShowViewPanel(false);
-          setRoute('dashboard');
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
+        isAdminUnlocked={adminUnlocked}
+        onOpenAdminPanel={handleUnlockAdmin}
       />
     );
   }
@@ -374,12 +388,12 @@ export default function App() {
 
       {/* TOP NAVIGATION BAR (Strict 3-zone contract) */}
       <header className="no-print sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-[#EFE2F5]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4 sm:gap-8">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-8">
           {/* Zone 1: Brand Wordmark */}
           <button
             type="button"
             onClick={() => navigateTo('dashboard')}
-            className="font-display-serif text-lg font-bold tracking-tight text-[#6D28D9] whitespace-nowrap shrink-0 cursor-pointer"
+            className="font-display-serif text-base sm:text-lg font-bold tracking-tight text-[#6D28D9] whitespace-nowrap truncate max-w-[130px] sm:max-w-none cursor-pointer"
           >
             {workspace.settings.businessName || 'Glamour Galleria'}
           </button>
@@ -413,22 +427,27 @@ export default function App() {
             })}
           </nav>
 
-          {/* Zone 3: Primary CTA */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Zone 3: Primary CTA & Actions */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => {
-                setAdminUnlocked(false);
-                setShowViewPanel(true);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => setShowViewPanel(true)}
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span>View Panel</span>
             </button>
             <button
               type="button"
+              onClick={handleLockAdmin}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-2.5 sm:px-3 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>Lock Admin</span>
+            </button>
+            <button
+              type="button"
               onClick={() => navigateTo('client-bill')}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 sm:px-4 py-2 text-xs font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer"
             >
               <FilePlus2 className="w-3.5 h-3.5" />
               <span>New Bill</span>
@@ -443,10 +462,7 @@ export default function App() {
           <DashboardView
             workspace={workspace}
             onNavigate={(nextRoute) => navigateTo(nextRoute)}
-            onOpenViewPanel={() => {
-              setAdminUnlocked(false);
-              setShowViewPanel(true);
-            }}
+            onOpenViewPanel={() => setShowViewPanel(true)}
           />
         )}
 
