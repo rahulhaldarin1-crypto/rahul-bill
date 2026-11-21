@@ -9,6 +9,7 @@ import {
   Package,
   Search,
   Settings,
+  ShoppingBag,
   TrendingUp,
   Truck,
   UserPlus,
@@ -40,8 +41,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigate,
   onOpenViewPanel,
 }) => {
-  const { settings, clients, products, invoices, expenses } = workspace;
+  const { settings, clients, products, invoices, expenses, orders = [] } = workspace;
   const sym = settings.currencySymbol || '₹';
+  const pendingOrdersCount = orders.filter((o) => o.status === 'Pending').length;
 
   const summary = useMemo(() => {
     const today = todayIsoDate();
@@ -113,9 +115,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       borderHover: 'hover:border-[#A78BFA]',
     },
     {
+      route: 'orders',
+      title: 'Orders',
+      subtitle: 'Review COD & UPI orders, payment screenshots & confirm to generate bills',
+      metric:
+        pendingOrdersCount > 0
+          ? `${pendingOrdersCount} Pending`
+          : `${orders.length} Orders`,
+      icon: ShoppingBag,
+      accentBg: 'from-[#DB2777] to-[#E11D48]',
+      accentText: pendingOrdersCount > 0 ? 'text-[#BE123C]' : 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#FB7185]',
+    },
+    {
       route: 'products',
-      title: 'Products',
-      subtitle: 'Catalog, purchase/selling price & stock alerts',
+      title: 'Product Listing',
+      subtitle: 'Add & edit listed products with multiple compressed photos & categories',
       metric: `${products.length} Items`,
       icon: Package,
       accentBg: 'from-[#F43F5E] to-[#E11D48]',
@@ -223,6 +238,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
           <button
             type="button"
+            onClick={() => onNavigate('orders')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-white px-4 py-3 text-sm font-semibold text-[#1F122B] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <ShoppingBag className="w-4 h-4 text-[#DB2777]" />
+            <span>
+              Orders{pendingOrdersCount > 0 ? ` (${pendingOrdersCount})` : ''}
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={() => onNavigate('new-client')}
             className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-white px-4 py-3 text-sm font-semibold text-[#1F122B] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
@@ -265,7 +290,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             onClick={() => onNavigate('products')}
             className="text-xs font-semibold text-[#7E22CE] hover:underline underline-offset-4 whitespace-nowrap cursor-pointer"
           >
-            View Products
+            View Product Listing
           </button>
         </div>
       )}

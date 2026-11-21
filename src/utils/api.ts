@@ -1,6 +1,7 @@
 import {
   BusinessSettings,
   Client,
+  CustomerOrderPaymentMethod,
   DeliveryStatus,
   ExpenseRecord,
   Invoice,
@@ -121,5 +122,43 @@ export const api = {
 
   searchPublicBills(query: string) {
     return firestoreService.searchPublicBills(query);
+  },
+
+  createCustomerOrder(payload: {
+    customerName: string;
+    customerPhone: string;
+    customerWhatsapp?: string;
+    customerAddress: string;
+    customerCity?: string;
+    customerState?: string;
+    customerPinCode?: string;
+    productId?: string;
+    productName: string;
+    productCategory?: string;
+    productSize?: string;
+    productColor?: string;
+    quantity: number;
+    unitPrice: number;
+    paymentMethod: CustomerOrderPaymentMethod;
+    paymentScreenshotDataUrl?: string;
+    customerNote?: string;
+  }) {
+    return firestoreService.createCustomerOrder(payload);
+  },
+
+  confirmCustomerOrder(orderId: string) {
+    return firestoreService.confirmCustomerOrder(orderId);
+  },
+
+  cancelCustomerOrder(orderId: string) {
+    return firestoreService.cancelCustomerOrder(orderId);
+  },
+
+  deleteCustomerOrder(orderId: string) {
+    return firestoreService.deleteCustomerOrder(orderId);
+  },
+
+  lookupCustomerByPhone(phone: string) {
+    return firestoreService.lookupCustomerByPhone(phone);
   },
 };

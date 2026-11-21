@@ -27,15 +27,66 @@ interface ProductsViewProps {
   onDeleteProduct: (id: string) => Promise<void>;
 }
 
-const CATEGORIES = [
-  'Sarees & Ethnic',
-  'Kurtis & Sets',
-  'Dresses & Western',
-  'Cosmetics & Beauty',
-  'Jewellery & Accessories',
-  'Footwear & Bags',
-  'Other',
+const MAX_PRODUCT_IMAGES = 5;
+
+interface CategoryGroup {
+  label: string;
+  items: string[];
+}
+
+const CATEGORY_GROUPS: CategoryGroup[] = [
+  {
+    label: 'Beauty & Accessories',
+    items: [
+      'Handbag',
+      'Sling Bag',
+      'Wallet',
+      'Makeup Kit',
+      'Lipstick',
+      'Kajal',
+      'Eyeliner',
+      'Face Cream',
+      'Sunscreen',
+      'Hair Accessories',
+    ],
+  },
+  {
+    label: 'Perfume Collection',
+    items: [
+      "Women's Perfume",
+      'Floral Perfume',
+      'Fruity Perfume',
+      'Long Lasting Perfume',
+      'Eau De Parfum (EDP)',
+      'Eau De Toilette (EDT)',
+      'Body Mist',
+      'Pocket Perfume',
+      'Roll-On Perfume',
+      'Perfume Gift Set',
+      'Premium Perfume',
+      'Luxury Perfume',
+      'BELLAVITA Perfume',
+    ],
+  },
+  {
+    label: "Women's Fashion & Boutique",
+    items: [
+      "Women's Clothing / Sarees & Kurtis",
+      'Winter Wear',
+      'Cosmetics & Beauty',
+      'Perfumes & Fragrances',
+      'Jewellery & Accessories',
+      'Dresses & Western',
+      'Footwear & Bags',
+      'Other',
+    ],
+  },
 ];
+
+const ALL_GROUP_CATEGORIES = new Set<string>(
+  CATEGORY_GROUPS.flatMap((g) => g.items)
+);
+const DEFAULT_CATEGORY = CATEGORY_GROUPS[0].items[0];
 
 export const ProductsView: React.FC<ProductsViewProps> = ({
   products,
@@ -55,26 +106,44 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
   // Form fields
   const [name, setName] = useState('');
-  const [imageDataUrl, setImageDataUrl] = useState('');
-  const [category, setCategory] = useState(CATEGORIES[0]);
+  const [imageDataUrls, setImageDataUrls] = useState<string[]>([]);
+  const [category, setCategory] = useState(DEFAULT_CATEGORY);
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const [customCategory, setCustomCategory] = useState('');
   const [purchasePrice, setPurchasePrice] = useState('');
   const [sellingPrice, setSellingPrice] = useState('');
   const [stockQty, setStockQty] = useState('');
   const [lowStockAlert, setLowStockAlert] = useState(String(defaultLowStock || 5));
   const [size, setSize] = useState('');
   const [color, setColor] = useState('');
+  const [description, setDescription] = useState('');
+  const [compressingImg, setCompressingImg] = useState(false);
+
+  const customCategories = useMemo(() => {
+    const seen = new Set<string>();
+    for (const prod of products) {
+      const cat = (prod.category || '').trim();
+      if (cat && !ALL_GROUP_CATEGORIES.has(cat)) {
+        seen.add(cat);
+      }
+    }
+    return Array.from(seen);
+  }, [products]);
 
   const openCreate = () => {
     setEditing(null);
     setName('');
-    setImageDataUrl('');
-    setCategory(CATEGORIES[0]);
+    setImageDataUrls([]);
+    setCategory(DEFAULT_CATEGORY);
+    setIsCustomCategory(false);
+    setCustomCategory('');
     setPurchasePrice('');
     setSellingPrice('');
     setStockQty('');
     setLowStockAlert(String(defaultLowStock || 5));
     setSize('');
     setColor('');
+    setDescription('');
     setError('');
     setFormOpen(true);
   };
@@ -82,27 +151,81 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const openEdit = (prod: Product) => {
     setEditing(prod);
     setName(prod.name);
-    setImageDataUrl(prod.imageDataUrl || '');
-    setCategory(prod.category || CATEGORIES[0]);
+    const existingImages =
+      Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
+        ? prod.imageDataUrls.slice(0, MAX_PRODUCT_IMAGES)
+        : prod.imageDataUrl
+          ? [prod.imageDataUrl]
+          : [];
+    setImageDataUrls(existingImages);
+    const cat = (prod.category || DEFAULT_CATEGORY).trim();
+    setCategory(cat);
+    setIsCustomCategory(false);
+    setCustomCategory('');
     setPurchasePrice(formatNumericFieldValue(prod.purchasePrice));
     setSellingPrice(formatNumericFieldValue(prod.sellingPrice));
     setStockQty(formatNumericFieldValue(prod.stockQty));
     setLowStockAlert(formatNumericFieldValue(prod.lowStockAlert || defaultLowStock || 5));
     setSize(prod.size || '');
     setColor(prod.color || '');
+    setDescription(prod.description || '');
     setError('');
     setFormOpen(true);
   };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 480);
-      setImageDataUrl(dataUrl);
-    } catch {
-      setError('Could not load selected image. Please choose a valid JPG/PNG.');
+    const fileList = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (fileList.length === 0) return;
+
+    const remainingSlots = MAX_PRODUCT_IMAGES - imageDataUrls.length;
+    if (remainingSlots <= 0) {
+      setError(`Maximum ${MAX_PRODUCT_IMAGES} photos allowed per product.`);
+      return;
     }
+
+    const filesToProcess = fileList.slice(0, remainingSlots);
+    setError('');
+    setCompressingImg(true);
+    try {
+      const compressed: string[] = [];
+      for (const file of filesToProcess) {
+        const dataUrl = await resizeImageFileToDataUrl(file, 480, {
+          quality: 0.72,
+          preserveTransparency: false,
+          maxDataUrlLength: 72_000,
+        });
+        compressed.push(dataUrl);
+      }
+      setImageDataUrls((prev) =>
+        [...prev, ...compressed].slice(0, MAX_PRODUCT_IMAGES)
+      );
+      if (fileList.length > remainingSlots) {
+        setError(
+          `Only ${remainingSlots} photo${remainingSlots === 1 ? '' : 's'} added (max ${MAX_PRODUCT_IMAGES} photos per product).`
+        );
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not load selected images. Please choose valid JPG/PNG files.'
+      );
+    } finally {
+      setCompressingImg(false);
+    }
+  };
+
+  const setAsMainImage = (idx: number) => {
+    if (idx <= 0 || idx >= imageDataUrls.length) return;
+    setImageDataUrls((prev) => {
+      const target = prev[idx];
+      return [target, ...prev.filter((_, i) => i !== idx)];
+    });
+  };
+
+  const removeImageAt = (idx: number) => {
+    setImageDataUrls((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -110,6 +233,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setError('');
     if (!name.trim()) {
       setError('Product name is required.');
+      return;
+    }
+    const finalCategory = isCustomCategory
+      ? customCategory.trim()
+      : category.trim();
+    if (!finalCategory) {
+      setError('Please enter a category name or select one from the list.');
       return;
     }
     const buy = Number(purchasePrice) || 0;
@@ -124,14 +254,16 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       await onSaveProduct(
         {
           name: name.trim(),
-          imageDataUrl,
-          category,
+          imageDataUrl: imageDataUrls[0] || '',
+          imageDataUrls,
+          category: finalCategory,
           purchasePrice: Math.max(0, buy),
           sellingPrice: Math.max(0, sell),
           stockQty: Math.max(0, Math.floor(Number(stockQty) || 0)),
           lowStockAlert: Math.max(1, Math.floor(Number(lowStockAlert) || 5)),
           size: size.trim(),
           color: color.trim(),
+          description: description.trim(),
         },
         editing?.id
       );
@@ -153,8 +285,25 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const activeGroup = categoryFilter.startsWith('GROUP:')
+      ? CATEGORY_GROUPS.find(
+          (g) => g.label === categoryFilter.slice('GROUP:'.length)
+        )
+      : undefined;
+
     return products.filter((p) => {
-      if (categoryFilter !== 'ALL' && p.category !== categoryFilter) return false;
+      if (categoryFilter !== 'ALL') {
+        if (activeGroup) {
+          if (
+            !activeGroup.items.includes(p.category) &&
+            p.category !== activeGroup.label
+          ) {
+            return false;
+          }
+        } else if (p.category !== categoryFilter) {
+          return false;
+        }
+      }
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
@@ -183,10 +332,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           </button>
           <div>
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B]">
-              Products &amp; Inventory ({products.length})
+              Product Listing ({products.length})
             </h1>
             <p className="text-xs text-[#6B5B7B] mt-0.5">
-              Manage catalog items, pricing, sizes, colors, and automatic stock tracking.
+              Add, edit &amp; manage women&apos;s products, perfumes &amp; categories with up to 5 compressed photos synced to Firestore.
             </p>
           </div>
         </div>
@@ -241,43 +390,96 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="w-20 h-20 rounded-2xl border border-[#EFE2F5] bg-[#FDF8FC] flex items-center justify-center overflow-hidden shrink-0">
-              {imageDataUrl ? (
-                <img
-                  src={imageDataUrl}
-                  alt={name || 'Product'}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <Package className="w-7 h-7 text-[#C084FC]" />
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <div className="text-xs font-semibold text-[#4A3B59]">Product Image</div>
-              <div className="flex items-center gap-2">
-                <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
+          {/* Multi-photo Upload Gallery (4-5 photos per product) */}
+          <div className="space-y-2.5 rounded-2xl border border-[#F2E6F7] bg-[#FDF9FE] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-bold text-[#1F122B]">
+                  Product Photos ({imageDataUrls.length}/{MAX_PRODUCT_IMAGES})
+                </div>
+                <div className="text-[11px] text-[#6B5B7B]">
+                  Upload up to {MAX_PRODUCT_IMAGES} photos. First photo is shown as Main Photo on product cards.
+                </div>
+              </div>
+
+              {imageDataUrls.length < MAX_PRODUCT_IMAGES && (
+                <label className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer whitespace-nowrap">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>Upload Photo</span>
+                  <span>
+                    {compressingImg
+                      ? 'Compressing...'
+                      : imageDataUrls.length === 0
+                        ? 'Upload Photos (up to 5)'
+                        : 'Add More Photos'}
+                  </span>
                   <input
                     type="file"
                     accept="image/*"
+                    multiple
+                    disabled={compressingImg}
                     onChange={handleImageChange}
                     className="sr-only"
                   />
                 </label>
-                {imageDataUrl && (
-                  <button
-                    type="button"
-                    onClick={() => setImageDataUrl('')}
-                    className="text-xs font-medium text-[#BE123C] cursor-pointer"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
+              )}
             </div>
+
+            {imageDataUrls.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#D8B4FE] bg-white py-5 px-4 text-center flex flex-col items-center gap-1.5">
+                <Package className="w-6 h-6 text-[#C084FC]" />
+                <span className="text-xs text-[#6B5B7B]">
+                  No photos added yet. You can select 4–5 photos at once.
+                </span>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                {imageDataUrls.map((src, idx) => (
+                  <div
+                    key={`${idx}-${src.slice(0, 24)}`}
+                    className={`rounded-xl border bg-white overflow-hidden flex flex-col ${
+                      idx === 0
+                        ? 'border-[#DB2777] ring-1 ring-[#DB2777]/30'
+                        : 'border-[#E6D9EE]'
+                    }`}
+                  >
+                    <div className="aspect-square relative bg-[#FDF8FC] overflow-hidden">
+                      <img
+                        src={src}
+                        alt={`${name || 'Product'} photo ${idx + 1}`}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                      {idx === 0 && (
+                        <span className="absolute top-1.5 left-1.5 rounded bg-[#DB2777] px-1.5 py-0.5 text-[9px] font-bold text-white uppercase">
+                          Main Photo
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removeImageAt(idx)}
+                        aria-label={`Remove photo ${idx + 1}`}
+                        className="absolute top-1.5 right-1.5 rounded-full bg-black/65 p-1 text-white hover:bg-[#BE123C] cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                    {idx > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setAsMainImage(idx)}
+                        className="py-1.5 text-[11px] font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] border-t border-[#F4ECF8] cursor-pointer"
+                      >
+                        Set as Main
+                      </button>
+                    ) : (
+                      <div className="py-1.5 text-center text-[11px] font-semibold text-[#15803D] bg-[#F0FDF4] border-t border-[#DCFCE7]">
+                        Primary Card Photo
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -290,7 +492,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Banarasi Silk Kurti Set"
+                placeholder="e.g. Banarasi Silk Kurti Set / Rose Oud Perfume"
                 className={inputClass}
               />
             </div>
@@ -300,16 +502,48 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 Category
               </label>
               <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
+                value={isCustomCategory ? '__CUSTOM__' : category}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '__CUSTOM__') {
+                    setIsCustomCategory(true);
+                  } else {
+                    setIsCustomCategory(false);
+                    setCategory(val);
+                  }
+                }}
                 className={inputClass}
               >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
+                {CATEGORY_GROUPS.map((grp) => (
+                  <optgroup key={grp.label} label={grp.label}>
+                    {grp.items.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
+                {customCategories.length > 0 && (
+                  <optgroup label="Custom Categories">
+                    {customCategories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <option value="__CUSTOM__">+ Add Custom Category...</option>
               </select>
+              {isCustomCategory && (
+                <input
+                  type="text"
+                  required
+                  value={customCategory}
+                  onChange={(e) => setCustomCategory(e.target.value)}
+                  placeholder="Enter new category name"
+                  className={`${inputClass} mt-2`}
+                />
+              )}
             </div>
 
             <div>
@@ -400,6 +634,19 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 className={`${inputClass} font-mono-num`}
               />
             </div>
+
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                Product Description (optional — shown in View Panel detail view)
+              </label>
+              <textarea
+                rows={2}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Fabric details, highlights, care instructions, delivery info..."
+                className={inputClass}
+              />
+            </div>
           </div>
 
           <div className="flex items-center justify-between pt-2 border-t border-[#F4ECF8]">
@@ -452,11 +699,25 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           className="rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none cursor-pointer"
         >
           <option value="ALL">All Categories</option>
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
+          {CATEGORY_GROUPS.map((grp) => (
+            <optgroup key={grp.label} label={grp.label}>
+              <option value={`GROUP:${grp.label}`}>All {grp.label}</option>
+              {grp.items.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </optgroup>
           ))}
+          {customCategories.length > 0 && (
+            <optgroup label="Custom Categories">
+              {customCategories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
       </div>
 
@@ -485,6 +746,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           {filteredProducts.map((prod) => {
             const isLow = prod.stockQty <= (prod.lowStockAlert || defaultLowStock || 5);
             const profitPerUnit = prod.sellingPrice - prod.purchasePrice;
+            const gallery =
+              Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
+                ? prod.imageDataUrls
+                : prod.imageDataUrl
+                  ? [prod.imageDataUrl]
+                  : [];
+            const mainImg = gallery[0] || '';
 
             return (
               <div
@@ -492,16 +760,21 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 className="rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between"
               >
                 <div>
-                  <div className="h-44 bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] flex items-center justify-center overflow-hidden border-b border-[#F4ECF8]">
-                    {prod.imageDataUrl ? (
+                  <div className="h-44 bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative flex items-center justify-center overflow-hidden border-b border-[#F4ECF8]">
+                    {mainImg ? (
                       <img
-                        src={prod.imageDataUrl}
+                        src={mainImg}
                         alt={prod.name}
                         referrerPolicy="no-referrer"
                         className="w-full h-full object-cover"
                       />
                     ) : (
                       <Package className="w-10 h-10 text-[#C084FC]" />
+                    )}
+                    {gallery.length > 1 && (
+                      <span className="absolute bottom-2 right-2 rounded-lg bg-black/65 px-2 py-0.5 text-[10px] font-bold text-white font-mono-num">
+                        {gallery.length} photos
+                      </span>
                     )}
                   </div>
 

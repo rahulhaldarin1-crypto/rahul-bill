@@ -5,6 +5,7 @@ import {
   Lock,
   Package,
   Settings,
+  ShoppingBag,
   Users,
 } from 'lucide-react';
 import { AppBackground } from './components/AppBackground';
@@ -14,6 +15,7 @@ import { ClientListView } from './components/ClientListView';
 import { DashboardView } from './components/DashboardView';
 import { DeliveryTrackingView } from './components/DeliveryTrackingView';
 import { NewClientView } from './components/NewClientView';
+import { OrdersView } from './components/OrdersView';
 import { PaymentHistoryView } from './components/PaymentHistoryView';
 import { ProductsView } from './components/ProductsView';
 import { ProfitLossView } from './components/ProfitLossView';
@@ -365,6 +367,49 @@ export default function App() {
     showToast('Backup restored successfully.');
   };
 
+  const handleConfirmCustomerOrder = async (orderId: string) => {
+    const res = await api.confirmCustomerOrder(orderId);
+    setWorkspace((prev) => {
+      const hasClient = prev.clients.some((c) => c.id === res.client.id);
+      const hasInvoice = prev.invoices.some((i) => i.id === res.invoice.id);
+      const hasPayment = res.payment
+        ? prev.payments.some((p) => p.id === res.payment!.id)
+        : false;
+      return {
+        ...prev,
+        orders: prev.orders.map((o) => (o.id === res.order.id ? res.order : o)),
+        clients: hasClient
+          ? prev.clients.map((c) => (c.id === res.client.id ? res.client : c))
+          : [res.client, ...prev.clients],
+        invoices: hasInvoice ? prev.invoices : [res.invoice, ...prev.invoices],
+        payments:
+          res.payment && !hasPayment ? [res.payment, ...prev.payments] : prev.payments,
+        products: res.products,
+      };
+    });
+    showToast(
+      `Order ${res.order.orderNumber} confirmed! Bill ${res.invoice.invoiceNumber} generated.`
+    );
+  };
+
+  const handleCancelCustomerOrder = async (orderId: string) => {
+    const updated = await api.cancelCustomerOrder(orderId);
+    setWorkspace((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => (o.id === updated.id ? updated : o)),
+    }));
+    showToast(`Order ${updated.orderNumber} cancelled.`);
+  };
+
+  const handleDeleteCustomerOrder = async (orderId: string) => {
+    await api.deleteCustomerOrder(orderId);
+    setWorkspace((prev) => ({
+      ...prev,
+      orders: prev.orders.filter((o) => o.id !== orderId),
+    }));
+    showToast('Order deleted.');
+  };
+
   const handleUnlockAdmin = () => {
     setAdminUnlockedStored(true);
     setAdminUnlocked(true);
@@ -427,13 +472,14 @@ export default function App() {
             </span>
           </button>
 
-          {/* Zone 2: 5 concise single-line nav links */}
-          <nav className="hidden md:flex items-center gap-6 overflow-x-auto">
+          {/* Zone 2: Concise single-line nav links */}
+          <nav className="hidden md:flex items-center gap-5 overflow-x-auto">
             {(
               [
                 { id: 'dashboard', label: 'Dashboard' },
+                { id: 'orders', label: 'Orders' },
                 { id: 'client-list', label: 'Clients' },
-                { id: 'products', label: 'Products' },
+                { id: 'products', label: 'Product Listing' },
                 { id: 'sales-report', label: 'Reports' },
                 { id: 'settings', label: 'Settings' },
               ] as const
@@ -611,13 +657,26 @@ export default function App() {
             onSaveViewPanel={handleSaveViewPanel}
           />
         )}
+        {route === 'orders' && (
+          <OrdersView
+            orders={workspace.orders || []}
+            invoices={workspace.invoices}
+            currencySymbol={currencySymbol}
+            onBack={goBack}
+            onConfirmOrder={handleConfirmCustomerOrder}
+            onCancelOrder={handleCancelCustomerOrder}
+            onDeleteOrder={handleDeleteCustomerOrder}
+            onOpenInvoice={(inv) => navigateTo('client-bill', { editInvoice: inv })}
+          />
+        )}
       </main>
 
       {/* MOBILE BOTTOM NAVIGATION DOCK */}
-      <nav className="no-print md:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] grid grid-cols-4 items-center px-2">
+      <nav className="no-print md:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] grid grid-cols-5 items-center px-1">
         {(
           [
             { id: 'dashboard', label: 'Home', icon: Home },
+            { id: 'orders', label: 'Orders', icon: ShoppingBag },
             { id: 'client-list', label: 'Clients', icon: Users },
             { id: 'products', label: 'Products', icon: Package },
             { id: 'settings', label: 'Settings', icon: Settings },
@@ -635,7 +694,7 @@ export default function App() {
               }`}
             >
               <Icon className="w-4 h-4 mb-0.5" />
-              <span>{tab.label}</span>
+              <span className="truncate max-w-full px-0.5">{tab.label}</span>
             </button>
           );
         })}

@@ -8,6 +8,24 @@ import {
   WorkspaceData,
 } from '../types/business';
 
+export const CHECKOUT_UPI_ID = '9332578394-4@ibl';
+
+export function normalizePhoneDigits(phone?: string): string {
+  const digits = String(phone || '').replace(/[^\d]/g, '');
+  if (!digits) return '';
+  if (digits.length > 10) {
+    return digits.slice(-10);
+  }
+  return digits;
+}
+
+export function phoneNumbersMatch(a?: string, b?: string): boolean {
+  const na = normalizePhoneDigits(a);
+  const nb = normalizePhoneDigits(b);
+  if (na.length < 6 || nb.length < 6) return false;
+  return na === nb;
+}
+
 export const DEFAULT_VIEW_PANEL_CONFIG: ViewPanelConfig = {
   advertisement: {
     enabled: true,
@@ -95,6 +113,7 @@ export function createEmptyWorkspace(): WorkspaceData {
     invoices: [],
     payments: [],
     expenses: [],
+    orders: [],
   };
 }
 

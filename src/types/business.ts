@@ -9,7 +9,8 @@ export type AppRoute =
   | 'delivery-tracking'
   | 'profit-loss'
   | 'settings'
-  | 'view-panel-control';
+  | 'view-panel-control'
+  | 'orders';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -45,6 +46,7 @@ export interface ViewPanelShoppingItem {
   size?: string;
   color?: string;
   imageDataUrl?: string;
+  imageDataUrls?: string[];
   description?: string;
 }
 
@@ -112,6 +114,7 @@ export interface Product {
   id: string;
   name: string;
   imageDataUrl: string;
+  imageDataUrls?: string[];
   category: string;
   purchasePrice: number;
   sellingPrice: number;
@@ -119,6 +122,7 @@ export interface Product {
   lowStockAlert: number;
   size: string;
   color: string;
+  description?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -204,6 +208,47 @@ export interface ExpenseRecord {
   createdAt: string;
 }
 
+export type CustomerOrderStatus = 'Pending' | 'Confirmed' | 'Cancelled';
+export type CustomerOrderPaymentMethod = 'COD' | 'UPI';
+
+export interface CustomerOrder {
+  id: string;
+  orderNumber: string;
+  clientId: string;
+  customerName: string;
+  customerPhone: string;
+  normalizedPhone: string;
+  customerWhatsapp: string;
+  customerAddress: string;
+  customerCity: string;
+  customerState: string;
+  customerPinCode: string;
+  productId?: string;
+  productName: string;
+  productCategory?: string;
+  productSize?: string;
+  productColor?: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+  paymentMethod: CustomerOrderPaymentMethod;
+  upiIdUsed?: string;
+  paymentScreenshotDataUrl?: string;
+  customerNote?: string;
+  status: CustomerOrderStatus;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  confirmedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicCustomerLookupResult {
+  client: Client | null;
+  orders: CustomerOrder[];
+  bills: Array<{ invoice: Invoice; settings: BusinessSettings }>;
+}
+
 export interface WorkspaceData {
   settings: BusinessSettings;
   clients: Client[];
@@ -211,4 +256,5 @@ export interface WorkspaceData {
   invoices: Invoice[];
   payments: PaymentRecord[];
   expenses: ExpenseRecord[];
+  orders: CustomerOrder[];
 }

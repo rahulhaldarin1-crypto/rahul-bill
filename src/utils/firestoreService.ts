@@ -13,6 +13,8 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
   BusinessSettings,
   Client,
+  CustomerOrder,
+  CustomerOrderPaymentMethod,
   DeliveryStatus,
   ExpenseRecord,
   Invoice,
@@ -20,12 +22,17 @@ import {
   PaymentMethod,
   PaymentRecord,
   Product,
+  PublicCustomerLookupResult,
   WorkspaceData,
 } from '../types/business';
 import {
+  CHECKOUT_UPI_ID,
   createEmptyWorkspace,
   DEFAULT_SETTINGS,
+  generateNextInvoiceNumber,
   mergeBusinessSettings,
+  normalizePhoneDigits,
+  phoneNumbersMatch,
 } from './calculations';
 
 const SETTINGS_COL = 'settings';
@@ -35,6 +42,7 @@ const PRODUCTS_COL = 'products';
 const INVOICES_COL = 'invoices';
 const PAYMENTS_COL = 'payments';
 const EXPENSES_COL = 'expenses';
+const ORDERS_COL = 'orders';
 
 function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -207,15 +215,16 @@ export const firestoreService = {
       }
     };
 
-    const [clients, products, invoices, payments, expenses] = await Promise.all([
+    const [clients, products, invoices, payments, expenses, orders] = await Promise.all([
       fetchCol<Client>(CLIENTS_COL),
       fetchCol<Product>(PRODUCTS_COL),
       fetchCol<Invoice>(INVOICES_COL),
       fetchCol<PaymentRecord>(PAYMENTS_COL),
       fetchCol<ExpenseRecord>(EXPENSES_COL),
+      fetchCol<CustomerOrder>(ORDERS_COL),
     ]);
 
-    return { settings, clients, products, invoices, payments, expenses };
+    return { settings, clients, products, invoices, payments, expenses, orders };
   },
 
   subscribeWorkspace(
@@ -288,6 +297,15 @@ export const firestoreService = {
       (err) => reportError(OperationType.LIST, EXPENSES_COL, err)
     );
 
+    const unsubOrders = onSnapshot(
+      collection(db, ORDERS_COL),
+      (snap) => {
+        const orders = sortDescByCreated(snap.docs.map((d) => d.data() as CustomerOrder));
+        onUpdate((prev) => ({ ...prev, orders }));
+      },
+      (err) => reportError(OperationType.LIST, ORDERS_COL, err)
+    );
+
     return () => {
       unsubSettings();
       unsubClients();
@@ -295,6 +313,7 @@ export const firestoreService = {
       unsubInvoices();
       unsubPayments();
       unsubExpenses();
+      unsubOrders();
     };
   },
 
@@ -796,6 +815,9 @@ export const firestoreService = {
       expenses: Array.isArray(workspace.expenses)
         ? workspace.expenses.map((e) => stripUndefinedDeep(e))
         : [],
+      orders: Array.isArray(workspace.orders)
+        ? workspace.orders.map((o) => stripUndefinedDeep(o))
+        : [],
     };
 
     const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
@@ -806,6 +828,7 @@ export const firestoreService = {
       INVOICES_COL,
       PAYMENTS_COL,
       EXPENSES_COL,
+      ORDERS_COL,
     ];
     for (const colName of existingCollections) {
       try {
@@ -835,6 +858,9 @@ export const firestoreService = {
     }
     for (const exp of restored.expenses) {
       ops.push((batch) => batch.set(doc(db, EXPENSES_COL, exp.id), exp));
+    }
+    for (const ord of restored.orders) {
+      ops.push((batch) => batch.set(doc(db, ORDERS_COL, ord.id), ord));
     }
 
     try {
@@ -933,5 +959,474 @@ export const firestoreService = {
     );
 
     return { results: matches.slice(0, 20) };
+  },
+
+  async createCustomerOrder(payload: {
+    customerName: string;
+    customerPhone: string;
+    customerWhatsapp?: string;
+    customerAddress: string;
+    customerCity?: string;
+    customerState?: string;
+    customerPinCode?: string;
+    productId?: string;
+    productName: string;
+    productCategory?: string;
+    productSize?: string;
+    productColor?: string;
+    quantity: number;
+    unitPrice: number;
+    paymentMethod: CustomerOrderPaymentMethod;
+    paymentScreenshotDataUrl?: string;
+    customerNote?: string;
+  }): Promise<{ order: CustomerOrder; client: Client }> {
+    const cleanName = String(payload.customerName || '').trim();
+    const cleanPhone = String(payload.customerPhone || '').trim();
+    const normalizedPhone = normalizePhoneDigits(cleanPhone);
+    const cleanAddress = String(payload.customerAddress || '').trim();
+    const cleanProductName = String(payload.productName || '').trim();
+    const qty = Math.max(1, Math.floor(safeNum(payload.quantity, 1)));
+    const unitPrice = Math.max(0, Number(safeNum(payload.unitPrice, 0).toFixed(2)));
+    const totalAmount = Number((qty * unitPrice).toFixed(2));
+
+    if (!cleanName) throw new Error('Please enter your full name.');
+    if (normalizedPhone.length < 8) {
+      throw new Error('Please enter a valid phone number (at least 8 digits).');
+    }
+    if (!cleanAddress) throw new Error('Please enter your delivery address.');
+    if (!cleanProductName) throw new Error('Product information is missing.');
+
+    const now = new Date().toISOString();
+
+    let existingClients: Client[] = [];
+    let existingOrders: CustomerOrder[] = [];
+    try {
+      const [cliSnap, ordSnap] = await Promise.all([
+        getDocs(collection(db, CLIENTS_COL)),
+        getDocs(collection(db, ORDERS_COL)),
+      ]);
+      existingClients = cliSnap.docs.map((d) => d.data() as Client);
+      existingOrders = ordSnap.docs.map((d) => d.data() as CustomerOrder);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, ORDERS_COL);
+    }
+
+    const matchedClient = existingClients.find(
+      (c) =>
+        phoneNumbersMatch(c.mobile, cleanPhone) ||
+        phoneNumbersMatch(c.whatsapp, cleanPhone)
+    );
+
+    const cleanWhatsapp = String(payload.customerWhatsapp || '').trim() || cleanPhone;
+    const cleanCity = String(payload.customerCity || '').trim();
+    const cleanState = String(payload.customerState || '').trim();
+    const cleanPin = String(payload.customerPinCode || '').trim();
+
+    const client: Client = matchedClient
+      ? stripUndefinedDeep({
+          ...matchedClient,
+          name: matchedClient.name || cleanName,
+          mobile: matchedClient.mobile || cleanPhone,
+          whatsapp: matchedClient.whatsapp || cleanWhatsapp,
+          address: cleanAddress || matchedClient.address,
+          city: cleanCity || matchedClient.city,
+          state: cleanState || matchedClient.state,
+          pinCode: cleanPin || matchedClient.pinCode,
+          updatedAt: now,
+        })
+      : stripUndefinedDeep({
+          id: `cli-${crypto.randomUUID()}`,
+          name: cleanName,
+          mobile: cleanPhone,
+          whatsapp: cleanWhatsapp,
+          address: cleanAddress,
+          city: cleanCity,
+          state: cleanState,
+          pinCode: cleanPin,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+    let maxOrdNum = 0;
+    for (const o of existingOrders) {
+      const m = String(o.orderNumber || '').match(/(\d+)\s*$/);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > maxOrdNum) maxOrdNum = n;
+      }
+    }
+    const orderNumber = `ORD-${String(maxOrdNum + 1).padStart(3, '0')}`;
+
+    const paymentMethod: CustomerOrderPaymentMethod =
+      payload.paymentMethod === 'UPI' ? 'UPI' : 'COD';
+
+    const order: CustomerOrder = stripUndefinedDeep({
+      id: `ord-${crypto.randomUUID()}`,
+      orderNumber,
+      clientId: client.id,
+      customerName: cleanName,
+      customerPhone: cleanPhone,
+      normalizedPhone,
+      customerWhatsapp: cleanWhatsapp,
+      customerAddress: cleanAddress,
+      customerCity: cleanCity,
+      customerState: cleanState,
+      customerPinCode: cleanPin,
+      productId: payload.productId ? String(payload.productId) : '',
+      productName: cleanProductName,
+      productCategory: String(payload.productCategory || '').trim(),
+      productSize: String(payload.productSize || '').trim(),
+      productColor: String(payload.productColor || '').trim(),
+      quantity: qty,
+      unitPrice,
+      totalAmount,
+      paymentMethod,
+      upiIdUsed: paymentMethod === 'UPI' ? CHECKOUT_UPI_ID : '',
+      paymentScreenshotDataUrl:
+        paymentMethod === 'UPI' ? String(payload.paymentScreenshotDataUrl || '') : '',
+      customerNote: String(payload.customerNote || '').trim(),
+      status: 'Pending',
+      invoiceId: '',
+      invoiceNumber: '',
+      confirmedAt: '',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, CLIENTS_COL, client.id), client);
+      batch.set(doc(db, ORDERS_COL, order.id), order);
+      await batch.commit();
+      return { order, client };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `${ORDERS_COL}/${order.id}`);
+    }
+  },
+
+  async confirmCustomerOrder(orderId: string): Promise<{
+    order: CustomerOrder;
+    invoice: Invoice;
+    client: Client;
+    payment: PaymentRecord | null;
+    products: Product[];
+  }> {
+    const orderRef = doc(db, ORDERS_COL, orderId);
+    let order: CustomerOrder;
+    try {
+      const snap = await getDoc(orderRef);
+      if (!snap.exists()) throw new Error('Order not found.');
+      order = snap.data() as CustomerOrder;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Order not found.') throw error;
+      handleFirestoreError(error, OperationType.GET, `${ORDERS_COL}/${orderId}`);
+    }
+
+    let settings: BusinessSettings = mergeBusinessSettings();
+    let clients: Client[] = [];
+    let products: Product[] = [];
+    let invoices: Invoice[] = [];
+    try {
+      const [settingsSnap, cliSnap, prodSnap, invSnap] = await Promise.all([
+        getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC)),
+        getDocs(collection(db, CLIENTS_COL)),
+        getDocs(collection(db, PRODUCTS_COL)),
+        getDocs(collection(db, INVOICES_COL)),
+      ]);
+      if (settingsSnap.exists()) {
+        settings = mergeBusinessSettings(
+          settingsSnap.data() as Partial<BusinessSettings>
+        );
+      }
+      clients = cliSnap.docs.map((d) => d.data() as Client);
+      products = prodSnap.docs.map((d) => d.data() as Product);
+      invoices = invSnap.docs.map((d) => d.data() as Invoice);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, INVOICES_COL);
+    }
+
+    const now = new Date().toISOString();
+
+    // Ensure customer account exists & is linked by phone number
+    let client =
+      clients.find((c) => c.id === order.clientId) ||
+      clients.find(
+        (c) =>
+          phoneNumbersMatch(c.mobile, order.customerPhone) ||
+          phoneNumbersMatch(c.whatsapp, order.customerPhone)
+      );
+
+    if (!client) {
+      client = stripUndefinedDeep({
+        id: `cli-${crypto.randomUUID()}`,
+        name: order.customerName,
+        mobile: order.customerPhone,
+        whatsapp: order.customerWhatsapp || order.customerPhone,
+        address: order.customerAddress,
+        city: order.customerCity || '',
+        state: order.customerState || '',
+        pinCode: order.customerPinCode || '',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Return existing invoice cleanly if already confirmed
+    if (order.status === 'Confirmed' && order.invoiceId) {
+      const existingInvoice = invoices.find((i) => i.id === order.invoiceId);
+      if (existingInvoice) {
+        return {
+          order,
+          invoice: existingInvoice,
+          client,
+          payment: null,
+          products: sortDescByCreated(products),
+        };
+      }
+    }
+
+    const catalogProduct = order.productId
+      ? products.find((p) => p.id === order.productId)
+      : products.find(
+          (p) =>
+            p.name.trim().toLowerCase() === order.productName.trim().toLowerCase()
+        );
+
+    const purchasePrice = catalogProduct ? Math.max(0, catalogProduct.purchasePrice) : 0;
+    const invoiceNumber = generateNextInvoiceNumber(
+      invoices,
+      settings.invoicePrefix || 'GG-'
+    );
+    const cityStatePin = [
+      order.customerCity,
+      order.customerState,
+      order.customerPinCode,
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    const isPaidUpi = order.paymentMethod === 'UPI';
+    const paidAmount = isPaidUpi ? order.totalAmount : 0;
+
+    const invoice = normalizeInvoice({
+      id: `inv-${crypto.randomUUID()}`,
+      invoiceNumber,
+      invoiceDate: now.slice(0, 10),
+      orderVia: isPaidUpi ? 'Online UPI' : 'Online COD',
+      clientId: client.id,
+      customerName: order.customerName,
+      customerMobile: order.customerPhone,
+      customerWhatsapp: order.customerWhatsapp || order.customerPhone,
+      customerAddress: order.customerAddress,
+      customerCityStatePin: cityStatePin,
+      items: [
+        {
+          id: `item-${Date.now()}`,
+          productId: catalogProduct?.id,
+          productName: order.productName,
+          size: order.productSize || '',
+          color: order.productColor || '',
+          quantity: Math.max(1, order.quantity),
+          purchasePrice,
+          sellingPrice: order.unitPrice,
+          lineTotal: order.totalAmount,
+          lineCost: Number((Math.max(1, order.quantity) * purchasePrice).toFixed(2)),
+          lineProfit: Number(
+            (order.totalAmount - Math.max(1, order.quantity) * purchasePrice).toFixed(2)
+          ),
+        },
+      ],
+      discount: 0,
+      gstPercent: 0,
+      deliveryCharge: 0,
+      paidAmount,
+      paymentMethod: isPaidUpi ? 'UPI' : 'Cash',
+      courierName: '',
+      trackingNumber: '',
+      trackingUrl: '',
+      deliveryStatus: 'Processing',
+      notes: `Auto-generated from customer order ${order.orderNumber}${
+        order.customerNote ? ` (${order.customerNote})` : ''
+      }`,
+    });
+
+    let payment: PaymentRecord | null = null;
+    if (invoice.paidAmount > 0) {
+      payment = stripUndefinedDeep({
+        id: `pay-${crypto.randomUUID()}`,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        clientId: client.id,
+        customerName: invoice.customerName,
+        totalBill: invoice.totalAmount,
+        amountPaid: invoice.paidAmount,
+        remainingDueAfter: invoice.dueAmount,
+        paymentDate: invoice.invoiceDate,
+        paymentMethod: 'UPI',
+        note: `Online UPI payment for ${order.orderNumber} (${order.upiIdUsed || CHECKOUT_UPI_ID})`,
+        createdAt: now,
+      });
+    }
+
+    const updatedOrder: CustomerOrder = stripUndefinedDeep({
+      ...order,
+      clientId: client.id,
+      status: 'Confirmed',
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      confirmedAt: now,
+      updatedAt: now,
+    });
+
+    const updatedProducts = catalogProduct
+      ? products.map((p) =>
+          p.id === catalogProduct.id
+            ? {
+                ...p,
+                stockQty: Math.max(0, safeNum(p.stockQty, 0) - Math.max(1, order.quantity)),
+                updatedAt: now,
+              }
+            : p
+        )
+      : products;
+
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, CLIENTS_COL, client.id), client);
+      batch.set(doc(db, INVOICES_COL, invoice.id), invoice);
+      batch.set(orderRef, updatedOrder);
+      if (payment) {
+        batch.set(doc(db, PAYMENTS_COL, payment.id), payment);
+      }
+      if (catalogProduct) {
+        const nextProd = updatedProducts.find((p) => p.id === catalogProduct.id);
+        if (nextProd) {
+          batch.update(doc(db, PRODUCTS_COL, catalogProduct.id), {
+            stockQty: nextProd.stockQty,
+            updatedAt: nextProd.updatedAt,
+          });
+        }
+      }
+      await batch.commit();
+      return {
+        order: updatedOrder,
+        invoice,
+        client,
+        payment,
+        products: sortDescByCreated(updatedProducts),
+      };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `${ORDERS_COL}/${order.id}`);
+    }
+  },
+
+  async cancelCustomerOrder(orderId: string): Promise<CustomerOrder> {
+    const orderRef = doc(db, ORDERS_COL, orderId);
+    try {
+      const snap = await getDoc(orderRef);
+      if (!snap.exists()) throw new Error('Order not found.');
+      const existing = snap.data() as CustomerOrder;
+      const updated: CustomerOrder = stripUndefinedDeep({
+        ...existing,
+        status: 'Cancelled',
+        updatedAt: new Date().toISOString(),
+      });
+      await setDoc(orderRef, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Order not found.') throw error;
+      handleFirestoreError(error, OperationType.UPDATE, `${ORDERS_COL}/${orderId}`);
+    }
+  },
+
+  async deleteCustomerOrder(orderId: string): Promise<{ ok: boolean }> {
+    try {
+      await deleteDoc(doc(db, ORDERS_COL, orderId));
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `${ORDERS_COL}/${orderId}`);
+    }
+  },
+
+  async lookupCustomerByPhone(phoneQuery: string): Promise<PublicCustomerLookupResult> {
+    const cleanDigits = normalizePhoneDigits(phoneQuery);
+    if (cleanDigits.length < 6) {
+      throw new Error('Please enter a valid phone number (at least 6 digits).');
+    }
+
+    let settings: BusinessSettings = mergeBusinessSettings();
+    let clients: Client[] = [];
+    let orders: CustomerOrder[] = [];
+    let invoices: Invoice[] = [];
+    try {
+      const [settingsSnap, cliSnap, ordSnap, invSnap] = await Promise.all([
+        getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC)),
+        getDocs(collection(db, CLIENTS_COL)),
+        getDocs(collection(db, ORDERS_COL)),
+        getDocs(collection(db, INVOICES_COL)),
+      ]);
+      if (settingsSnap.exists()) {
+        settings = mergeBusinessSettings(
+          settingsSnap.data() as Partial<BusinessSettings>
+        );
+      }
+      clients = cliSnap.docs.map((d) => d.data() as Client);
+      orders = ordSnap.docs.map((d) => d.data() as CustomerOrder);
+      invoices = invSnap.docs.map((d) => d.data() as Invoice);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, ORDERS_COL);
+    }
+
+    const matchedClient =
+      clients.find(
+        (c) =>
+          phoneNumbersMatch(c.mobile, phoneQuery) ||
+          phoneNumbersMatch(c.whatsapp, phoneQuery)
+      ) || null;
+
+    const matchedOrders = sortDescByCreated(
+      orders.filter(
+        (o) =>
+          phoneNumbersMatch(o.customerPhone, phoneQuery) ||
+          phoneNumbersMatch(o.customerWhatsapp, phoneQuery) ||
+          (matchedClient && o.clientId === matchedClient.id)
+      )
+    );
+
+    const matchedBills = invoices
+      .filter(
+        (inv) =>
+          phoneNumbersMatch(inv.customerMobile, phoneQuery) ||
+          phoneNumbersMatch(inv.customerWhatsapp, phoneQuery) ||
+          (matchedClient && inv.clientId === matchedClient.id)
+      )
+      .map((inv) => ({
+        invoice: {
+          ...inv,
+          totalPurchaseCost: 0,
+          profitAmount: 0,
+          notes: '',
+          items: Array.isArray(inv.items)
+            ? inv.items.map((item) => ({
+                ...item,
+                purchasePrice: 0,
+                lineCost: 0,
+                lineProfit: 0,
+              }))
+            : [],
+        },
+        settings,
+      }))
+      .sort((a, b) =>
+        String(b.invoice.invoiceDate || b.invoice.createdAt).localeCompare(
+          String(a.invoice.invoiceDate || a.invoice.createdAt)
+        )
+      );
+
+    return {
+      client: matchedClient,
+      orders: matchedOrders,
+      bills: matchedBills,
+    };
   },
 };

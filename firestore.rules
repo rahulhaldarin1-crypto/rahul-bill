@@ -99,6 +99,26 @@ service cloud.firestore {
       allow delete: if isValidId(expenseId);
     }
 
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'orderNumber', 'customerName', 'customerPhone', 'productName', 'quantity', 'totalAmount', 'paymentMethod', 'status', 'createdAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.orderNumber is string && data.orderNumber.size() <= 80
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160
+        && data.customerPhone is string && data.customerPhone.size() >= 5 && data.customerPhone.size() <= 40
+        && data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 200
+        && data.quantity is number && data.quantity >= 1
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.paymentMethod in ['COD', 'UPI']
+        && data.status in ['Pending', 'Confirmed', 'Cancelled'];
+    }
+
+    match /orders/{orderId} {
+      allow list: if true;
+      allow get: if isValidId(orderId);
+      allow create, update: if isValidId(orderId) && isValidOrder(request.resource.data);
+      allow delete: if isValidId(orderId);
+    }
+
     match /test/connection {
       allow get: if true;
     }

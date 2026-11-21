@@ -974,7 +974,7 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                   className="w-4 h-4 accent-[#7E22CE] rounded cursor-pointer"
                 />
                 <span>
-                  Also show products from Store Products Catalog ({products.length} items)
+                  Also show products from Product Listing ({products.length} items)
                 </span>
               </label>
 
