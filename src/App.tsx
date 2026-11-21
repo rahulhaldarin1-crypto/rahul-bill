@@ -41,6 +41,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
   const [showViewPanel, setShowViewPanel] = useState(true);
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
 
   const [route, setRoute] = useState<AppRoute>('dashboard');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -352,10 +353,11 @@ export default function App() {
     );
   }
 
-  if (showViewPanel) {
+  if (showViewPanel || !adminUnlocked) {
     return (
       <StartPortal
         onOpenAdminPanel={() => {
+          setAdminUnlocked(true);
           setShowViewPanel(false);
           setRoute('dashboard');
           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -415,7 +417,10 @@ export default function App() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => setShowViewPanel(true)}
+              onClick={() => {
+                setAdminUnlocked(false);
+                setShowViewPanel(true);
+              }}
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span>View Panel</span>
@@ -438,7 +443,10 @@ export default function App() {
           <DashboardView
             workspace={workspace}
             onNavigate={(nextRoute) => navigateTo(nextRoute)}
-            onOpenViewPanel={() => setShowViewPanel(true)}
+            onOpenViewPanel={() => {
+              setAdminUnlocked(false);
+              setShowViewPanel(true);
+            }}
           />
         )}
 

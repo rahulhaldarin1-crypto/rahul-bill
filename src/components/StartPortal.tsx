@@ -2,13 +2,18 @@ import React, { useRef, useState } from 'react';
 import {
   ArrowLeft,
   Download,
+  Eye,
+  EyeOff,
   FileText,
   LayoutDashboard,
+  Lock,
   Receipt,
   Search,
   Truck,
+  X,
 } from 'lucide-react';
 import { BusinessSettings, Invoice } from '../types/business';
+import { verifyAdminPasscode } from '../utils/adminAuth';
 import { api, formatApiError } from '../utils/api';
 import { exportInvoiceElementToPdf, formatCurrency } from '../utils/calculations';
 import { AppBackground } from './AppBackground';
@@ -33,7 +38,50 @@ export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) =>
   const [selectedMatch, setSelectedMatch] = useState<BillMatch | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
 
+  // Admin Panel Password Lock Modal
+  const [showAdminLockModal, setShowAdminLockModal] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [verifyingPassword, setVerifyingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+
   const sheetRef = useRef<HTMLDivElement | null>(null);
+
+  const openPasswordPrompt = () => {
+    setAdminPassword('');
+    setPasswordError('');
+    setShowPassword(false);
+    setShowAdminLockModal(true);
+  };
+
+  const closePasswordPrompt = () => {
+    setShowAdminLockModal(false);
+    setAdminPassword('');
+    setPasswordError('');
+  };
+
+  const handleUnlockAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminPassword.trim()) {
+      setPasswordError('Please enter the admin password.');
+      return;
+    }
+
+    setVerifyingPassword(true);
+    setPasswordError('');
+    try {
+      const valid = await verifyAdminPasscode(adminPassword);
+      if (!valid) {
+        setPasswordError('Incorrect password. Please try again.');
+        return;
+      }
+      setShowAdminLockModal(false);
+      setAdminPassword('');
+      onOpenAdminPanel();
+    } finally {
+      setVerifyingPassword(false);
+    }
+  };
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,7 +159,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) =>
 
               <button
                 type="button"
-                onClick={onOpenAdminPanel}
+                onClick={openPasswordPrompt}
                 className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-[#5B4B6B] hover:text-[#1F122B] hover:bg-white transition-all whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <LayoutDashboard className="w-3.5 h-3.5 text-[#7E22CE]" />
@@ -171,10 +219,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) =>
               Create clients, products or bills?{' '}
               <button
                 type="button"
-                onClick={onOpenAdminPanel}
-                className="font-bold text-[#7E22CE] hover:underline underline-offset-4 cursor-pointer"
+                onClick={openPasswordPrompt}
+                className="inline-flex items-center gap-1 font-bold text-[#7E22CE] hover:underline underline-offset-4 cursor-pointer"
               >
-                Open Admin Panel
+                <Lock className="w-3 h-3" />
+                <span>Open Admin Panel</span>
               </button>
             </div>
           </div>
@@ -303,6 +352,105 @@ export const StartPortal: React.FC<StartPortalProps> = ({ onOpenAdminPanel }) =>
           )}
         </div>
       </main>
+
+      {/* Admin Panel Password Lock Modal */}
+      {showAdminLockModal && (
+        <div
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="admin-lock-title"
+        >
+          <div className="w-full max-w-sm rounded-3xl border border-[#EFE2F5] bg-white p-6 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#FDF2F8] to-[#F3E8FF] border border-[#FBCFE8] flex items-center justify-center text-[#7E22CE] shrink-0">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2
+                    id="admin-lock-title"
+                    className="text-base font-bold text-[#1F122B]"
+                  >
+                    Admin Panel Locked
+                  </h2>
+                  <p className="text-xs text-[#6B5B7B] mt-0.5">
+                    Enter admin password to access dashboard.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={closePasswordPrompt}
+                aria-label="Close"
+                className="rounded-lg p-1.5 text-[#6B5B7B] hover:bg-[#F8F3FB] hover:text-[#1F122B] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {passwordError && (
+              <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
+                {passwordError}
+              </div>
+            )}
+
+            <form onSubmit={handleUnlockAdmin} noValidate className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#4A3B59] mb-1.5">
+                  Admin Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    autoFocus
+                    autoComplete="current-password"
+                    value={adminPassword}
+                    onChange={(e) => {
+                      setAdminPassword(e.target.value);
+                      if (passwordError) setPasswordError('');
+                    }}
+                    placeholder="Enter admin password"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-10 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={closePasswordPrompt}
+                  className="rounded-xl border border-[#E6D9EE] px-4 py-2 text-xs font-semibold text-[#4A3B59] hover:bg-[#F8F3FB] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={verifyingPassword}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap cursor-pointer disabled:opacity-60"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>{verifyingPassword ? 'Checking...' : 'Unlock Admin Panel'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
