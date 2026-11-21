@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FilePlus2,
   Home,
@@ -35,11 +35,17 @@ import {
   ViewPanelConfig,
   WorkspaceData,
 } from './types/business';
-import { isAdminUnlockedStored, setAdminUnlockedStored } from './utils/adminAuth';
+import {
+  getCustomerSessionId,
+  isAdminUnlockedStored,
+  setAdminUnlockedStored,
+  setCustomerSessionId,
+} from './utils/adminAuth';
 import { api } from './utils/api';
 import {
   createEmptyWorkspace,
   DEFAULT_VIEW_PANEL_CONFIG,
+  phoneNumbersMatch,
 } from './utils/calculations';
 
 interface HistoryEntry {
@@ -52,6 +58,9 @@ export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() => isAdminUnlockedStored());
   const [showViewPanel, setShowViewPanel] = useState<boolean>(() => !isAdminUnlockedStored());
+  const [customerSessionId, setCustomerSessionIdState] = useState<string | null>(() =>
+    getCustomerSessionId()
+  );
 
   const [route, setRoute] = useState<AppRoute>('dashboard');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -203,6 +212,15 @@ export default function App() {
       clients: prev.clients.filter((c) => c.id !== id),
     }));
     showToast('Customer deleted.');
+  };
+
+  const handleSaveClientPassword = async (clientId: string, newPassword: string) => {
+    const updated = await api.setClientPassword(clientId, newPassword);
+    setWorkspace((prev) => ({
+      ...prev,
+      clients: prev.clients.map((c) => (c.id === updated.id ? updated : c)),
+    }));
+    showToast(`Password updated for ${updated.name}.`);
   };
 
   const handleSaveProduct = async (
@@ -426,6 +444,89 @@ export default function App() {
     showToast('Admin Panel locked.');
   };
 
+  const loggedInCustomer = useMemo(
+    () =>
+      customerSessionId
+        ? workspace.clients.find((c) => c.id === customerSessionId) || null
+        : null,
+    [customerSessionId, workspace.clients]
+  );
+
+  useEffect(() => {
+    if (!loading && customerSessionId && !loggedInCustomer) {
+      setCustomerSessionId(null);
+      setCustomerSessionIdState(null);
+    }
+  }, [loading, customerSessionId, loggedInCustomer]);
+
+  const customerOrders = useMemo(() => {
+    if (!loggedInCustomer) return [];
+    return (workspace.orders || []).filter(
+      (ord) =>
+        ord.clientId === loggedInCustomer.id ||
+        phoneNumbersMatch(ord.customerPhone, loggedInCustomer.mobile)
+    );
+  }, [loggedInCustomer, workspace.orders]);
+
+  const customerBills = useMemo(() => {
+    if (!loggedInCustomer) return [];
+    return workspace.invoices
+      .filter(
+        (inv) =>
+          inv.clientId === loggedInCustomer.id ||
+          phoneNumbersMatch(inv.customerMobile, loggedInCustomer.mobile)
+      )
+      .map((inv) => ({
+        ...inv,
+        totalPurchaseCost: 0,
+        profitAmount: 0,
+        notes: '',
+        items: inv.items.map((item) => ({
+          ...item,
+          purchasePrice: 0,
+          lineCost: 0,
+          lineProfit: 0,
+        })),
+      }));
+  }, [loggedInCustomer, workspace.invoices]);
+
+  const upsertWorkspaceClient = useCallback((client: Client) => {
+    setWorkspace((prev) => {
+      const exists = prev.clients.some((c) => c.id === client.id);
+      return {
+        ...prev,
+        clients: exists
+          ? prev.clients.map((c) => (c.id === client.id ? client : c))
+          : [client, ...prev.clients],
+      };
+    });
+  }, []);
+
+  const handleCustomerLogin = useCallback(
+    (client: Client) => {
+      upsertWorkspaceClient(client);
+      setCustomerSessionId(client.id);
+      setCustomerSessionIdState(client.id);
+    },
+    [upsertWorkspaceClient]
+  );
+
+  const handleCustomerLogout = useCallback(() => {
+    setCustomerSessionId(null);
+    setCustomerSessionIdState(null);
+  }, []);
+
+  const sanitizedLoggedInCustomer = useMemo(() => {
+    if (!loggedInCustomer) return null;
+    const {
+      passwordHash: _ph,
+      passwordSalt: _ps,
+      runningPasswordEnc: _rp,
+      ...safeClient
+    } = loggedInCustomer;
+    return safeClient;
+  }, [loggedInCustomer]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#FDF9FC] flex items-center justify-center">
@@ -443,6 +544,12 @@ export default function App() {
         products={workspace.products}
         isAdminUnlocked={adminUnlocked}
         onOpenAdminPanel={handleUnlockAdmin}
+        loggedInCustomer={sanitizedLoggedInCustomer}
+        customerOrders={customerOrders}
+        customerBills={customerBills}
+        onCustomerLogin={handleCustomerLogin}
+        onCustomerLogout={handleCustomerLogout}
+        onCustomerUpdated={upsertWorkspaceClient}
       />
     );
   }
@@ -571,6 +678,7 @@ export default function App() {
             onOpenInvoice={(inv) =>
               navigateTo('client-bill', { editInvoice: inv })
             }
+            onSaveClientPassword={handleSaveClientPassword}
           />
         )}
 

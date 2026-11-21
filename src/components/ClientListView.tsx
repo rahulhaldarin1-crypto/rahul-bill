@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  Check,
   Eye,
+  EyeOff,
   FilePlus2,
+  KeyRound,
   MapPin,
   Pencil,
   Phone,
@@ -11,8 +14,10 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { Client, Invoice } from '../types/business';
+import { decryptRunningPassword } from '../utils/adminAuth';
 import { formatCurrency } from '../utils/calculations';
 import { ConfirmModal } from './ConfirmModal';
+import { CustomerAvatar } from './CustomerAvatar';
 
 interface ClientListViewProps {
   clients: Client[];
@@ -26,6 +31,7 @@ interface ClientListViewProps {
   onDeleteClient: (id: string) => Promise<void>;
   onCreateBillForClient: (client: Client) => void;
   onOpenInvoice: (invoice: Invoice) => void;
+  onSaveClientPassword: (clientId: string, newPassword: string) => Promise<void>;
 }
 
 export const ClientListView: React.FC<ClientListViewProps> = ({
@@ -40,10 +46,54 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
   onDeleteClient,
   onCreateBillForClient,
   onOpenInvoice,
+  onSaveClientPassword,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const [passwordInputs, setPasswordInputs] = useState<Record<string, string>>({});
+  const [passwordVisible, setPasswordVisible] = useState<Record<string, boolean>>({});
+  const [runningPasswordVisible, setRunningPasswordVisible] = useState<
+    Record<string, boolean>
+  >({});
+  const [savingPasswordId, setSavingPasswordId] = useState<string | null>(null);
+  const [savedPasswordId, setSavedPasswordId] = useState<string | null>(null);
+  const [passwordErrors, setPasswordErrors] = useState<Record<string, string>>({});
+
+  const handleSavePassword = async (clientId: string) => {
+    const val = (passwordInputs[clientId] || '').trim();
+    if (val.length < 4) {
+      setPasswordErrors((prev) => ({
+        ...prev,
+        [clientId]: 'Password must be at least 4 characters.',
+      }));
+      return;
+    }
+
+    setPasswordErrors((prev) => {
+      const next = { ...prev };
+      delete next[clientId];
+      return next;
+    });
+    setSavingPasswordId(clientId);
+    try {
+      await onSaveClientPassword(clientId, val);
+      setPasswordInputs((prev) => ({ ...prev, [clientId]: '' }));
+      setSavedPasswordId(clientId);
+      setTimeout(() => {
+        setSavedPasswordId((curr) => (curr === clientId ? null : curr));
+      }, 2400);
+    } catch (err) {
+      setPasswordErrors((prev) => ({
+        ...prev,
+        [clientId]:
+          err instanceof Error ? err.message : 'Failed to save password.',
+      }));
+    } finally {
+      setSavingPasswordId(null);
+    }
+  };
 
   const selectedClient = useMemo(
     () => (selectedClientId ? clients.find((c) => c.id === selectedClientId) || null : null),
@@ -116,6 +166,11 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>All Clients</span>
             </button>
+            <CustomerAvatar
+              photoDataUrl={selectedClient.profilePhotoDataUrl}
+              name={selectedClient.name}
+              size={42}
+            />
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B]">
               {selectedClient.name}
             </h1>
@@ -200,6 +255,124 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Detail View Customer Login Password Manager */}
+          {(() => {
+            const activeRunningPassword = decryptRunningPassword(
+              selectedClient.runningPasswordEnc,
+              selectedClient.passwordSalt
+            );
+            const showRunning = runningPasswordVisible[selectedClient.id] !== false;
+            return (
+              <div className="lg:col-span-2 pt-4 border-t border-[#F4ECF8] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="text-xs font-bold text-[#1F122B] flex flex-wrap items-center gap-2">
+                    <KeyRound className="w-3.5 h-3.5 text-[#7E22CE]" />
+                    <span>রানিং পাসওয়ার্ড (Running Password):</span>
+                    {activeRunningPassword ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E9D5FF] bg-[#FAF5FF] px-2.5 py-0.5 font-mono-num text-xs font-bold text-[#6D28D9]">
+                        <span className="select-all">
+                          {showRunning ? activeRunningPassword : '••••••••'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRunningPasswordVisible((prev) => ({
+                              ...prev,
+                              [selectedClient.id]: !showRunning,
+                            }))
+                          }
+                          aria-label={
+                            showRunning
+                              ? 'Hide running password'
+                              : 'Show running password'
+                          }
+                          className="text-[#7E22CE] hover:text-[#DB2777] cursor-pointer"
+                        >
+                          {showRunning ? (
+                            <EyeOff className="w-3 h-3" />
+                          ) : (
+                            <Eye className="w-3 h-3" />
+                          )}
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="font-normal text-[#6B5B7B]">
+                        {selectedClient.passwordHash
+                          ? 'Active (save new password to view)'
+                          : 'Not set yet'}
+                      </span>
+                    )}
+                  </div>
+                  {selectedClient.passwordUpdatedAt && (
+                    <div className="text-[11px] text-[#6B5B7B]">
+                      Last updated: {selectedClient.passwordUpdatedAt.slice(0, 10)}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative">
+                      <input
+                        type={passwordVisible[selectedClient.id] ? 'text' : 'password'}
+                        value={passwordInputs[selectedClient.id] || ''}
+                        onChange={(e) =>
+                          setPasswordInputs((prev) => ({
+                            ...prev,
+                            [selectedClient.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="Enter new password"
+                        className="w-48 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-3 pr-8 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPasswordVisible((prev) => ({
+                            ...prev,
+                            [selectedClient.id]: !prev[selectedClient.id],
+                          }))
+                        }
+                        aria-label="Toggle password visibility"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                      >
+                        {passwordVisible[selectedClient.id] ? (
+                          <EyeOff className="w-3.5 h-3.5" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={savingPasswordId === selectedClient.id}
+                      onClick={() => handleSavePassword(selectedClient.id)}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                    >
+                      {savedPasswordId === selectedClient.id ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Saved</span>
+                        </>
+                      ) : (
+                        <span>
+                          {savingPasswordId === selectedClient.id
+                            ? 'Saving...'
+                            : 'Save Password'}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                  {passwordErrors[selectedClient.id] && (
+                    <div className="text-xs font-medium text-[#BE123C]">
+                      {passwordErrors[selectedClient.id]}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Order History Table */}
@@ -363,15 +536,29 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
                 key={client.id}
                 className="rounded-2xl border border-[#EFE2F5] bg-white p-5 flex flex-col justify-between gap-4 hover:border-[#C084FC] transition-colors"
               >
-                <div className="space-y-2.5">
+                <div className="space-y-3">
                   <div className="flex items-start justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => onSelectClient(client.id)}
-                      className="text-left font-display-serif text-lg font-bold text-[#1F122B] hover:text-[#7E22CE] hover:underline underline-offset-4 cursor-pointer"
-                    >
-                      {client.name}
-                    </button>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <CustomerAvatar
+                        photoDataUrl={client.profilePhotoDataUrl}
+                        name={client.name}
+                        size={44}
+                      />
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => onSelectClient(client.id)}
+                          className="text-left font-display-serif text-lg font-bold text-[#1F122B] hover:text-[#7E22CE] hover:underline underline-offset-4 cursor-pointer truncate block max-w-full"
+                        >
+                          {client.name}
+                        </button>
+                        <div className="text-[11px] font-medium text-[#6B5B7B]">
+                          {client.passwordHash
+                            ? 'Account password active'
+                            : 'No login password set'}
+                        </div>
+                      </div>
+                    </div>
                     <div className="text-right shrink-0">
                       <div className="font-mono-num text-sm font-bold text-[#7E22CE]">
                         {formatCurrency(stats.totalSpent, currencySymbol)}
@@ -401,6 +588,122 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
                   {client.address && (
                     <p className="text-xs text-[#6B5B7B] line-clamp-2">{client.address}</p>
                   )}
+
+                  {/* Inline Running Password + Reset / Save Control */}
+                  {(() => {
+                    const activeRunningPassword = decryptRunningPassword(
+                      client.runningPasswordEnc,
+                      client.passwordSalt
+                    );
+                    const showRunning = runningPasswordVisible[client.id] !== false;
+                    return (
+                      <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-2.5 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="font-semibold text-[#4A3B59] inline-flex items-center gap-1">
+                            <KeyRound className="w-3 h-3 text-[#7E22CE]" />
+                            <span>রানিং পাসওয়ার্ড:</span>
+                          </span>
+                          {activeRunningPassword ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E9D5FF] bg-white px-2.5 py-0.5 font-mono-num text-xs font-bold text-[#6D28D9]">
+                              <span className="select-all">
+                                {showRunning ? activeRunningPassword : '••••••••'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRunningPasswordVisible((prev) => ({
+                                    ...prev,
+                                    [client.id]: !showRunning,
+                                  }))
+                                }
+                                aria-label={
+                                  showRunning
+                                    ? 'Hide running password'
+                                    : 'Show running password'
+                                }
+                                className="text-[#7E22CE] hover:text-[#DB2777] cursor-pointer"
+                              >
+                                {showRunning ? (
+                                  <EyeOff className="w-3 h-3" />
+                                ) : (
+                                  <Eye className="w-3 h-3" />
+                                )}
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-[#6B5B7B]">
+                              {client.passwordHash
+                                ? 'Active (save new password to view)'
+                                : 'Not set yet'}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <div className="relative flex-1 min-w-0">
+                            <KeyRound className="w-3.5 h-3.5 text-[#9333EA] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                            <input
+                              type={passwordVisible[client.id] ? 'text' : 'password'}
+                              value={passwordInputs[client.id] || ''}
+                              onChange={(e) =>
+                                setPasswordInputs((prev) => ({
+                                  ...prev,
+                                  [client.id]: e.target.value,
+                                }))
+                              }
+                              placeholder={
+                                client.passwordHash
+                                  ? 'Update customer password...'
+                                  : 'Set login password (min 4 chars)...'
+                              }
+                              className="w-full rounded-lg border border-[#E6D9EE] bg-white pl-8 pr-8 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPasswordVisible((prev) => ({
+                                  ...prev,
+                                  [client.id]: !prev[client.id],
+                                }))
+                              }
+                              aria-label="Toggle password visibility"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                            >
+                              {passwordVisible[client.id] ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={savingPasswordId === client.id}
+                            onClick={() => handleSavePassword(client.id)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-[#7E22CE] px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                          >
+                            {savedPasswordId === client.id ? (
+                              <>
+                                <Check className="w-3 h-3" />
+                                <span>Saved</span>
+                              </>
+                            ) : (
+                              <span>
+                                {savingPasswordId === client.id
+                                  ? 'Saving...'
+                                  : 'Save Password'}
+                              </span>
+                            )}
+                          </button>
+                        </div>
+                        {passwordErrors[client.id] && (
+                          <div className="text-[11px] font-medium text-[#BE123C]">
+                            {passwordErrors[client.id]}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[#F4ECF8]">

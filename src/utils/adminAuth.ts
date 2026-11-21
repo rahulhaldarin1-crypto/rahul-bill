@@ -83,8 +83,7 @@ function sha256Fallback(ascii: string): string {
   return result;
 }
 
-async function computeSaltedSha256(passcode: string): Promise<string> {
-  const input = `${ADMIN_LOCK_SALT}:${passcode}`;
+async function computeSha256(input: string): Promise<string> {
   if (typeof crypto !== 'undefined' && crypto.subtle) {
     const bytes = new TextEncoder().encode(input);
     const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -95,11 +94,17 @@ async function computeSaltedSha256(passcode: string): Promise<string> {
   return sha256Fallback(input);
 }
 
-const ADMIN_UNLOCKED_KEY = 'gg_admin_unlocked_v1';
+async function computeSaltedSha256(passcode: string): Promise<string> {
+  return computeSha256(`${ADMIN_LOCK_SALT}:${passcode}`);
+}
+
+const ADMIN_UNLOCKED_KEY = 'gg_admin_unlocked_session_v1';
+const LEGACY_ADMIN_KEY = 'gg_admin_unlocked_v1';
+const CUSTOMER_SESSION_KEY = 'gg_customer_client_id_v1';
 
 export function isAdminUnlockedStored(): boolean {
   try {
-    return localStorage.getItem(ADMIN_UNLOCKED_KEY) === 'true';
+    return sessionStorage.getItem(ADMIN_UNLOCKED_KEY) === 'true';
   } catch {
     return false;
   }
@@ -107,10 +112,32 @@ export function isAdminUnlockedStored(): boolean {
 
 export function setAdminUnlockedStored(unlocked: boolean): void {
   try {
+    localStorage.removeItem(LEGACY_ADMIN_KEY);
     if (unlocked) {
-      localStorage.setItem(ADMIN_UNLOCKED_KEY, 'true');
+      sessionStorage.setItem(ADMIN_UNLOCKED_KEY, 'true');
     } else {
-      localStorage.removeItem(ADMIN_UNLOCKED_KEY);
+      sessionStorage.removeItem(ADMIN_UNLOCKED_KEY);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+export function getCustomerSessionId(): string | null {
+  try {
+    const id = sessionStorage.getItem(CUSTOMER_SESSION_KEY);
+    return id && id.trim() ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setCustomerSessionId(clientId: string | null): void {
+  try {
+    if (clientId && clientId.trim()) {
+      sessionStorage.setItem(CUSTOMER_SESSION_KEY, clientId.trim());
+    } else {
+      sessionStorage.removeItem(CUSTOMER_SESSION_KEY);
     }
   } catch {
     // ignore storage failures
@@ -128,4 +155,77 @@ export async function verifyAdminPasscode(passcode: string): Promise<boolean> {
 
   const hash = await computeSaltedSha256(trimmed);
   return hash === ADMIN_LOCK_HASH;
+}
+
+export async function hashCustomerPassword(
+  password: string,
+  providedSalt?: string
+): Promise<{ salt: string; hash: string }> {
+  const clean = password.trim();
+  const salt =
+    providedSalt ||
+    (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`);
+  const hash = await computeSha256(`gg-cust:${salt}:${clean}`);
+  return { salt, hash };
+}
+
+export async function verifyCustomerPassword(
+  password: string,
+  salt: string | undefined,
+  expectedHash: string | undefined
+): Promise<boolean> {
+  const clean = password.trim();
+  if (!clean || !expectedHash) return false;
+  const { hash } = await hashCustomerPassword(clean, salt || 'gg-default-salt');
+  return hash === expectedHash;
+}
+
+function getKeystreamBytes(salt: string, length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  let offset = 0;
+  let blockIndex = 0;
+  while (offset < length) {
+    const blockHex = sha256Fallback(`gg-rp:${salt}:${blockIndex}`);
+    for (let i = 0; i < blockHex.length && offset < length; i += 2) {
+      out[offset++] = parseInt(blockHex.slice(i, i + 2), 16) || 0;
+    }
+    blockIndex += 1;
+  }
+  return out;
+}
+
+export function encryptRunningPassword(password: string, salt: string): string {
+  const clean = password.trim();
+  if (!clean) return '';
+  const bytes = new TextEncoder().encode(clean);
+  const key = getKeystreamBytes(salt || 'gg-default-salt', bytes.length);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += (bytes[i] ^ key[i]).toString(16).padStart(2, '0');
+  }
+  return `v1:${hex}`;
+}
+
+export function decryptRunningPassword(
+  encoded: string | undefined,
+  salt: string | undefined
+): string {
+  if (!encoded || !encoded.startsWith('v1:')) return '';
+  const hex = encoded.slice(3);
+  if (!hex || hex.length % 2 !== 0) return '';
+  try {
+    const len = hex.length / 2;
+    const bytes = new Uint8Array(len);
+    const key = getKeystreamBytes(salt || 'gg-default-salt', len);
+    for (let i = 0; i < len; i++) {
+      const byteVal = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      if (Number.isNaN(byteVal)) return '';
+      bytes[i] = byteVal ^ key[i];
+    }
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return '';
+  }
 }

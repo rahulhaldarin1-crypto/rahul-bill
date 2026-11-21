@@ -9,6 +9,25 @@ import {
 } from '../types/business';
 
 export const CHECKOUT_UPI_ID = '9332578394-4@ibl';
+export const WHATSAPP_SUPPORT_PHONE = '919332578394';
+
+export function buildForgotPasswordWhatsAppUrl(
+  phone?: string,
+  name?: string
+): string {
+  const cleanPhone = String(phone || '').trim();
+  const cleanName = String(name || '').trim();
+  const message = [
+    'Hello Glamour Galleria Support,',
+    'I forgot my customer account password and would like to request a password reset.',
+    cleanPhone ? `Registered Phone: ${cleanPhone}` : 'Registered Phone: (Please enter your phone number)',
+    cleanName ? `Name: ${cleanName}` : '',
+    'Please update my password and share it with me. Thank you!',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return `https://wa.me/${WHATSAPP_SUPPORT_PHONE}?text=${encodeURIComponent(message)}`;
+}
 
 export function normalizePhoneDigits(phone?: string): string {
   const digits = String(phone || '').replace(/[^\d]/g, '');
@@ -122,6 +141,16 @@ export function todayIsoDate(): string {
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function addDaysIsoDate(baseIsoDate: string, days: number): string {
+  const parsed = baseIsoDate ? new Date(`${baseIsoDate}T00:00:00`) : new Date();
+  const base = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  base.setDate(base.getDate() + days);
+  const y = base.getFullYear();
+  const m = String(base.getMonth() + 1).padStart(2, '0');
+  const d = String(base.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 

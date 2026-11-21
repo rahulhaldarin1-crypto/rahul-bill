@@ -1,27 +1,24 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  Calendar,
   Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Copy,
   CreditCard,
-  Download,
   ExternalLink,
   Eye,
   EyeOff,
-  FileText,
   Image as ImageIcon,
   LayoutDashboard,
   Lock,
   MapPin,
   Minus,
-  Phone,
   Plus,
-  Receipt,
-  Search,
   ShoppingBag,
+  ShoppingCart,
   Tag,
   Truck,
   Upload,
@@ -30,11 +27,12 @@ import {
 } from 'lucide-react';
 import {
   BusinessSettings,
+  Client,
+  CustomerCartItem,
   CustomerOrder,
   CustomerOrderPaymentMethod,
   Invoice,
   Product,
-  PublicCustomerLookupResult,
   ViewPanelConfig,
 } from '../types/business';
 import { verifyAdminPasscode } from '../utils/adminAuth';
@@ -42,7 +40,6 @@ import { api, formatApiError } from '../utils/api';
 import {
   CHECKOUT_UPI_ID,
   DEFAULT_VIEW_PANEL_CONFIG,
-  exportInvoiceElementToPdf,
   formatCurrency,
   normalizePhoneDigits,
   resizeImageFileToDataUrl,
@@ -50,18 +47,24 @@ import {
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { AppBackground } from './AppBackground';
 import { BrandLogo } from './BrandLogo';
-import { ScaledInvoicePreview } from './ScaledInvoicePreview';
+import { CustomerAuthModal } from './CustomerAuthModal';
+import { CustomerAvatar } from './CustomerAvatar';
+import {
+  CustomerDashboardTab,
+  CustomerDashboardView,
+} from './CustomerDashboardView';
 
 interface StartPortalProps {
   settings?: BusinessSettings;
   products?: Product[];
   isAdminUnlocked?: boolean;
   onOpenAdminPanel: () => void;
-}
-
-interface BillMatch {
-  invoice: Invoice;
-  settings: BusinessSettings;
+  loggedInCustomer?: Client | null;
+  customerOrders?: CustomerOrder[];
+  customerBills?: Invoice[];
+  onCustomerLogin?: (client: Client) => void;
+  onCustomerLogout?: () => void;
+  onCustomerUpdated?: (client: Client) => void;
 }
 
 interface PublicShopProduct {
@@ -78,6 +81,41 @@ interface PublicShopProduct {
   imageDataUrls: string[];
   description?: string;
 }
+
+type PendingAuthAction =
+  | { type: 'cart'; product: PublicShopProduct; qty: number }
+  | { type: 'order'; product: PublicShopProduct; qty: number }
+  | { type: 'account'; tab: CustomerDashboardTab }
+  | null;
+
+const BEAUTY_CATEGORIES = new Set([
+  'Handbag',
+  'Sling Bag',
+  'Wallet',
+  'Makeup Kit',
+  'Lipstick',
+  'Kajal',
+  'Eyeliner',
+  'Face Cream',
+  'Sunscreen',
+  'Hair Accessories',
+]);
+
+const PERFUME_CATEGORIES = new Set([
+  "Women's Perfume",
+  'Floral Perfume',
+  'Fruity Perfume',
+  'Long Lasting Perfume',
+  'Eau De Parfum (EDP)',
+  'Eau De Toilette (EDT)',
+  'Body Mist',
+  'Pocket Perfume',
+  'Roll-On Perfume',
+  'Perfume Gift Set',
+  'Premium Perfume',
+  'Luxury Perfume',
+  'BELLAVITA Perfume',
+]);
 
 function isSafeHttpUrl(url?: string): boolean {
   const trimmed = (url || '').trim();
@@ -125,19 +163,27 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   products = [],
   isAdminUnlocked = false,
   onOpenAdminPanel,
+  loggedInCustomer = null,
+  customerOrders = [],
+  customerBills = [],
+  onCustomerLogin,
+  onCustomerLogout,
+  onCustomerUpdated,
 }) => {
-  // Top Lookup state ('bill' | 'phone')
-  const [lookupMode, setLookupMode] = useState<'bill' | 'phone'>('bill');
-  const [query, setQuery] = useState('');
-  const [phoneQuery, setPhoneQuery] = useState('');
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState('');
-  const [hasSearched, setHasSearched] = useState(false);
-  const [results, setResults] = useState<BillMatch[]>([]);
-  const [phoneLookupResult, setPhoneLookupResult] =
-    useState<PublicCustomerLookupResult | null>(null);
-  const [selectedMatch, setSelectedMatch] = useState<BillMatch | null>(null);
-  const [exportingPdf, setExportingPdf] = useState(false);
+  // Active View inside Storefront ('shop' | 'account')
+  const [portalView, setPortalView] = useState<'shop' | 'account'>('shop');
+  const [accountTab, setAccountTab] = useState<CustomerDashboardTab>('cart');
+
+  // Customer Auth Modal & pending action after login
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>(
+    'login'
+  );
+  const [authNotice, setAuthNotice] = useState('');
+  const [pendingAction, setPendingAction] = useState<PendingAuthAction>(null);
+
+  // Store Toast
+  const [storeNotice, setStoreNotice] = useState('');
 
   // View Panel section filter ('all' | 'discount' | 'shopping')
   const [sectionTab, setSectionTab] = useState<'all' | 'discount' | 'shopping'>(
@@ -147,7 +193,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [failedAdImage, setFailedAdImage] = useState(false);
 
-  // Product Detail & Order Modal
+  // Product Detail & Direct Order Modal
   const [selectedProduct, setSelectedProduct] =
     useState<PublicShopProduct | null>(null);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
@@ -155,6 +201,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     'detail'
   );
   const [orderQty, setOrderQty] = useState('1');
+  const [addingToCart, setAddingToCart] = useState(false);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerWhatsapp, setCustomerWhatsapp] = useState('');
@@ -179,9 +226,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [verifyingPassword, setVerifyingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState('');
 
-  const sheetRef = useRef<HTMLDivElement | null>(null);
-
   const sym = settings?.currencySymbol || '₹';
+
+  const triggerStoreNotice = (msg: string) => {
+    setStoreNotice(msg);
+    setTimeout(() => {
+      setStoreNotice((prev) => (prev === msg ? '' : prev));
+    }, 2800);
+  };
+
   const viewPanel: ViewPanelConfig = useMemo(() => {
     const vp = settings?.viewPanel;
     return {
@@ -276,8 +329,28 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     return Array.from(set);
   }, [shoppingItems]);
 
+  const hasBeautyGroup = useMemo(
+    () => shoppingItems.some((item) => BEAUTY_CATEGORIES.has(item.category)),
+    [shoppingItems]
+  );
+
+  const hasPerfumeGroup = useMemo(
+    () => shoppingItems.some((item) => PERFUME_CATEGORIES.has(item.category)),
+    [shoppingItems]
+  );
+
   const filteredShoppingItems = useMemo(() => {
     if (shoppingCategory === 'ALL') return shoppingItems;
+    if (shoppingCategory === 'GROUP:BEAUTY') {
+      return shoppingItems.filter((item) =>
+        BEAUTY_CATEGORIES.has(item.category)
+      );
+    }
+    if (shoppingCategory === 'GROUP:PERFUME') {
+      return shoppingItems.filter((item) =>
+        PERFUME_CATEGORIES.has(item.category)
+      );
+    }
     return shoppingItems.filter((item) => item.category === shoppingCategory);
   }, [shoppingItems, shoppingCategory]);
 
@@ -287,6 +360,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       Boolean(viewPanel.discount.headline.trim()));
 
   const hasShoppingContent = viewPanel.shopping.enabled;
+
+  const cartItemCount = useMemo(() => {
+    if (!loggedInCustomer || !Array.isArray(loggedInCustomer.cart)) return 0;
+    return loggedInCustomer.cart.reduce(
+      (sum, item) => sum + Math.max(1, Number(item.quantity) || 1),
+      0
+    );
+  }, [loggedInCustomer]);
 
   // --- Admin Lock Modal ---
   const openPasswordPrompt = () => {
@@ -329,74 +410,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
-  // --- Top Bill Search & Phone Lookup ---
-  const handleBillSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = query.trim();
-    if (trimmed.length < 2) {
-      setSearchError(
-        'Please enter at least 2 characters (Order / Invoice Number or Client Name).'
-      );
-      return;
-    }
-
-    setSearching(true);
-    setSearchError('');
-    setSelectedMatch(null);
-    setPhoneLookupResult(null);
-    try {
-      const data = await api.searchPublicBills(trimmed);
-      setResults(data.results);
-      setHasSearched(true);
-      if (data.results.length === 1) {
-        setSelectedMatch(data.results[0]);
-      }
-    } catch (err) {
-      setSearchError(formatApiError(err, 'Failed to search bills.'));
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const runPhoneLookup = async (rawPhone: string) => {
-    const cleanDigits = normalizePhoneDigits(rawPhone);
-    if (cleanDigits.length < 6) {
-      setSearchError('Please enter at least 6 digits of your phone number.');
-      return;
-    }
-
-    setSearching(true);
-    setSearchError('');
-    setSelectedMatch(null);
-    setResults([]);
-    setPhoneLookupResult(null);
-    try {
-      const data = await api.lookupCustomerByPhone(rawPhone);
-      setPhoneLookupResult(data);
-      setHasSearched(true);
-    } catch (err) {
-      setSearchError(formatApiError(err, 'Failed to look up phone number.'));
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const handlePhoneLookupSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await runPhoneLookup(phoneQuery);
-  };
-
-  const clearLookup = () => {
-    setQuery('');
-    setPhoneQuery('');
-    setSearchError('');
-    setHasSearched(false);
-    setResults([]);
-    setPhoneLookupResult(null);
-    setSelectedMatch(null);
-  };
-
   const handleCopyCode = async (id: string, code: string) => {
     try {
       await navigator.clipboard.writeText(code);
@@ -419,21 +432,123 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
-  const handleDownloadPdf = async () => {
-    if (!sheetRef.current || !selectedMatch) return;
-    setExportingPdf(true);
+  // --- Customer Cart & Order Helpers (Auth-Gated) ---
+  const addItemToClientCart = async (
+    client: Client,
+    product: PublicShopProduct,
+    qtyToAdd: number
+  ) => {
+    setAddingToCart(true);
     try {
-      const safeName = (selectedMatch.invoice.customerName || 'Customer').replace(
-        /[^a-zA-Z0-9_-]+/g,
-        '_'
+      const existingCart: CustomerCartItem[] = Array.isArray(client.cart)
+        ? [...client.cart]
+        : [];
+      const idx = existingCart.findIndex(
+        (c) =>
+          c.id === product.id ||
+          (product.catalogProductId &&
+            c.productId === product.catalogProductId)
       );
-      await exportInvoiceElementToPdf(
-        sheetRef.current,
-        `${selectedMatch.invoice.invoiceNumber}_${safeName}.pdf`
-      );
+      if (idx >= 0) {
+        existingCart[idx] = {
+          ...existingCart[idx],
+          quantity: Math.max(1, existingCart[idx].quantity + qtyToAdd),
+        };
+      } else {
+        existingCart.push({
+          id: product.id,
+          productId: product.catalogProductId,
+          name: product.name,
+          category: product.category,
+          size: product.size,
+          color: product.color,
+          price: product.price,
+          originalPrice: product.originalPrice,
+          quantity: Math.max(1, qtyToAdd),
+          imageDataUrl: product.imageDataUrls[0] || product.imageDataUrl || '',
+        });
+      }
+
+      const updated = await api.updateCustomerCart(client.id, existingCart);
+      onCustomerUpdated?.(updated);
+      triggerStoreNotice(`Added "${product.name}" to your cart.`);
+    } catch (err) {
+      setOrderError(formatApiError(err, 'Could not add item to cart.'));
     } finally {
-      setExportingPdf(false);
+      setAddingToCart(false);
     }
+  };
+
+  const prefillCheckoutFromClient = (client: Client) => {
+    setCustomerName(client.name || '');
+    setCustomerPhone(client.mobile || '');
+    setCustomerWhatsapp(client.whatsapp || client.mobile || '');
+    setCustomerAddress(client.address || '');
+    setCustomerCity(client.city || '');
+    setCustomerState(client.state || '');
+    setCustomerPinCode(client.pinCode || '');
+    setOrderError('');
+    setPaymentMethod('COD');
+    setUpiScreenshotDataUrl('');
+  };
+
+  const openAuthForAction = (
+    action: PendingAuthAction,
+    notice: string,
+    mode: 'login' | 'register' = 'login'
+  ) => {
+    setPendingAction(action);
+    setAuthNotice(notice);
+    setAuthModalMode(mode);
+    setAuthModalOpen(true);
+  };
+
+  const handleCustomerAuthSuccess = async (client: Client) => {
+    setAuthModalOpen(false);
+    setAuthNotice('');
+    onCustomerLogin?.(client);
+
+    const action = pendingAction;
+    setPendingAction(null);
+
+    if (!action) {
+      triggerStoreNotice(`Signed in as ${client.name}`);
+      return;
+    }
+
+    if (action.type === 'account') {
+      setAccountTab(action.tab);
+      setPortalView('account');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    if (action.type === 'cart') {
+      await addItemToClientCart(client, action.product, action.qty);
+      return;
+    }
+
+    if (action.type === 'order') {
+      setSelectedProduct(action.product);
+      setActiveImageIndex(0);
+      setOrderQty(String(action.qty));
+      setPlacedOrder(null);
+      prefillCheckoutFromClient(client);
+      setModalStep('checkout');
+    }
+  };
+
+  const handleOpenAccount = (tab: CustomerDashboardTab = 'cart') => {
+    if (!loggedInCustomer) {
+      openAuthForAction(
+        { type: 'account', tab },
+        'Sign in or create an account to view your cart, orders, and bills.'
+      );
+      return;
+    }
+    setAccountTab(tab);
+    setPortalView('account');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // --- Product Detail & Checkout Modal ---
@@ -452,10 +567,35 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setPlacedOrder(null);
   };
 
+  const parsedQty = Math.max(1, Math.floor(Number(orderQty) || 1));
+  const checkoutTotal = selectedProduct
+    ? Number((parsedQty * selectedProduct.price).toFixed(2))
+    : 0;
+
+  const handleAddToCartAction = async (
+    product: PublicShopProduct,
+    qtyToAdd = 1
+  ) => {
+    if (!loggedInCustomer) {
+      openAuthForAction(
+        { type: 'cart', product, qty: qtyToAdd },
+        'Please sign in or create an account to add products to your cart.'
+      );
+      return;
+    }
+    await addItemToClientCart(loggedInCustomer, product, qtyToAdd);
+  };
+
   const openCheckoutStep = () => {
-    setOrderError('');
-    setPaymentMethod('COD');
-    setUpiScreenshotDataUrl('');
+    if (!selectedProduct) return;
+    if (!loggedInCustomer) {
+      openAuthForAction(
+        { type: 'order', product: selectedProduct, qty: parsedQty },
+        'Please sign in or create a customer account to place your order.'
+      );
+      return;
+    }
+    prefillCheckoutFromClient(loggedInCustomer);
     setModalStep('checkout');
   };
 
@@ -485,14 +625,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
-  const parsedQty = Math.max(1, Math.floor(Number(orderQty) || 1));
-  const checkoutTotal = selectedProduct
-    ? Number((parsedQty * selectedProduct.price).toFixed(2))
-    : 0;
-
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProduct) return;
+    if (!selectedProduct || !loggedInCustomer) return;
     setOrderError('');
 
     if (!customerName.trim()) {
@@ -517,6 +652,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setOrderSubmitting(true);
     try {
       const res = await api.createCustomerOrder({
+        clientId: loggedInCustomer.id,
+        clearCart: false,
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         customerWhatsapp: customerWhatsapp.trim() || customerPhone.trim(),
@@ -524,6 +661,23 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         customerCity: customerCity.trim(),
         customerState: customerState.trim(),
         customerPinCode: customerPinCode.trim(),
+        items: [
+          {
+            id: selectedProduct.id,
+            productId: selectedProduct.catalogProductId,
+            productName: selectedProduct.name,
+            productCategory: selectedProduct.category,
+            productSize: selectedProduct.size,
+            productColor: selectedProduct.color,
+            quantity: parsedQty,
+            unitPrice: selectedProduct.price,
+            lineTotal: checkoutTotal,
+            imageDataUrl:
+              selectedProduct.imageDataUrls[0] ||
+              selectedProduct.imageDataUrl ||
+              '',
+          },
+        ],
         productId: selectedProduct.catalogProductId,
         productName: selectedProduct.name,
         productCategory: selectedProduct.category,
@@ -536,10 +690,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           paymentMethod === 'UPI' ? upiScreenshotDataUrl : '',
         customerNote: customerNote.trim(),
       });
+      onCustomerUpdated?.(res.client);
       setPlacedOrder(res.order);
       setModalStep('success');
     } catch (err) {
-      setOrderError(formatApiError(err, 'Could not submit order. Please try again.'));
+      setOrderError(
+        formatApiError(err, 'Could not submit order. Please try again.')
+      );
     } finally {
       setOrderSubmitting(false);
     }
@@ -556,7 +713,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             onError={() => setFailedAdImage(true)}
             className="w-full max-h-[240px] sm:max-h-[320px] object-cover"
           />
-          {(viewPanel.advertisement.title || viewPanel.advertisement.subtitle) && (
+          {(viewPanel.advertisement.title ||
+            viewPanel.advertisement.subtitle) && (
             <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-5 py-4 text-white">
               {viewPanel.advertisement.title && (
                 <div className="font-display-serif text-lg sm:text-xl font-bold leading-snug">
@@ -594,41 +752,107 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
   return (
     <div className="relative min-h-screen text-[#1F122B] flex flex-col">
-      <AppBackground backgroundImageDataUrl={settings?.backgroundImageDataUrl} />
+      <AppBackground
+        backgroundImageDataUrl={settings?.backgroundImageDataUrl}
+      />
 
-      {/* Top Portal Header with View Panel / Admin Panel Switcher */}
+      {/* Top Portal Header: Brand, Customer Account & Cart, View Panel / Admin Panel Switcher */}
       <header className="no-print sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-[#EFE2F5]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4">
+          <button
+            type="button"
+            onClick={() => setPortalView('shop')}
+            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer"
+          >
             <BrandLogo
               logoDataUrl={settings?.logoDataUrl}
               businessName={settings?.businessName}
-              size={38}
+              size={36}
             />
             <div className="min-w-0">
-              <div className="font-display-serif text-base sm:text-lg font-bold text-[#6D28D9] truncate">
+              <div className="font-display-serif text-sm sm:text-lg font-bold text-[#6D28D9] truncate">
                 {settings?.businessName || 'Glamour Galleria'}
               </div>
               <div className="text-[11px] font-medium text-[#9D174D] truncate hidden sm:block">
                 {settings?.tagline || 'Your Style, Our Priority'}
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {/* Cart Button */}
+            <button
+              type="button"
+              onClick={() => handleOpenAccount('cart')}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                portalView === 'account' && accountTab === 'cart'
+                  ? 'border-[#DB2777] bg-[#FDF2F8] text-[#DB2777]'
+                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
+              }`}
+            >
+              <ShoppingCart className="w-3.5 h-3.5 text-[#DB2777]" />
+              <span className="hidden sm:inline">Cart</span>
+              <span className="font-mono-num text-[#7E22CE]">
+                ({cartItemCount})
+              </span>
+            </button>
+
+            {/* Customer Account / Sign In Button */}
+            {loggedInCustomer ? (
+              <button
+                type="button"
+                onClick={() => handleOpenAccount('orders')}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-2 sm:px-3 py-1 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  portalView === 'account'
+                    ? 'border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                    : 'border-[#E6D9EE] bg-white text-[#1F122B] hover:border-[#9333EA]'
+                }`}
+              >
+                <CustomerAvatar
+                  photoDataUrl={loggedInCustomer.profilePhotoDataUrl}
+                  name={loggedInCustomer.name}
+                  size={24}
+                />
+                <span className="max-w-[78px] sm:max-w-[120px] truncate">
+                  {loggedInCustomer.name.split(' ')[0]}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  openAuthForAction(
+                    { type: 'account', tab: 'orders' },
+                    '',
+                    'login'
+                  )
+                }
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-2.5 sm:px-3 py-1.5 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>Sign In</span>
+              </button>
+            )}
+
+            {/* View Panel / Admin Panel Switcher */}
             <div className="inline-flex rounded-xl bg-[#F8F3FB] p-1 border border-[#EFE2F5]">
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white shadow-xs whitespace-nowrap shrink-0 cursor-pointer"
+                onClick={() => setPortalView('shop')}
+                className={`inline-flex items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                  portalView === 'shop'
+                    ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white shadow-xs'
+                    : 'text-[#5B4B6B] hover:text-[#1F122B]'
+                }`}
               >
-                <Search className="w-3.5 h-3.5" />
-                <span>View Panel</span>
+                <ShoppingBag className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">View Panel</span>
               </button>
 
               <button
                 type="button"
                 onClick={openPasswordPrompt}
-                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-[#5B4B6B] hover:text-[#1F122B] hover:bg-white transition-all whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-bold text-[#5B4B6B] hover:text-[#1F122B] hover:bg-white transition-all whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <LayoutDashboard className="w-3.5 h-3.5 text-[#7E22CE]" />
                 <span>Admin Panel</span>
@@ -639,763 +863,467 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       </header>
 
       <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-5 sm:py-7 space-y-5">
-        {/* 1. TOP ADVERTISEMENT BANNER (ABOVE SEARCH BILL & ORDER SECTION) */}
-        {showAdvertisement && (
-          <section className="no-print" aria-label="Featured Advertisement">
-            {isSafeHttpUrl(viewPanel.advertisement.linkUrl) ? (
-              <a
-                href={viewPanel.advertisement.linkUrl.trim()}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block hover:opacity-95 transition-opacity"
-              >
-                {adBannerCard}
-              </a>
-            ) : (
-              adBannerCard
+        {portalView === 'account' && loggedInCustomer ? (
+          <CustomerDashboardView
+            client={loggedInCustomer}
+            orders={customerOrders}
+            bills={customerBills}
+            settings={settings}
+            initialTab={accountTab}
+            onBackToShop={() => setPortalView('shop')}
+            onLogout={() => {
+              onCustomerLogout?.();
+              setPortalView('shop');
+              triggerStoreNotice('Signed out of customer account.');
+            }}
+            onClientUpdated={(updated) => onCustomerUpdated?.(updated)}
+          />
+        ) : (
+          <>
+            {/* 1. TOP ADVERTISEMENT BANNER */}
+            {showAdvertisement && (
+              <section className="no-print" aria-label="Featured Advertisement">
+                {isSafeHttpUrl(viewPanel.advertisement.linkUrl) ? (
+                  <a
+                    href={viewPanel.advertisement.linkUrl.trim()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block hover:opacity-95 transition-opacity"
+                  >
+                    {adBannerCard}
+                  </a>
+                ) : (
+                  adBannerCard
+                )}
+              </section>
             )}
-          </section>
-        )}
 
-        {/* 2. COMPACT SEARCH BILL & PHONE NUMBER LOOKUP BAR */}
-        <section className="no-print rounded-2xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md px-4 py-3 shadow-xs space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F8F3FB] border border-[#EFE2F5]">
-              <button
-                type="button"
-                onClick={() => {
-                  setLookupMode('bill');
-                  setSearchError('');
-                }}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  lookupMode === 'bill'
-                    ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                    : 'text-[#5B4B6B] hover:text-[#1F122B]'
-                }`}
-              >
-                <Receipt className="w-3.5 h-3.5" />
-                <span>Search Bill</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setLookupMode('phone');
-                  setSearchError('');
-                }}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  lookupMode === 'phone'
-                    ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                    : 'text-[#5B4B6B] hover:text-[#1F122B]'
-                }`}
-              >
-                <Phone className="w-3.5 h-3.5" />
-                <span>My Orders &amp; Bills (Phone)</span>
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={openPasswordPrompt}
-              className="hidden lg:inline-flex items-center gap-1 rounded-xl border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#7E22CE] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Lock className="w-3 h-3" />
-              <span>Open Admin Panel</span>
-            </button>
-          </div>
-
-          {lookupMode === 'bill' ? (
-            <form
-              onSubmit={handleBillSearch}
-              className="flex flex-col sm:flex-row sm:items-center gap-2.5"
-            >
-              <div className="relative flex-1 min-w-0">
-                <Search className="w-3.5 h-3.5 text-[#9333EA] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Order / Invoice No (GG-001) or Client Name..."
-                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-9 pr-8 py-2 text-xs sm:text-sm text-[#1F122B] placeholder:text-[#A493B5] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                />
-                {(query || hasSearched || selectedMatch) && (
-                  <button
-                    type="button"
-                    onClick={clearLookup}
-                    aria-label="Clear search"
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8E7C9E] hover:text-[#1F122B] cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
-              <button
-                type="submit"
-                disabled={searching}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
-              >
-                <Search className="w-3.5 h-3.5" />
-                <span>{searching ? 'Searching...' : 'Search Bill'}</span>
-              </button>
-            </form>
-          ) : (
-            <form
-              onSubmit={handlePhoneLookupSubmit}
-              className="flex flex-col sm:flex-row sm:items-center gap-2.5"
-            >
-              <div className="relative flex-1 min-w-0">
-                <Phone className="w-3.5 h-3.5 text-[#9333EA] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="tel"
-                  inputMode="tel"
-                  value={phoneQuery}
-                  onChange={(e) => setPhoneQuery(e.target.value)}
-                  placeholder="Enter your Phone Number to check Orders & Bills..."
-                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-9 pr-8 py-2 text-xs sm:text-sm font-mono-num text-[#1F122B] placeholder:text-[#A493B5] placeholder:font-sans focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                />
-                {(phoneQuery || hasSearched || phoneLookupResult) && (
-                  <button
-                    type="button"
-                    onClick={clearLookup}
-                    aria-label="Clear phone lookup"
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8E7C9E] hover:text-[#1F122B] cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
-              <button
-                type="submit"
-                disabled={searching}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
-              >
-                <User className="w-3.5 h-3.5" />
-                <span>{searching ? 'Checking...' : 'Check Account'}</span>
-              </button>
-            </form>
-          )}
-
-          {searchError && (
-            <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-medium text-[#BE123C]">
-              {searchError}
-            </div>
-          )}
-        </section>
-
-        {/* 3A. PHONE LOOKUP RESULTS (CUSTOMER PROFILE + ORDERS + GENERATED BILLS) */}
-        {hasSearched && phoneLookupResult && !selectedMatch && (
-          <section className="no-print rounded-2xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 space-y-5 shadow-xs">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F4ECF8] pb-3">
-              <div>
-                <h2 className="text-base font-bold text-[#1F122B] flex items-center gap-2">
-                  <User className="w-4 h-4 text-[#7E22CE]" />
+            {/* Quick Account & Admin Access Bar */}
+            <div className="no-print flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#EFE2F5] bg-white/90 backdrop-blur-md px-4 py-2.5">
+              {loggedInCustomer ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[#4A3B59]">
+                  <CustomerAvatar
+                    photoDataUrl={loggedInCustomer.profilePhotoDataUrl}
+                    name={loggedInCustomer.name}
+                    size={26}
+                  />
                   <span>
-                    {phoneLookupResult.client?.name ||
-                      phoneLookupResult.orders[0]?.customerName ||
-                      phoneLookupResult.bills[0]?.invoice.customerName ||
-                      'Customer Account'}
+                    Welcome, <strong>{loggedInCustomer.name}</strong>
                   </span>
-                </h2>
-                <div className="text-xs text-[#6B5B7B] mt-0.5 flex flex-wrap items-center gap-2">
-                  <span className="font-mono-num font-semibold">
-                    {phoneLookupResult.client?.mobile || phoneQuery.trim()}
-                  </span>
-                  {phoneLookupResult.client?.address && (
-                    <>
-                      <span>·</span>
-                      <span>
-                        {[
-                          phoneLookupResult.client.address,
-                          phoneLookupResult.client.city,
-                          phoneLookupResult.client.pinCode,
-                        ]
-                          .filter(Boolean)
-                          .join(', ')}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={clearLookup}
-                className="text-xs font-semibold text-[#7E22CE] hover:underline cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-
-            {!phoneLookupResult.client &&
-            phoneLookupResult.orders.length === 0 &&
-            phoneLookupResult.bills.length === 0 ? (
-              <div className="py-6 text-center space-y-1">
-                <div className="text-sm font-bold text-[#1F122B]">
-                  No account, orders, or bills found for &ldquo;{phoneQuery.trim()}&rdquo;
-                </div>
-                <p className="text-xs text-[#6B5B7B]">
-                  Place an order from our Shopping section below to automatically create your phone account.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-5">
-                {/* Customer Placed Orders */}
-                {phoneLookupResult.orders.length > 0 && (
-                  <div className="space-y-2.5">
-                    <h3 className="text-xs font-bold uppercase tracking-wide text-[#4A3B59]">
-                      Your Orders ({phoneLookupResult.orders.length})
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {phoneLookupResult.orders.map((ord) => {
-                        const matchedBill = ord.invoiceId
-                          ? phoneLookupResult.bills.find(
-                              (b) => b.invoice.id === ord.invoiceId
-                            )
-                          : undefined;
-                        return (
-                          <div
-                            key={ord.id}
-                            className="rounded-xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 flex items-center justify-between gap-3"
-                          >
-                            <div className="min-w-0 space-y-1">
-                              <div className="flex flex-wrap items-center gap-2 text-xs">
-                                <span className="font-mono-num font-bold text-[#6D28D9]">
-                                  {ord.orderNumber}
-                                </span>
-                                <span
-                                  className={`font-bold ${
-                                    ord.status === 'Confirmed'
-                                      ? 'text-[#15803D]'
-                                      : ord.status === 'Cancelled'
-                                        ? 'text-[#BE123C]'
-                                        : 'text-[#B45309]'
-                                  }`}
-                                >
-                                  · {ord.status === 'Pending' ? 'Pending Confirmation' : ord.status}
-                                </span>
-                              </div>
-                              <div className="text-sm font-bold text-[#1F122B] truncate">
-                                {ord.productName} × {ord.quantity}
-                              </div>
-                              <div className="text-xs text-[#6B5B7B] font-mono-num">
-                                {formatCurrency(ord.totalAmount, sym)} ·{' '}
-                                {ord.paymentMethod === 'UPI' ? 'Paid via UPI' : 'Cash on Delivery'}
-                                {ord.invoiceNumber ? ` · Bill ${ord.invoiceNumber}` : ''}
-                              </div>
-                            </div>
-
-                            {matchedBill && (
-                              <button
-                                type="button"
-                                onClick={() => setSelectedMatch(matchedBill)}
-                                className="inline-flex items-center gap-1 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
-                              >
-                                <FileText className="w-3.5 h-3.5" />
-                                <span>View Bill</span>
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Customer Generated Bills */}
-                {phoneLookupResult.bills.length > 0 && (
-                  <div className="space-y-2.5">
-                    <h3 className="text-xs font-bold uppercase tracking-wide text-[#4A3B59]">
-                      Generated Bills ({phoneLookupResult.bills.length})
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {phoneLookupResult.bills.map((match) => {
-                        const inv = match.invoice;
-                        const invSym = match.settings.currencySymbol || sym;
-                        return (
-                          <div
-                            key={inv.id}
-                            className="rounded-xl border border-[#EFE2F5] bg-white p-3.5 flex items-center justify-between gap-3"
-                          >
-                            <div className="min-w-0 space-y-1">
-                              <div className="flex flex-wrap items-center gap-2 text-xs">
-                                <span className="font-mono-num font-bold text-[#6D28D9]">
-                                  {inv.invoiceNumber}
-                                </span>
-                                <span className="text-[#9D8BAE]">·</span>
-                                <span className="font-mono-num text-[#6B5B7B]">
-                                  {inv.invoiceDate}
-                                </span>
-                                <span className="text-[#9D8BAE]">·</span>
-                                <span className="inline-flex items-center gap-1 font-semibold text-[#7E22CE]">
-                                  <Truck className="w-3 h-3" />
-                                  {inv.deliveryStatus}
-                                </span>
-                              </div>
-                              <div className="text-xs font-mono-num font-bold text-[#1F122B]">
-                                Total: {formatCurrency(inv.totalAmount, invSym)}
-                                {inv.dueAmount > 0 ? (
-                                  <span className="ml-2 text-[#BE123C]">
-                                    (Due: {formatCurrency(inv.dueAmount, invSym)})
-                                  </span>
-                                ) : (
-                                  <span className="ml-2 text-[#15803D]">(Paid)</span>
-                                )}
-                              </div>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={() => setSelectedMatch(match)}
-                              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              <FileText className="w-3.5 h-3.5" />
-                              <span>View Bill</span>
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* 3B. BILL SEARCH RESULTS & FULL A4 INVOICE PREVIEW */}
-        {hasSearched && !phoneLookupResult && !selectedMatch && (
-          <section className="space-y-3">
-            {results.length === 0 ? (
-              <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-8 text-center space-y-2">
-                <FileText className="w-7 h-7 text-[#C4B5D9] mx-auto" />
-                <div className="text-sm font-bold text-[#1F122B]">
-                  No matching bill found for &ldquo;{query.trim()}&rdquo;
-                </div>
-                <p className="text-xs text-[#6B5B7B]">
-                  Please check your Order / Invoice Number or Client Name and try again.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-semibold text-[#1F122B] bg-white/85 backdrop-blur-xs inline-block rounded-lg px-2.5 py-1">
-                    Found {results.length} matching{' '}
-                    {results.length === 1 ? 'bill' : 'bills'} — select to view
-                  </div>
                   <button
                     type="button"
-                    onClick={clearLookup}
-                    className="text-xs font-semibold text-[#7E22CE] bg-white/85 rounded-lg px-2.5 py-1 hover:underline cursor-pointer"
+                    onClick={() => handleOpenAccount('orders')}
+                    className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
                   >
-                    Clear results
+                    Orders ({customerOrders.length})
+                  </button>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAccount('bills')}
+                    className="font-bold text-[#DB2777] hover:underline cursor-pointer"
+                  >
+                    Bills ({customerBills.length})
                   </button>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {results.map((match) => {
-                    const inv = match.invoice;
-                    const invSym = match.settings.currencySymbol || sym;
-                    return (
-                      <div
-                        key={inv.id}
-                        className="rounded-2xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-4 flex items-center justify-between gap-4 hover:border-[#9333EA] transition-colors"
-                      >
-                        <div className="min-w-0 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="font-mono-num text-sm font-bold text-[#6D28D9]">
-                              {inv.invoiceNumber}
-                            </span>
-                            <span className="text-[#9D8BAE]">·</span>
-                            <span className="font-mono-num text-[#6B5B7B]">
-                              {inv.invoiceDate}
-                            </span>
-                            <span className="text-[#9D8BAE]">·</span>
-                            <span className="inline-flex items-center gap-1 font-semibold text-[#7E22CE]">
-                              <Truck className="w-3 h-3" />
-                              {inv.deliveryStatus}
-                            </span>
-                          </div>
-                          <div className="text-sm font-bold text-[#1F122B] truncate">
-                            {inv.customerName}
-                          </div>
-                          <div className="text-xs text-[#6B5B7B] truncate">
-                            {inv.items.length}{' '}
-                            {inv.items.length === 1 ? 'item' : 'items'}
-                            {inv.customerCityStatePin
-                              ? ` · ${inv.customerCityStatePin}`
-                              : ''}
-                          </div>
-                          <div className="text-xs font-mono-num font-bold text-[#1F122B]">
-                            Total: {formatCurrency(inv.totalAmount, invSym)}
-                            {inv.dueAmount > 0 && (
-                              <span className="ml-2 text-[#BE123C]">
-                                (Due: {formatCurrency(inv.dueAmount, invSym)})
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => setSelectedMatch(match)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          <span>View Bill</span>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-
-        {selectedMatch && (
-          <section className="space-y-4">
-            <div className="no-print max-w-[794px] mx-auto flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                {(results.length > 1 || phoneLookupResult) && (
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[#5B4B6B]">
+                  <span>Browse products freely — sign in to save cart &amp; place orders.</span>
                   <button
                     type="button"
-                    onClick={() => setSelectedMatch(null)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] whitespace-nowrap cursor-pointer"
+                    onClick={() =>
+                      openAuthForAction(
+                        { type: 'account', tab: 'orders' },
+                        '',
+                        'login'
+                      )
+                    }
+                    className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
                   >
-                    <ArrowLeft className="w-3.5 h-3.5" />
-                    <span>
-                      {phoneLookupResult ? 'Back to Account' : `All Results (${results.length})`}
-                    </span>
+                    Customer Login
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={clearLookup}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#5B4B6B] hover:border-[#9333EA] whitespace-nowrap cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                  <span>Close Bill</span>
-                </button>
-                <span className="text-xs font-semibold text-[#1F122B] bg-white/85 backdrop-blur-xs rounded-lg px-2.5 py-1">
-                  Invoice{' '}
-                  <strong className="font-mono-num text-[#6D28D9]">
-                    {selectedMatch.invoice.invoiceNumber}
-                  </strong>{' '}
-                  · {selectedMatch.invoice.customerName}
-                </span>
-              </div>
-
-              <button
-                type="button"
-                disabled={exportingPdf}
-                onClick={handleDownloadPdf}
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap cursor-pointer disabled:opacity-60"
-              >
-                <Download className="w-4 h-4" />
-                <span>{exportingPdf ? 'Creating PDF...' : 'Download PDF Bill'}</span>
-              </button>
-            </div>
-
-            <div className="pb-4 max-w-[794px] mx-auto">
-              <ScaledInvoicePreview
-                invoice={selectedMatch.invoice}
-                settings={selectedMatch.settings}
-                sheetRef={sheetRef}
-              />
-            </div>
-          </section>
-        )}
-
-        {/* 4. DISCOUNT & COMPACT E-COMMERCE SHOPPING GRID */}
-        {(hasDiscountContent || hasShoppingContent) && (
-          <div className="no-print space-y-5 pt-1">
-            {hasDiscountContent && hasShoppingContent && (
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/90 backdrop-blur-md border border-[#EFE2F5]">
+                  <span>/</span>
                   <button
                     type="button"
-                    onClick={() => setSectionTab('all')}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      sectionTab === 'all'
-                        ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                        : 'text-[#5B4B6B] hover:text-[#1F122B]'
-                    }`}
+                    onClick={() =>
+                      openAuthForAction(
+                        { type: 'account', tab: 'cart' },
+                        '',
+                        'register'
+                      )
+                    }
+                    className="font-bold text-[#DB2777] hover:underline cursor-pointer"
                   >
-                    All Offers &amp; Shop
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSectionTab('discount')}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      sectionTab === 'discount'
-                        ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                        : 'text-[#5B4B6B] hover:text-[#1F122B]'
-                    }`}
-                  >
-                    <Tag className="w-3.5 h-3.5" />
-                    <span>Discount</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSectionTab('shopping')}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      sectionTab === 'shopping'
-                        ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                        : 'text-[#5B4B6B] hover:text-[#1F122B]'
-                    }`}
-                  >
-                    <ShoppingBag className="w-3.5 h-3.5" />
-                    <span>Shopping</span>
+                    Create Account
                   </button>
                 </div>
-              </div>
-            )}
-
-            {/* DISCOUNT SECTION */}
-            {hasDiscountContent &&
-              (sectionTab === 'all' || sectionTab === 'discount') && (
-                <section
-                  aria-label="Discount Offers"
-                  className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-5 sm:p-6 space-y-4"
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#F4ECF8] pb-3">
-                    <div>
-                      <h2 className="font-display-serif text-xl font-bold text-[#1F122B] flex items-center gap-2">
-                        <Tag className="w-4 h-4 text-[#DB2777] shrink-0" />
-                        <span>
-                          {viewPanel.discount.sectionTitle ||
-                            'Special Discounts & Offers'}
-                        </span>
-                      </h2>
-                      {viewPanel.discount.headline && (
-                        <p className="text-xs sm:text-sm text-[#6B5B7B] mt-0.5">
-                          {viewPanel.discount.headline}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {viewPanel.discount.offers.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-                      {viewPanel.discount.offers.map((offer) => (
-                        <div
-                          key={offer.id}
-                          className="rounded-2xl border border-[#F2E6F7] bg-[#FDF9FE] p-4 flex flex-col justify-between gap-3"
-                        >
-                          <div className="space-y-1.5">
-                            <div className="flex items-baseline justify-between gap-2">
-                              <h3 className="text-sm font-bold text-[#1F122B]">
-                                {offer.title}
-                              </h3>
-                              <span className="font-mono-num text-sm font-bold text-[#DB2777] shrink-0">
-                                {offer.discountLabel}
-                              </span>
-                            </div>
-                            {offer.description && (
-                              <p className="text-xs text-[#5B4B6B] leading-relaxed">
-                                {offer.description}
-                              </p>
-                            )}
-                          </div>
-
-                          {(offer.promoCode || offer.validTill) && (
-                            <div className="pt-2.5 border-t border-[#EFE2F5] flex flex-wrap items-center justify-between gap-2 text-xs">
-                              <span className="text-[#6B5B7B]">
-                                {offer.validTill || 'Limited time offer'}
-                              </span>
-                              {offer.promoCode && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleCopyCode(offer.id, offer.promoCode!)
-                                  }
-                                  className="inline-flex items-center gap-1 font-mono-num font-bold text-[#7E22CE] hover:text-[#DB2777] cursor-pointer whitespace-nowrap"
-                                >
-                                  {copiedCodeId === offer.id ? (
-                                    <>
-                                      <Check className="w-3.5 h-3.5 text-[#15803D]" />
-                                      <span className="text-[#15803D]">Copied</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="w-3.5 h-3.5" />
-                                      <span>{offer.promoCode}</span>
-                                    </>
-                                  )}
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
               )}
 
-            {/* COMPACT FLIPKART/AMAZON STYLE SHOPPING GRID */}
-            {hasShoppingContent &&
-              (sectionTab === 'all' || sectionTab === 'shopping') && (
-                <section
-                  aria-label="Shopping Collection"
-                  className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-4 sm:p-6 space-y-4"
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#F4ECF8] pb-3">
-                    <div>
-                      <h2 className="font-display-serif text-xl font-bold text-[#1F122B] flex items-center gap-2">
-                        <ShoppingBag className="w-4 h-4 text-[#7E22CE] shrink-0" />
-                        <span>
-                          {viewPanel.shopping.sectionTitle || 'Shop Our Collection'}
-                        </span>
-                      </h2>
-                      {viewPanel.shopping.subtitle && (
-                        <p className="text-xs sm:text-sm text-[#6B5B7B] mt-0.5">
-                          {viewPanel.shopping.subtitle}
-                        </p>
-                      )}
-                    </div>
-                    <span className="font-mono-num text-xs font-semibold text-[#6B5B7B]">
-                      {filteredShoppingItems.length}{' '}
-                      {filteredShoppingItems.length === 1 ? 'item' : 'items'}
-                    </span>
-                  </div>
+              <button
+                type="button"
+                onClick={openPasswordPrompt}
+                className="inline-flex items-center gap-1 rounded-xl border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#7E22CE] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Lock className="w-3 h-3" />
+                <span>Open Admin Panel</span>
+              </button>
+            </div>
 
-                  {/* Clean Category Filter Bar */}
-                  {shoppingCategories.length > 1 && (
-                    <div className="flex flex-wrap items-center gap-1.5">
+            {/* 2. DISCOUNT & COMPACT E-COMMERCE SHOPPING GRID */}
+            {(hasDiscountContent || hasShoppingContent) && (
+              <div className="no-print space-y-5 pt-1">
+                {hasDiscountContent && hasShoppingContent && (
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/90 backdrop-blur-md border border-[#EFE2F5]">
                       <button
                         type="button"
-                        onClick={() => setShoppingCategory('ALL')}
-                        className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                          shoppingCategory === 'ALL'
-                            ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
-                            : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                        onClick={() => setSectionTab('all')}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          sectionTab === 'all'
+                            ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                            : 'text-[#5B4B6B] hover:text-[#1F122B]'
                         }`}
                       >
-                        All ({shoppingItems.length})
+                        All Offers &amp; Shop
                       </button>
-                      {shoppingCategories.map((cat) => (
-                        <button
-                          key={cat}
-                          type="button"
-                          onClick={() => setShoppingCategory(cat)}
-                          className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                            shoppingCategory === cat
-                              ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
-                              : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
-                          }`}
-                        >
-                          {cat}
-                        </button>
-                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setSectionTab('discount')}
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          sectionTab === 'discount'
+                            ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                            : 'text-[#5B4B6B] hover:text-[#1F122B]'
+                        }`}
+                      >
+                        <Tag className="w-3.5 h-3.5" />
+                        <span>Discount</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSectionTab('shopping')}
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          sectionTab === 'shopping'
+                            ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                            : 'text-[#5B4B6B] hover:text-[#1F122B]'
+                        }`}
+                      >
+                        <ShoppingBag className="w-3.5 h-3.5" />
+                        <span>Shopping</span>
+                      </button>
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {filteredShoppingItems.length === 0 ? (
-                    <div className="py-10 text-center text-xs text-[#6B5B7B]">
-                      No shopping items found in this category.
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                      {filteredShoppingItems.map((item) => {
-                        const discountPercent =
-                          item.originalPrice && item.originalPrice > item.price
-                            ? Math.round(
-                                ((item.originalPrice - item.price) /
-                                  item.originalPrice) *
-                                  100
-                              )
-                            : 0;
-                        const mainImg =
-                          item.imageDataUrls[0] || item.imageDataUrl || '';
+                {/* DISCOUNT SECTION */}
+                {hasDiscountContent &&
+                  (sectionTab === 'all' || sectionTab === 'discount') && (
+                    <section
+                      aria-label="Discount Offers"
+                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-5 sm:p-6 space-y-4"
+                    >
+                      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+                        <div>
+                          <h2 className="font-display-serif text-xl font-bold text-[#1F122B] flex items-center gap-2">
+                            <Tag className="w-4 h-4 text-[#DB2777] shrink-0" />
+                            <span>
+                              {viewPanel.discount.sectionTitle ||
+                                'Special Discounts & Offers'}
+                            </span>
+                          </h2>
+                          {viewPanel.discount.headline && (
+                            <p className="text-xs sm:text-sm text-[#6B5B7B] mt-0.5">
+                              {viewPanel.discount.headline}
+                            </p>
+                          )}
+                        </div>
+                      </div>
 
-                        return (
-                          <div
-                            key={item.id}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => openProductDetail(item)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                openProductDetail(item);
-                              }
-                            }}
-                            className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all cursor-pointer text-left"
-                          >
-                            <div>
-                              <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
-                                {mainImg ? (
-                                  <img
-                                    src={mainImg}
-                                    alt={item.name}
-                                    referrerPolicy="no-referrer"
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                  />
-                                ) : (
-                                  <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
-                                )}
-                                {discountPercent > 0 && (
-                                  <span className="absolute top-2 left-2 rounded-md bg-[#15803D] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num">
-                                    {discountPercent}% OFF
+                      {viewPanel.discount.offers.length > 0 && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                          {viewPanel.discount.offers.map((offer) => (
+                            <div
+                              key={offer.id}
+                              className="rounded-2xl border border-[#F2E6F7] bg-[#FDF9FE] p-4 flex flex-col justify-between gap-3"
+                            >
+                              <div className="space-y-1.5">
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <h3 className="text-sm font-bold text-[#1F122B]">
+                                    {offer.title}
+                                  </h3>
+                                  <span className="font-mono-num text-sm font-bold text-[#DB2777] shrink-0">
+                                    {offer.discountLabel}
                                   </span>
-                                )}
-                                {item.imageDataUrls.length > 1 && (
-                                  <span className="absolute bottom-1.5 right-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white font-mono-num">
-                                    {item.imageDataUrls.length} photos
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="p-2.5 sm:p-3 space-y-1">
-                                <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
-                                  {item.category}
                                 </div>
-                                <h3 className="text-xs sm:text-sm font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2.25rem]">
-                                  {item.name}
-                                </h3>
-                                {(item.size || item.color) && (
-                                  <div className="text-[10px] text-[#6B5B7B] truncate">
-                                    {[
-                                      item.size ? `Size ${item.size}` : '',
-                                      item.color,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(' · ')}
-                                  </div>
+                                {offer.description && (
+                                  <p className="text-xs text-[#5B4B6B] leading-relaxed">
+                                    {offer.description}
+                                  </p>
                                 )}
                               </div>
-                            </div>
 
-                            <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
-                              <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
-                                <span className="text-sm sm:text-base font-bold text-[#1F122B]">
-                                  {formatCurrency(item.price, sym)}
-                                </span>
-                                {item.originalPrice &&
-                                  item.originalPrice > item.price && (
-                                    <span className="text-[11px] text-[#8E7C9E] line-through">
-                                      {formatCurrency(item.originalPrice, sym)}
-                                    </span>
+                              {(offer.promoCode || offer.validTill) && (
+                                <div className="pt-2.5 border-t border-[#EFE2F5] flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  <span className="text-[#6B5B7B]">
+                                    {offer.validTill || 'Limited time offer'}
+                                  </span>
+                                  {offer.promoCode && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleCopyCode(
+                                          offer.id,
+                                          offer.promoCode!
+                                        )
+                                      }
+                                      className="inline-flex items-center gap-1 font-mono-num font-bold text-[#7E22CE] hover:text-[#DB2777] cursor-pointer whitespace-nowrap"
+                                    >
+                                      {copiedCodeId === offer.id ? (
+                                        <>
+                                          <Check className="w-3.5 h-3.5 text-[#15803D]" />
+                                          <span className="text-[#15803D]">
+                                            Copied
+                                          </span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy className="w-3.5 h-3.5" />
+                                          <span>{offer.promoCode}</span>
+                                        </>
+                                      )}
+                                    </button>
                                   )}
-                              </div>
-
-                              <div className="w-full rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-1.5 px-2 text-center text-[11px] font-semibold text-white group-hover:opacity-95">
-                                View &amp; Order
-                              </div>
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
                   )}
-                </section>
-              )}
-          </div>
+
+                {/* COMPACT FLIPKART/AMAZON STYLE SHOPPING GRID */}
+                {hasShoppingContent &&
+                  (sectionTab === 'all' || sectionTab === 'shopping') && (
+                    <section
+                      aria-label="Shopping Collection"
+                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-4 sm:p-6 space-y-4"
+                    >
+                      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+                        <div>
+                          <h2 className="font-display-serif text-xl font-bold text-[#1F122B] flex items-center gap-2">
+                            <ShoppingBag className="w-4 h-4 text-[#7E22CE] shrink-0" />
+                            <span>
+                              {viewPanel.shopping.sectionTitle ||
+                                'Shop Our Collection'}
+                            </span>
+                          </h2>
+                          {viewPanel.shopping.subtitle && (
+                            <p className="text-xs sm:text-sm text-[#6B5B7B] mt-0.5">
+                              {viewPanel.shopping.subtitle}
+                            </p>
+                          )}
+                        </div>
+                        <span className="font-mono-num text-xs font-semibold text-[#6B5B7B]">
+                          {filteredShoppingItems.length}{' '}
+                          {filteredShoppingItems.length === 1
+                            ? 'item'
+                            : 'items'}
+                        </span>
+                      </div>
+
+                      {/* Category Filter Bar (Groups + Individual Categories) */}
+                      {(shoppingCategories.length > 1 ||
+                        hasBeautyGroup ||
+                        hasPerfumeGroup) && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setShoppingCategory('ALL')}
+                            className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                              shoppingCategory === 'ALL'
+                                ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                                : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                            }`}
+                          >
+                            All ({shoppingItems.length})
+                          </button>
+                          {hasBeautyGroup && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setShoppingCategory('GROUP:BEAUTY')
+                              }
+                              className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                                shoppingCategory === 'GROUP:BEAUTY'
+                                  ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
+                              }`}
+                            >
+                              Beauty &amp; Accessories
+                            </button>
+                          )}
+                          {hasPerfumeGroup && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setShoppingCategory('GROUP:PERFUME')
+                              }
+                              className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                                shoppingCategory === 'GROUP:PERFUME'
+                                  ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
+                              }`}
+                            >
+                              Perfume Collection
+                            </button>
+                          )}
+                          {shoppingCategories.map((cat) => (
+                            <button
+                              key={cat}
+                              type="button"
+                              onClick={() => setShoppingCategory(cat)}
+                              className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                                shoppingCategory === cat
+                                  ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                              }`}
+                            >
+                              {cat}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {filteredShoppingItems.length === 0 ? (
+                        <div className="py-10 text-center text-xs text-[#6B5B7B]">
+                          No shopping items found in this category.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                          {filteredShoppingItems.map((item) => {
+                            const discountPercent =
+                              item.originalPrice &&
+                              item.originalPrice > item.price
+                                ? Math.round(
+                                    ((item.originalPrice - item.price) /
+                                      item.originalPrice) *
+                                      100
+                                  )
+                                : 0;
+                            const mainImg =
+                              item.imageDataUrls[0] || item.imageDataUrl || '';
+
+                            return (
+                              <div
+                                key={item.id}
+                                className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
+                              >
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => openProductDetail(item)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      openProductDetail(item);
+                                    }
+                                  }}
+                                  className="cursor-pointer"
+                                >
+                                  <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                                    {mainImg ? (
+                                      <img
+                                        src={mainImg}
+                                        alt={item.name}
+                                        referrerPolicy="no-referrer"
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                      />
+                                    ) : (
+                                      <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
+                                    )}
+                                    {discountPercent > 0 && (
+                                      <span className="absolute top-2 left-2 rounded-md bg-[#15803D] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num">
+                                        {discountPercent}% OFF
+                                      </span>
+                                    )}
+                                    {item.imageDataUrls.length > 1 && (
+                                      <span className="absolute bottom-1.5 right-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white font-mono-num">
+                                        {item.imageDataUrls.length} photos
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="p-2.5 sm:p-3 space-y-1">
+                                    <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
+                                      {item.category}
+                                    </div>
+                                    <h3 className="text-xs sm:text-sm font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2.25rem]">
+                                      {item.name}
+                                    </h3>
+                                    {(item.size || item.color) && (
+                                      <div className="text-[10px] text-[#6B5B7B] truncate">
+                                        {[
+                                          item.size ? `Size ${item.size}` : '',
+                                          item.color,
+                                        ]
+                                          .filter(Boolean)
+                                          .join(' · ')}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
+                                  <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
+                                    <span className="text-sm sm:text-base font-bold text-[#1F122B]">
+                                      {formatCurrency(item.price, sym)}
+                                    </span>
+                                    {item.originalPrice &&
+                                      item.originalPrice > item.price && (
+                                        <span className="text-[11px] text-[#8E7C9E] line-through">
+                                          {formatCurrency(
+                                            item.originalPrice,
+                                            sym
+                                          )}
+                                        </span>
+                                      )}
+                                  </div>
+
+                                  <div className="grid grid-cols-[auto_1fr] gap-1.5">
+                                    <button
+                                      type="button"
+                                      disabled={addingToCart}
+                                      onClick={() =>
+                                        handleAddToCartAction(item, 1)
+                                      }
+                                      title="Add to Cart"
+                                      className="inline-flex items-center justify-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                                    >
+                                      <ShoppingCart className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openProductDetail(item)}
+                                      className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-1.5 px-2 text-center text-[11px] font-semibold text-white hover:opacity-95 cursor-pointer"
+                                    >
+                                      View &amp; Order
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  )}
+              </div>
+            )}
+          </>
         )}
       </main>
 
-      {/* PRODUCT DETAIL + ORDER CHECKOUT MODAL */}
+      {/* PRODUCT DETAIL + AUTH-GATED ORDER CHECKOUT MODAL */}
       {selectedProduct && (
         <div
           className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-5"
@@ -1472,9 +1400,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                               type="button"
                               aria-label="Next photo"
                               onClick={() =>
-                                setActiveImageIndex((prev) =>
-                                  (prev + 1) %
-                                  selectedProduct.imageDataUrls.length
+                                setActiveImageIndex(
+                                  (prev) =>
+                                    (prev + 1) %
+                                    selectedProduct.imageDataUrls.length
                                 )
                               }
                               className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
@@ -1630,17 +1559,37 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     </div>
                   </div>
 
+                  {orderError && (
+                    <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-medium text-[#BE123C]">
+                      {orderError}
+                    </div>
+                  )}
+
                   <div className="pt-2 space-y-2.5">
-                    <button
-                      type="button"
-                      onClick={openCheckoutStep}
-                      className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-5 text-sm font-bold text-white hover:opacity-95 cursor-pointer"
-                    >
-                      <ShoppingBag className="w-4 h-4" />
-                      <span>
-                        Order Now · {formatCurrency(checkoutTotal, sym)}
-                      </span>
-                    </button>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        disabled={addingToCart}
+                        onClick={() =>
+                          handleAddToCartAction(selectedProduct, parsedQty)
+                        }
+                        className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-[#7E22CE] bg-white py-3 px-4 text-xs sm:text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer disabled:opacity-60"
+                      >
+                        <ShoppingCart className="w-4 h-4" />
+                        <span>Add to Cart</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={openCheckoutStep}
+                        className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 cursor-pointer"
+                      >
+                        <ShoppingBag className="w-4 h-4" />
+                        <span>
+                          Order Now · {formatCurrency(checkoutTotal, sym)}
+                        </span>
+                      </button>
+                    </div>
 
                     <a
                       href={buildProductWhatsAppUrl(selectedProduct, settings)}
@@ -1656,7 +1605,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </div>
             )}
 
-            {/* STEP 2: CUSTOMER CHECKOUT & PAYMENT */}
+            {/* STEP 2: AUTHENTICATED CUSTOMER CHECKOUT & PAYMENT */}
             {modalStep === 'checkout' && (
               <form onSubmit={handlePlaceOrder} className="p-5 sm:p-6 space-y-5">
                 {/* Item & Total Summary */}
@@ -1679,7 +1628,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         {selectedProduct.name}
                       </div>
                       <div className="text-xs text-[#6B5B7B] font-mono-num">
-                        Qty: {parsedQty} × {formatCurrency(selectedProduct.price, sym)}
+                        Qty: {parsedQty} ×{' '}
+                        {formatCurrency(selectedProduct.price, sym)}
                       </div>
                     </div>
                   </div>
@@ -1694,7 +1644,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   </div>
                 )}
 
-                {/* Customer Info (Linked by Phone Number) */}
+                {/* Customer Info (Pre-filled from logged-in account) */}
                 <div className="space-y-3">
                   <div className="text-xs font-bold uppercase tracking-wide text-[#4A3B59]">
                     Customer &amp; Delivery Details
@@ -1732,7 +1682,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
                   <div>
                     <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      Full Delivery Address <span className="text-[#DB2777]">*</span>
+                      Full Delivery Address{' '}
+                      <span className="text-[#DB2777]">*</span>
                     </label>
                     <textarea
                       rows={2}
@@ -1915,7 +1866,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
                       <div className="pt-2 border-t border-[#EFE2F5] space-y-2">
                         <div className="text-xs font-semibold text-[#4A3B59]">
-                          Upload Payment Screenshot <span className="text-[#DB2777]">*</span>
+                          Upload Payment Screenshot{' '}
+                          <span className="text-[#DB2777]">*</span>
                         </div>
                         <div className="flex flex-wrap items-center gap-3">
                           <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3.5 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer whitespace-nowrap">
@@ -2003,11 +1955,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     <strong className="font-mono-num text-[#6D28D9]">
                       {placedOrder.orderNumber}
                     </strong>{' '}
-                    has been saved and linked to your phone number{' '}
-                    <strong className="font-mono-num text-[#1F122B]">
-                      {placedOrder.customerPhone}
-                    </strong>
-                    .
+                    has been saved to your account.
                   </p>
                 </div>
 
@@ -2016,6 +1964,25 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     <span className="text-[#6B5B7B]">Item</span>
                     <span className="font-bold text-[#1F122B]">
                       {placedOrder.productName} × {placedOrder.quantity}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-[#6B5B7B] inline-flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      Order Date
+                    </span>
+                    <span className="font-mono-num font-semibold text-[#1F122B]">
+                      {placedOrder.orderDate ||
+                        placedOrder.createdAt.slice(0, 10)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-[#6B5B7B] inline-flex items-center gap-1">
+                      <Truck className="w-3 h-3" />
+                      Est. Delivery
+                    </span>
+                    <span className="font-mono-num font-bold text-[#15803D]">
+                      {placedOrder.estimatedDeliveryDate || 'Within 5 days'}
                     </span>
                   </div>
                   <div className="flex justify-between gap-2">
@@ -2050,24 +2017,22 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 </div>
 
                 <p className="text-xs text-[#6B5B7B] max-w-md mx-auto">
-                  Once our team confirms your order, your official bill/invoice will automatically appear when you search your phone number in View Panel.
+                  Once confirmed by our team, your official bill/invoice will appear automatically in your Account &rarr; Bills tab.
                 </p>
 
                 <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
                   <button
                     type="button"
                     onClick={() => {
-                      const phoneToCheck = placedOrder.customerPhone;
                       closeProductModal();
-                      setLookupMode('phone');
-                      setPhoneQuery(phoneToCheck);
-                      void runPhoneLookup(phoneToCheck);
+                      setAccountTab('orders');
+                      setPortalView('account');
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                     }}
                     className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer"
                   >
-                    <Phone className="w-3.5 h-3.5" />
-                    <span>View My Order &amp; Account</span>
+                    <User className="w-3.5 h-3.5" />
+                    <span>View My Orders &amp; Bills</span>
                   </button>
                   <button
                     type="button"
@@ -2082,6 +2047,19 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           </div>
         </div>
       )}
+
+      {/* Customer Login / Create Account Modal */}
+      <CustomerAuthModal
+        open={authModalOpen}
+        initialMode={authModalMode}
+        noticeBanner={authNotice}
+        onClose={() => {
+          setAuthModalOpen(false);
+          setPendingAction(null);
+          setAuthNotice('');
+        }}
+        onSuccess={handleCustomerAuthSuccess}
+      />
 
       {/* Admin Panel Password Lock Modal */}
       {showAdminLockModal && (
@@ -2148,7 +2126,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-label={
+                      showPassword ? 'Hide password' : 'Show password'
+                    }
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
                   >
                     {showPassword ? (
@@ -2171,14 +2151,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 <button
                   type="submit"
                   disabled={verifyingPassword}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap cursor-pointer disabled:opacity-60"
+                  className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
                 >
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>{verifyingPassword ? 'Checking...' : 'Unlock Admin Panel'}</span>
+                  {verifyingPassword ? 'Checking...' : 'Unlock Admin'}
                 </button>
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Storefront Notification Toast */}
+      {storeNotice && (
+        <div className="no-print fixed bottom-5 right-4 z-50 rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
+          {storeNotice}
         </div>
       )}
     </div>

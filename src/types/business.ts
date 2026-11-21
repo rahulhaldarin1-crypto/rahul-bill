@@ -97,6 +97,19 @@ export interface BusinessSettings {
   viewPanel?: ViewPanelConfig;
 }
 
+export interface CustomerCartItem {
+  id: string;
+  productId?: string;
+  name: string;
+  category?: string;
+  size?: string;
+  color?: string;
+  price: number;
+  originalPrice?: number;
+  quantity: number;
+  imageDataUrl?: string;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -106,6 +119,12 @@ export interface Client {
   state: string;
   city: string;
   pinCode: string;
+  profilePhotoDataUrl?: string;
+  passwordHash?: string;
+  passwordSalt?: string;
+  runningPasswordEnc?: string;
+  passwordUpdatedAt?: string;
+  cart?: CustomerCartItem[];
   createdAt: string;
   updatedAt: string;
 }
@@ -211,9 +230,24 @@ export interface ExpenseRecord {
 export type CustomerOrderStatus = 'Pending' | 'Confirmed' | 'Cancelled';
 export type CustomerOrderPaymentMethod = 'COD' | 'UPI';
 
+export interface CustomerOrderItem {
+  id: string;
+  productId?: string;
+  productName: string;
+  productCategory?: string;
+  productSize?: string;
+  productColor?: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  imageDataUrl?: string;
+}
+
 export interface CustomerOrder {
   id: string;
   orderNumber: string;
+  orderDate?: string;
+  estimatedDeliveryDate?: string;
   clientId: string;
   customerName: string;
   customerPhone: string;
@@ -223,6 +257,7 @@ export interface CustomerOrder {
   customerCity: string;
   customerState: string;
   customerPinCode: string;
+  items?: CustomerOrderItem[];
   productId?: string;
   productName: string;
   productCategory?: string;

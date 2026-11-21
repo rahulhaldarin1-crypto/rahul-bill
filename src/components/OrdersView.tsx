@@ -221,8 +221,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       {order.orderNumber}
                     </span>
                     <span className="text-xs text-[#8E7C9E] font-mono-num">
-                      {order.createdAt ? order.createdAt.slice(0, 10) : ''}
+                      Ordered: {order.orderDate || (order.createdAt ? order.createdAt.slice(0, 10) : '')}
                     </span>
+                    {order.estimatedDeliveryDate && (
+                      <span className="text-xs text-[#5B4B6B] font-mono-num">
+                        · Est. Delivery: {order.estimatedDeliveryDate}
+                      </span>
+                    )}
                     <span
                       className={`text-xs font-bold ${
                         isConfirmed
@@ -271,30 +276,66 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     )}
                   </div>
 
-                  {/* Product Details */}
-                  <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3.5 space-y-1.5">
+                  {/* Product Details (Multi-item Cart or Single Item) */}
+                  <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3.5 space-y-2">
                     <div className="font-bold text-[#4A3B59] uppercase tracking-wide text-[10px]">
-                      Ordered Item
+                      {order.items && order.items.length > 1
+                        ? `Ordered Items (${order.items.length})`
+                        : 'Ordered Item'}
                     </div>
-                    <div className="text-sm font-bold text-[#1F122B]">
-                      {order.productName}
-                    </div>
-                    <div className="text-[#6B5B7B]">
-                      {[
-                        order.productCategory,
-                        order.productSize ? `Size: ${order.productSize}` : '',
-                        order.productColor ? `Color: ${order.productColor}` : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' · ') || 'Standard Variant'}
-                    </div>
-                    <div className="font-mono-num text-[#1F122B] pt-1">
-                      Qty: <strong>{order.quantity}</strong> ×{' '}
-                      {formatCurrency(order.unitPrice, currencySymbol)} ={' '}
-                      <strong className="text-[#7E22CE]">
-                        {formatCurrency(order.totalAmount, currencySymbol)}
-                      </strong>
-                    </div>
+                    {order.items && order.items.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {order.items.map((it) => (
+                          <div
+                            key={it.id}
+                            className="border-b last:border-b-0 border-[#F4ECF8] pb-1 last:pb-0"
+                          >
+                            <div className="font-bold text-[#1F122B]">
+                              {it.productName}
+                            </div>
+                            <div className="text-[11px] text-[#6B5B7B] flex items-center justify-between gap-2">
+                              <span>
+                                {[
+                                  it.productCategory,
+                                  it.productSize ? `Size: ${it.productSize}` : '',
+                                  it.productColor ? `Color: ${it.productColor}` : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ') || 'Standard'}
+                              </span>
+                              <span className="font-mono-num font-semibold text-[#1F122B] shrink-0">
+                                {it.quantity} × {formatCurrency(it.unitPrice, currencySymbol)} ={' '}
+                                <span className="text-[#7E22CE]">
+                                  {formatCurrency(it.lineTotal, currencySymbol)}
+                                </span>
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-sm font-bold text-[#1F122B]">
+                          {order.productName}
+                        </div>
+                        <div className="text-[#6B5B7B]">
+                          {[
+                            order.productCategory,
+                            order.productSize ? `Size: ${order.productSize}` : '',
+                            order.productColor ? `Color: ${order.productColor}` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || 'Standard Variant'}
+                        </div>
+                        <div className="font-mono-num text-[#1F122B] pt-1">
+                          Qty: <strong>{order.quantity}</strong> ×{' '}
+                          {formatCurrency(order.unitPrice, currencySymbol)} ={' '}
+                          <strong className="text-[#7E22CE]">
+                            {formatCurrency(order.totalAmount, currencySymbol)}
+                          </strong>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {/* Payment & Screenshot */}

@@ -1,6 +1,8 @@
 import {
   BusinessSettings,
   Client,
+  CustomerCartItem,
+  CustomerOrderItem,
   CustomerOrderPaymentMethod,
   DeliveryStatus,
   ExpenseRecord,
@@ -54,6 +56,38 @@ export const api = {
 
   deleteClient(id: string) {
     return firestoreService.deleteClient(id);
+  },
+
+  setClientPassword(clientId: string, newPassword: string) {
+    return firestoreService.setClientPassword(clientId, newPassword);
+  },
+
+  registerCustomerAccount(payload: {
+    name: string;
+    phone: string;
+    address: string;
+    city?: string;
+    state?: string;
+    pinCode?: string;
+    password: string;
+    profilePhotoDataUrl?: string;
+  }) {
+    return firestoreService.registerCustomerAccount(payload);
+  },
+
+  loginCustomerAccount(phone: string, password: string) {
+    return firestoreService.loginCustomerAccount(phone, password);
+  },
+
+  updateCustomerProfilePhoto(clientId: string, profilePhotoDataUrl: string) {
+    return firestoreService.updateCustomerProfilePhoto(
+      clientId,
+      profilePhotoDataUrl
+    );
+  },
+
+  updateCustomerCart(clientId: string, cart: CustomerCartItem[]) {
+    return firestoreService.updateCustomerCart(clientId, cart);
   },
 
   createProduct(payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>) {
@@ -120,11 +154,9 @@ export const api = {
     return firestoreService.restoreBackup(workspace);
   },
 
-  searchPublicBills(query: string) {
-    return firestoreService.searchPublicBills(query);
-  },
-
   createCustomerOrder(payload: {
+    clientId?: string;
+    clearCart?: boolean;
     customerName: string;
     customerPhone: string;
     customerWhatsapp?: string;
@@ -132,6 +164,7 @@ export const api = {
     customerCity?: string;
     customerState?: string;
     customerPinCode?: string;
+    items?: CustomerOrderItem[];
     productId?: string;
     productName: string;
     productCategory?: string;

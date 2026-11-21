@@ -1,0 +1,1171 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  Calendar,
+  Camera,
+  Check,
+  CheckCircle2,
+  Copy,
+  CreditCard,
+  Download,
+  FileText,
+  Image as ImageIcon,
+  LogOut,
+  MapPin,
+  Minus,
+  Package,
+  Phone,
+  Plus,
+  Printer,
+  ShoppingBag,
+  ShoppingCart,
+  Trash2,
+  Truck,
+  Upload,
+  X,
+} from 'lucide-react';
+import {
+  BusinessSettings,
+  Client,
+  CustomerCartItem,
+  CustomerOrder,
+  CustomerOrderItem,
+  CustomerOrderPaymentMethod,
+  Invoice,
+} from '../types/business';
+import { api, formatApiError } from '../utils/api';
+import {
+  CHECKOUT_UPI_ID,
+  DEFAULT_SETTINGS,
+  exportInvoiceElementToPdf,
+  formatCurrency,
+  normalizePhoneDigits,
+  resizeImageFileToDataUrl,
+} from '../utils/calculations';
+import { sanitizeNumericInput } from '../utils/numberInput';
+import { CustomerAvatar } from './CustomerAvatar';
+import { ScaledInvoicePreview } from './ScaledInvoicePreview';
+
+export type CustomerDashboardTab = 'cart' | 'orders' | 'bills';
+
+interface CustomerDashboardViewProps {
+  client: Client;
+  orders: CustomerOrder[];
+  bills: Invoice[];
+  settings?: BusinessSettings;
+  initialTab?: CustomerDashboardTab;
+  onBackToShop: () => void;
+  onLogout: () => void;
+  onClientUpdated: (client: Client) => void;
+}
+
+export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
+  client,
+  orders,
+  bills,
+  settings,
+  initialTab = 'cart',
+  onBackToShop,
+  onLogout,
+  onClientUpdated,
+}) => {
+  const [activeTab, setActiveTab] = useState<CustomerDashboardTab>(initialTab);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [profileError, setProfileError] = useState('');
+
+  // Cart & Checkout states
+  const [cartBusy, setCartBusy] = useState(false);
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
+  const [checkoutName, setCheckoutName] = useState(client.name);
+  const [checkoutPhone, setCheckoutPhone] = useState(client.mobile);
+  const [checkoutWhatsapp, setCheckoutWhatsapp] = useState(
+    client.whatsapp || client.mobile
+  );
+  const [checkoutAddress, setCheckoutAddress] = useState(client.address);
+  const [checkoutCity, setCheckoutCity] = useState(client.city);
+  const [checkoutState, setCheckoutState] = useState(client.state);
+  const [checkoutPin, setCheckoutPin] = useState(client.pinCode);
+  const [checkoutNote, setCheckoutNote] = useState('');
+  const [paymentMethod, setPaymentMethod] =
+    useState<CustomerOrderPaymentMethod>('COD');
+  const [upiScreenshotDataUrl, setUpiScreenshotDataUrl] = useState('');
+  const [uploadingScreenshot, setUploadingScreenshot] = useState(false);
+  const [upiCopied, setUpiCopied] = useState(false);
+  const [placingOrder, setPlacingOrder] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
+  const [orderNotice, setOrderNotice] = useState('');
+
+  // Bill Viewer
+  const [viewingBill, setViewingBill] = useState<Invoice | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    setCheckoutName((prev) => prev || client.name);
+    setCheckoutPhone((prev) => prev || client.mobile);
+    setCheckoutWhatsapp((prev) => prev || client.whatsapp || client.mobile);
+    setCheckoutAddress((prev) => prev || client.address);
+    setCheckoutCity((prev) => prev || client.city);
+    setCheckoutState((prev) => prev || client.state);
+    setCheckoutPin((prev) => prev || client.pinCode);
+  }, [client]);
+
+  const sym = settings?.currencySymbol || '₹';
+  const mergedSettings: BusinessSettings = settings || DEFAULT_SETTINGS;
+  const cart: CustomerCartItem[] = useMemo(
+    () => (Array.isArray(client.cart) ? client.cart : []),
+    [client.cart]
+  );
+
+  const cartSubtotal = useMemo(
+    () =>
+      Number(
+        cart
+          .reduce(
+            (sum, item) =>
+              sum +
+              Math.max(0, Number(item.price) || 0) *
+                Math.max(1, Number(item.quantity) || 1),
+            0
+          )
+          .toFixed(2)
+      ),
+    [cart]
+  );
+
+  const cartItemCount = useMemo(
+    () => cart.reduce((sum, item) => sum + Math.max(1, item.quantity || 1), 0),
+    [cart]
+  );
+
+  const handleProfilePhotoChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setProfileError('');
+    setPhotoUploading(true);
+    try {
+      const dataUrl = await resizeImageFileToDataUrl(file, 240, {
+        quality: 0.78,
+        preserveTransparency: false,
+        maxDataUrlLength: 48_000,
+      });
+      const updated = await api.updateCustomerProfilePhoto(client.id, dataUrl);
+      onClientUpdated(updated);
+    } catch (err) {
+      setProfileError(
+        formatApiError(err, 'Could not update your profile picture.')
+      );
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  const handleRemoveProfilePhoto = async () => {
+    setProfileError('');
+    setPhotoUploading(true);
+    try {
+      const updated = await api.updateCustomerProfilePhoto(client.id, '');
+      onClientUpdated(updated);
+    } catch (err) {
+      setProfileError(
+        formatApiError(err, 'Could not remove profile picture.')
+      );
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  const syncCart = async (nextCart: CustomerCartItem[]) => {
+    setCartBusy(true);
+    setCheckoutError('');
+    try {
+      const updated = await api.updateCustomerCart(client.id, nextCart);
+      onClientUpdated(updated);
+    } catch (err) {
+      setCheckoutError(formatApiError(err, 'Could not update cart.'));
+    } finally {
+      setCartBusy(false);
+    }
+  };
+
+  const handleStepQty = async (itemId: string, delta: number) => {
+    const nextCart = cart
+      .map((item) => {
+        if (item.id !== itemId) return item;
+        const nextQty = Math.max(0, Math.floor((item.quantity || 1) + delta));
+        return { ...item, quantity: nextQty };
+      })
+      .filter((item) => item.quantity > 0);
+    setQtyDrafts((prev) => {
+      const copy = { ...prev };
+      delete copy[itemId];
+      return copy;
+    });
+    await syncCart(nextCart);
+  };
+
+  const handleQtyTextChange = (itemId: string, raw: string) => {
+    const clean = sanitizeNumericInput(raw, { allowDecimal: false });
+    setQtyDrafts((prev) => ({ ...prev, [itemId]: clean }));
+  };
+
+  const handleQtyTextCommit = async (itemId: string) => {
+    const draft = qtyDrafts[itemId];
+    if (draft === undefined) return;
+    const parsed = Math.max(1, Math.floor(Number(draft) || 1));
+    setQtyDrafts((prev) => {
+      const copy = { ...prev };
+      delete copy[itemId];
+      return copy;
+    });
+    const nextCart = cart.map((item) =>
+      item.id === itemId ? { ...item, quantity: parsed } : item
+    );
+    await syncCart(nextCart);
+  };
+
+  const handleRemoveCartItem = async (itemId: string) => {
+    const nextCart = cart.filter((item) => item.id !== itemId);
+    await syncCart(nextCart);
+  };
+
+  const handleClearCart = async () => {
+    await syncCart([]);
+  };
+
+  const handleCopyUpi = async () => {
+    try {
+      await navigator.clipboard.writeText(CHECKOUT_UPI_ID);
+      setUpiCopied(true);
+      setTimeout(() => setUpiCopied(false), 2200);
+    } catch {
+      // ignore clipboard restrictions
+    }
+  };
+
+  const handleUploadUpiScreenshot = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setCheckoutError('');
+    setUploadingScreenshot(true);
+    try {
+      const dataUrl = await resizeImageFileToDataUrl(file, 640, {
+        quality: 0.72,
+        preserveTransparency: false,
+        maxDataUrlLength: 140_000,
+      });
+      setUpiScreenshotDataUrl(dataUrl);
+    } catch (err) {
+      setCheckoutError(
+        err instanceof Error
+          ? err.message
+          : 'Invalid screenshot image. Please choose JPG or PNG.'
+      );
+    } finally {
+      setUploadingScreenshot(false);
+    }
+  };
+
+  const handlePlaceCartOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (cart.length === 0) return;
+    setCheckoutError('');
+    setOrderNotice('');
+
+    if (!checkoutName.trim()) {
+      setCheckoutError('Please enter your full name.');
+      return;
+    }
+    if (normalizePhoneDigits(checkoutPhone).length < 8) {
+      setCheckoutError('Please enter a valid 10-digit phone number.');
+      return;
+    }
+    if (!checkoutAddress.trim()) {
+      setCheckoutError('Please enter your full delivery address.');
+      return;
+    }
+    if (paymentMethod === 'UPI' && !upiScreenshotDataUrl) {
+      setCheckoutError(
+        `Please upload your UPI payment screenshot after paying to ${CHECKOUT_UPI_ID}.`
+      );
+      return;
+    }
+
+    const orderItems: CustomerOrderItem[] = cart.map((item) => {
+      const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+      const unitPrice = Math.max(0, Number(item.price) || 0);
+      return {
+        id: item.id,
+        productId: item.productId,
+        productName: item.name,
+        productCategory: item.category,
+        productSize: item.size,
+        productColor: item.color,
+        quantity: qty,
+        unitPrice,
+        lineTotal: Number((qty * unitPrice).toFixed(2)),
+        imageDataUrl: item.imageDataUrl,
+      };
+    });
+
+    const totalUnits = orderItems.reduce((s, i) => s + i.quantity, 0);
+    const first = orderItems[0];
+
+    setPlacingOrder(true);
+    try {
+      const res = await api.createCustomerOrder({
+        clientId: client.id,
+        clearCart: true,
+        customerName: checkoutName.trim(),
+        customerPhone: checkoutPhone.trim(),
+        customerWhatsapp: checkoutWhatsapp.trim() || checkoutPhone.trim(),
+        customerAddress: checkoutAddress.trim(),
+        customerCity: checkoutCity.trim(),
+        customerState: checkoutState.trim(),
+        customerPinCode: checkoutPin.trim(),
+        items: orderItems,
+        productId: first?.productId,
+        productName:
+          orderItems.length === 1
+            ? first.productName
+            : `${first.productName} + ${orderItems.length - 1} more`,
+        productCategory: first?.productCategory,
+        productSize: first?.productSize,
+        productColor: first?.productColor,
+        quantity: totalUnits,
+        unitPrice: first?.unitPrice || 0,
+        paymentMethod,
+        paymentScreenshotDataUrl:
+          paymentMethod === 'UPI' ? upiScreenshotDataUrl : '',
+        customerNote: checkoutNote.trim(),
+      });
+      onClientUpdated({ ...res.client, cart: [] });
+      setUpiScreenshotDataUrl('');
+      setCheckoutNote('');
+      setOrderNotice(
+        `Order ${res.order.orderNumber} placed! Estimated delivery: ${res.order.estimatedDeliveryDate || '5 days'}.`
+      );
+      setActiveTab('orders');
+    } catch (err) {
+      setCheckoutError(
+        formatApiError(err, 'Could not place your order. Please try again.')
+      );
+    } finally {
+      setPlacingOrder(false);
+    }
+  };
+
+  const handleDownloadPdf = async (invoice: Invoice) => {
+    if (!sheetRef.current) return;
+    setExportingPdf(true);
+    try {
+      const safeName = (invoice.customerName || 'Customer').replace(
+        /[^a-zA-Z0-9_-]+/g,
+        '_'
+      );
+      await exportInvoiceElementToPdf(
+        sheetRef.current,
+        `${invoice.invoiceNumber}_${safeName}.pdf`
+      );
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const upiDeepLink = `upi://pay?pa=${encodeURIComponent(
+    CHECKOUT_UPI_ID
+  )}&pn=${encodeURIComponent(
+    mergedSettings.businessName || 'Glamour Galleria'
+  )}&am=${cartSubtotal.toFixed(2)}&cu=INR`;
+
+  // Full Bill Preview Modal/View
+  if (viewingBill) {
+    return (
+      <div className="space-y-4">
+        <div className="no-print max-w-[794px] mx-auto flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setViewingBill(null)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back to Account</span>
+            </button>
+            <span className="text-xs font-semibold text-[#1F122B] bg-white/90 rounded-lg px-2.5 py-1">
+              Invoice{' '}
+              <strong className="font-mono-num text-[#6D28D9]">
+                {viewingBill.invoiceNumber}
+              </strong>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Print Bill</span>
+            </button>
+            <button
+              type="button"
+              disabled={exportingPdf}
+              onClick={() => handleDownloadPdf(viewingBill)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+            >
+              <Download className="w-4 h-4" />
+              <span>{exportingPdf ? 'Creating PDF...' : 'Download PDF'}</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="pb-6 max-w-[794px] mx-auto">
+          <ScaledInvoicePreview
+            invoice={viewingBill}
+            settings={mergedSettings}
+            sheetRef={sheetRef}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="no-print space-y-5">
+      {/* Customer Profile Card */}
+      <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <CustomerAvatar
+              photoDataUrl={client.profilePhotoDataUrl}
+              name={client.name}
+              size={64}
+            />
+            <div className="min-w-0 space-y-1">
+              <h1 className="font-display-serif text-xl sm:text-2xl font-bold text-[#1F122B] truncate">
+                {client.name}
+              </h1>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#5B4B6B]">
+                <span className="inline-flex items-center gap-1 font-mono-num font-semibold">
+                  <Phone className="w-3.5 h-3.5 text-[#7E22CE]" />
+                  {client.mobile}
+                </span>
+                {client.address && (
+                  <span className="inline-flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-[#DB2777]" />
+                    {[
+                      client.address,
+                      client.city,
+                      client.state,
+                      client.pinCode,
+                    ]
+                      .filter(Boolean)
+                      .join(', ')}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <label className="inline-flex items-center gap-1 rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
+                  <Camera className="w-3 h-3" />
+                  <span>
+                    {photoUploading
+                      ? 'Saving...'
+                      : client.profilePhotoDataUrl
+                        ? 'Change Photo'
+                        : 'Upload Photo'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={photoUploading}
+                    onChange={handleProfilePhotoChange}
+                    className="sr-only"
+                  />
+                </label>
+                {client.profilePhotoDataUrl && (
+                  <button
+                    type="button"
+                    disabled={photoUploading}
+                    onClick={handleRemoveProfilePhoto}
+                    className="text-[11px] font-semibold text-[#BE123C] hover:underline cursor-pointer"
+                  >
+                    Remove Photo
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onBackToShop}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Continue Shopping</span>
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </div>
+
+        {profileError && (
+          <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-medium text-[#BE123C]">
+            {profileError}
+          </div>
+        )}
+
+        {orderNotice && (
+          <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{orderNotice}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setOrderNotice('')}
+              className="text-[#15803D] hover:opacity-75 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Account Navigation Tabs */}
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-[#F8F3FB] border border-[#EFE2F5]">
+          <button
+            type="button"
+            onClick={() => setActiveTab('cart')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeTab === 'cart'
+                ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <ShoppingCart className="w-3.5 h-3.5" />
+            <span>Cart ({cartItemCount})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('orders')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeTab === 'orders'
+                ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <Package className="w-3.5 h-3.5" />
+            <span>Orders ({orders.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('bills')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeTab === 'bills'
+                ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Bills ({bills.length})</span>
+          </button>
+        </div>
+      </section>
+
+      {/* TAB 1: CART & MULTI-ITEM CHECKOUT */}
+      {activeTab === 'cart' && (
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-5">
+          {cart.length === 0 ? (
+            <div className="py-12 text-center space-y-3">
+              <ShoppingCart className="w-10 h-10 text-[#C4B5D9] mx-auto" />
+              <h2 className="text-base font-bold text-[#1F122B]">
+                Your shopping cart is empty
+              </h2>
+              <p className="text-xs text-[#6B5B7B] max-w-md mx-auto">
+                Browse our Beauty, Perfume &amp; Boutique collection and tap &ldquo;Add to Cart&rdquo; on any product to save it to your account.
+              </p>
+              <button
+                type="button"
+                onClick={onBackToShop}
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer"
+              >
+                <ShoppingBag className="w-4 h-4" />
+                <span>Browse Products</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-6 items-start">
+              {/* Cart Items List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-base font-bold text-[#1F122B]">
+                    Cart Items ({cart.length})
+                  </h2>
+                  <button
+                    type="button"
+                    disabled={cartBusy}
+                    onClick={handleClearCart}
+                    className="text-xs font-semibold text-[#BE123C] hover:underline cursor-pointer"
+                  >
+                    Clear Cart
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {cart.map((item) => {
+                    const qtyVal =
+                      qtyDrafts[item.id] !== undefined
+                        ? qtyDrafts[item.id]
+                        : String(item.quantity || 1);
+                    const lineTotal =
+                      Math.max(1, item.quantity || 1) * (item.price || 0);
+                    return (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 flex items-center gap-3.5"
+                      >
+                        <div className="w-16 h-16 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                          {item.imageDataUrl ? (
+                            <img
+                              src={item.imageDataUrl}
+                              alt={item.name}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="text-sm font-bold text-[#1F122B] truncate">
+                            {item.name}
+                          </div>
+                          <div className="text-[11px] text-[#6B5B7B] truncate">
+                            {[
+                              item.category,
+                              item.size ? `Size ${item.size}` : '',
+                              item.color,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ') || 'Standard'}
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                            <div className="inline-flex items-center rounded-lg border border-[#E6D9EE] bg-white">
+                              <button
+                                type="button"
+                                disabled={cartBusy}
+                                onClick={() => handleStepQty(item.id, -1)}
+                                className="p-1.5 text-[#5B4B6B] hover:text-[#1F122B] cursor-pointer"
+                              >
+                                <Minus className="w-3 h-3" />
+                              </button>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={qtyVal}
+                                onChange={(e) =>
+                                  handleQtyTextChange(item.id, e.target.value)
+                                }
+                                onBlur={() => handleQtyTextCommit(item.id)}
+                                className="w-9 text-center text-xs font-mono-num font-bold text-[#1F122B] bg-transparent focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                disabled={cartBusy}
+                                onClick={() => handleStepQty(item.id, 1)}
+                                className="p-1.5 text-[#5B4B6B] hover:text-[#1F122B] cursor-pointer"
+                              >
+                                <Plus className="w-3 h-3" />
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-2.5">
+                              <span className="font-mono-num text-sm font-bold text-[#7E22CE]">
+                                {formatCurrency(lineTotal, sym)}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={cartBusy}
+                                onClick={() => handleRemoveCartItem(item.id)}
+                                title="Remove from cart"
+                                className="p-1 rounded-lg text-[#6B5B7B] hover:text-[#BE123C] cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-[#4A3B59]">
+                    Cart Total ({cartItemCount} units)
+                  </span>
+                  <span className="font-mono-num text-lg font-bold text-[#7E22CE]">
+                    {formatCurrency(cartSubtotal, sym)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Cart Checkout Form */}
+              <form
+                onSubmit={handlePlaceCartOrder}
+                className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 sm:p-5 space-y-4"
+              >
+                <div className="text-sm font-bold text-[#1F122B]">
+                  Delivery &amp; Payment Checkout
+                </div>
+
+                {checkoutError && (
+                  <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
+                    {checkoutError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
+                      Full Name <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={checkoutName}
+                      onChange={(e) => setCheckoutName(e.target.value)}
+                      className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs sm:text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
+                      Phone Number <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      required
+                      value={checkoutPhone}
+                      onChange={(e) => setCheckoutPhone(e.target.value)}
+                      className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs sm:text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
+                    Delivery Address <span className="text-[#DB2777]">*</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    required
+                    value={checkoutAddress}
+                    onChange={(e) => setCheckoutAddress(e.target.value)}
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs sm:text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={checkoutCity}
+                    onChange={(e) => setCheckoutCity(e.target.value)}
+                    placeholder="City"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-2.5 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    value={checkoutState}
+                    onChange={(e) => setCheckoutState(e.target.value)}
+                    placeholder="State"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-2.5 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={checkoutPin}
+                    onChange={(e) =>
+                      setCheckoutPin(
+                        sanitizeNumericInput(e.target.value, {
+                          allowDecimal: false,
+                        })
+                      )
+                    }
+                    placeholder="PIN"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-2.5 py-2 text-xs font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input
+                    type="tel"
+                    inputMode="tel"
+                    value={checkoutWhatsapp}
+                    onChange={(e) => setCheckoutWhatsapp(e.target.value)}
+                    placeholder="WhatsApp (optional)"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    value={checkoutNote}
+                    onChange={(e) => setCheckoutNote(e.target.value)}
+                    placeholder="Order note (optional)"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                </div>
+
+                {/* Payment Methods */}
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod('COD');
+                      setCheckoutError('');
+                    }}
+                    className={`rounded-xl border p-3 text-left cursor-pointer ${
+                      paymentMethod === 'COD'
+                        ? 'border-[#7E22CE] bg-[#FAF5FF] ring-1 ring-[#7E22CE]'
+                        : 'border-[#E6D9EE] bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-xs font-bold text-[#1F122B]">
+                      <span>Cash on Delivery</span>
+                      <Truck className="w-3.5 h-3.5 text-[#7E22CE]" />
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod('UPI');
+                      setCheckoutError('');
+                    }}
+                    className={`rounded-xl border p-3 text-left cursor-pointer ${
+                      paymentMethod === 'UPI'
+                        ? 'border-[#7E22CE] bg-[#FAF5FF] ring-1 ring-[#7E22CE]'
+                        : 'border-[#E6D9EE] bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-xs font-bold text-[#1F122B]">
+                      <span>Online (UPI)</span>
+                      <CreditCard className="w-3.5 h-3.5 text-[#DB2777]" />
+                    </div>
+                  </button>
+                </div>
+
+                {paymentMethod === 'UPI' && (
+                  <div className="rounded-xl border border-[#E9D5FF] bg-white p-3.5 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[11px] text-[#6B5B7B]">
+                          Pay {formatCurrency(cartSubtotal, sym)} to UPI:
+                        </div>
+                        <div className="font-mono-num text-sm font-bold text-[#6D28D9] select-all">
+                          {CHECKOUT_UPI_ID}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleCopyUpi}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#D8B4FE] px-2.5 py-1 text-[11px] font-semibold text-[#7E22CE] cursor-pointer"
+                        >
+                          {upiCopied ? (
+                            <>
+                              <Check className="w-3 h-3 text-[#15803D]" />
+                              <span className="text-[#15803D]">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+                        <a
+                          href={upiDeepLink}
+                          className="rounded-lg bg-[#7E22CE] px-2.5 py-1 text-[11px] font-semibold text-white"
+                        >
+                          Pay App
+                        </a>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5 pt-1 border-t border-[#F4ECF8]">
+                      <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-[#FDF9FF] px-3 py-1.5 text-[11px] font-semibold text-[#6D28D9] cursor-pointer">
+                        <Upload className="w-3 h-3" />
+                        <span>
+                          {uploadingScreenshot
+                            ? 'Compressing...'
+                            : upiScreenshotDataUrl
+                              ? 'Change Screenshot'
+                              : 'Upload Screenshot *'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={uploadingScreenshot}
+                          onChange={handleUploadUpiScreenshot}
+                          className="sr-only"
+                        />
+                      </label>
+                      {upiScreenshotDataUrl && (
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#15803D]">
+                          <ImageIcon className="w-3.5 h-3.5" />
+                          <span>Attached</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={placingOrder || uploadingScreenshot}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>
+                    {placingOrder
+                      ? 'Placing Order...'
+                      : `Checkout & Place Order (${formatCurrency(cartSubtotal, sym)})`}
+                  </span>
+                </button>
+              </form>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* TAB 2: ORDERS WITH ORDER DATE & ESTIMATED DELIVERY DATE */}
+      {activeTab === 'orders' && (
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-bold text-[#1F122B]">
+              My Orders ({orders.length})
+            </h2>
+          </div>
+
+          {orders.length === 0 ? (
+            <div className="py-12 text-center space-y-2">
+              <Package className="w-9 h-9 text-[#C4B5D9] mx-auto" />
+              <div className="text-sm font-bold text-[#1F122B]">
+                No orders placed yet
+              </div>
+              <p className="text-xs text-[#6B5B7B]">
+                Your placed orders and estimated delivery dates will appear here.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {orders.map((ord) => {
+                const matchedBill = ord.invoiceId
+                  ? bills.find((b) => b.id === ord.invoiceId)
+                  : ord.invoiceNumber
+                    ? bills.find((b) => b.invoiceNumber === ord.invoiceNumber)
+                    : undefined;
+                const displayOrderDate =
+                  ord.orderDate ||
+                  (ord.createdAt ? ord.createdAt.slice(0, 10) : '—');
+                const itemsList =
+                  Array.isArray(ord.items) && ord.items.length > 0
+                    ? ord.items
+                    : [
+                        {
+                          id: ord.id,
+                          productName: ord.productName,
+                          quantity: ord.quantity,
+                          unitPrice: ord.unitPrice,
+                          lineTotal: ord.totalAmount,
+                        },
+                      ];
+
+                return (
+                  <div
+                    key={ord.id}
+                    className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-4 flex flex-col justify-between gap-3"
+                  >
+                    <div className="space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-2">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-mono-num font-bold text-[#6D28D9]">
+                            {ord.orderNumber}
+                          </span>
+                          <span
+                            className={`font-bold ${
+                              ord.status === 'Confirmed'
+                                ? 'text-[#15803D]'
+                                : ord.status === 'Cancelled'
+                                  ? 'text-[#BE123C]'
+                                  : 'text-[#B45309]'
+                            }`}
+                          >
+                            ·{' '}
+                            {ord.status === 'Pending'
+                              ? 'Pending Confirmation'
+                              : ord.status}
+                          </span>
+                        </div>
+                        <span className="font-mono-num text-sm font-bold text-[#1F122B]">
+                          {formatCurrency(ord.totalAmount, sym)}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-xl bg-white border border-[#F4ECF8] px-3 py-2">
+                          <div className="text-[10px] text-[#6B5B7B] flex items-center gap-1">
+                            <Calendar className="w-3 h-3 text-[#7E22CE]" />
+                            <span>Order Date</span>
+                          </div>
+                          <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
+                            {displayOrderDate}
+                          </div>
+                        </div>
+                        <div className="rounded-xl bg-white border border-[#F4ECF8] px-3 py-2">
+                          <div className="text-[10px] text-[#6B5B7B] flex items-center gap-1">
+                            <Truck className="w-3 h-3 text-[#DB2777]" />
+                            <span>Estimated Delivery</span>
+                          </div>
+                          <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
+                            {ord.status === 'Cancelled'
+                              ? 'Cancelled'
+                              : ord.estimatedDeliveryDate || '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 text-xs">
+                        {itemsList.map((it) => (
+                          <div
+                            key={it.id}
+                            className="flex items-center justify-between gap-2 text-[#1F122B]"
+                          >
+                            <span className="truncate font-medium">
+                              {it.productName} × {it.quantity}
+                            </span>
+                            <span className="font-mono-num text-[#5B4B6B] shrink-0">
+                              {formatCurrency(it.lineTotal, sym)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#F4ECF8] text-xs">
+                      <span className="text-[#6B5B7B]">
+                        {ord.paymentMethod === 'UPI'
+                          ? 'Paid via UPI'
+                          : 'Cash on Delivery (COD)'}
+                        {ord.invoiceNumber ? ` · Bill ${ord.invoiceNumber}` : ''}
+                      </span>
+
+                      {matchedBill && (
+                        <button
+                          type="button"
+                          onClick={() => setViewingBill(matchedBill)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          <span>View Bill</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* TAB 3: GENERATED CUSTOMER BILLS & INVOICES */}
+      {activeTab === 'bills' && (
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-bold text-[#1F122B]">
+              My Bills &amp; Invoices ({bills.length})
+            </h2>
+          </div>
+
+          {bills.length === 0 ? (
+            <div className="py-12 text-center space-y-2">
+              <FileText className="w-9 h-9 text-[#C4B5D9] mx-auto" />
+              <div className="text-sm font-bold text-[#1F122B]">
+                No bills generated yet
+              </div>
+              <p className="text-xs text-[#6B5B7B]">
+                Once your order is confirmed, your official bill will automatically appear here for viewing or PDF download.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {bills.map((inv) => (
+                <div
+                  key={inv.id}
+                  className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-4 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-mono-num text-sm font-bold text-[#6D28D9]">
+                        {inv.invoiceNumber}
+                      </span>
+                      <span className="font-mono-num text-[#6B5B7B]">
+                        · {inv.invoiceDate}
+                      </span>
+                      <span className="inline-flex items-center gap-1 font-semibold text-[#7E22CE]">
+                        · <Truck className="w-3 h-3" /> {inv.deliveryStatus}
+                      </span>
+                    </div>
+                    <div className="text-xs text-[#5B4B6B] truncate">
+                      {inv.items.map((i) => `${i.productName} ×${i.quantity}`).join(', ')}
+                    </div>
+                    <div className="text-xs font-mono-num font-bold text-[#1F122B]">
+                      Total: {formatCurrency(inv.totalAmount, sym)}
+                      {inv.dueAmount > 0 ? (
+                        <span className="ml-2 text-[#BE123C]">
+                          (Due: {formatCurrency(inv.dueAmount, sym)})
+                        </span>
+                      ) : (
+                        <span className="ml-2 text-[#15803D]">(Paid)</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setViewingBill(inv)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>View / PDF</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+};
