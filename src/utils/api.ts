@@ -7,32 +7,9 @@ import {
   PaymentMethod,
   PaymentRecord,
   Product,
-  UserAccount,
   WorkspaceData,
 } from '../types/business';
 import { localFallback } from './localFallback';
-
-const TOKEN_KEY = 'gg_auth_token_v1';
-
-export function getStoredToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setStoredToken(token: string | null): void {
-  try {
-    if (token) {
-      localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(TOKEN_KEY);
-    }
-  } catch {
-    // ignore storage failures
-  }
-}
 
 let backendAvailablePromise: Promise<boolean> | null = null;
 
@@ -58,7 +35,6 @@ async function request<T>(
   options: RequestInit,
   fallbackFn: () => T | Promise<T>
 ): Promise<T> {
-  const token = getStoredToken();
   const hasBackend = await hasBackendServer();
   if (!hasBackend) {
     return fallbackFn();
@@ -68,9 +44,6 @@ async function request<T>(
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> | undefined),
   };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
 
   const res = await fetch(path, { ...options, headers });
   const ct = res.headers.get('content-type') || '';
@@ -87,53 +60,9 @@ async function request<T>(
 }
 
 export const api = {
-  async register(payload: { name: string; email: string; password: string }) {
-    const res = await request<{
-      token: string;
-      user: UserAccount;
-      workspace: WorkspaceData;
-    }>(
-      '/api/auth/register',
-      { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.register(payload)
-    );
-    setStoredToken(res.token);
-    return res;
-  },
-
-  async login(payload: { email: string; password: string }) {
-    const res = await request<{
-      token: string;
-      user: UserAccount;
-      workspace: WorkspaceData;
-    }>(
-      '/api/auth/login',
-      { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.login(payload)
-    );
-    setStoredToken(res.token);
-    return res;
-  },
-
-  async fetchSession() {
-    return request<{ user: UserAccount; workspace: WorkspaceData }>(
-      '/api/auth/me',
-      {},
-      () => localFallback.fetchSession(getStoredToken())
-    );
-  },
-
-  async changePassword(payload: { currentPassword: string; newPassword: string }) {
-    return request<{ ok: boolean }>(
-      '/api/auth/change-password',
-      { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.changePassword(getStoredToken(), payload)
-    );
-  },
-
   async fetchWorkspace() {
     return request<WorkspaceData>('/api/workspace', {}, () =>
-      localFallback.fetchWorkspace(getStoredToken())
+      localFallback.fetchWorkspace()
     );
   },
 
@@ -141,7 +70,7 @@ export const api = {
     return request<BusinessSettings>(
       '/api/workspace/settings',
       { method: 'PUT', body: JSON.stringify(settings) },
-      () => localFallback.updateSettings(getStoredToken(), settings)
+      () => localFallback.updateSettings(settings)
     );
   },
 
@@ -149,7 +78,7 @@ export const api = {
     return request<Client>(
       '/api/workspace/clients',
       { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.createClient(getStoredToken(), payload)
+      () => localFallback.createClient(payload)
     );
   },
 
@@ -160,7 +89,7 @@ export const api = {
     return request<Client>(
       `/api/workspace/clients/${id}`,
       { method: 'PUT', body: JSON.stringify(payload) },
-      () => localFallback.updateClient(getStoredToken(), id, payload)
+      () => localFallback.updateClient(id, payload)
     );
   },
 
@@ -168,7 +97,7 @@ export const api = {
     return request<{ ok: boolean }>(
       `/api/workspace/clients/${id}`,
       { method: 'DELETE' },
-      () => localFallback.deleteClient(getStoredToken(), id)
+      () => localFallback.deleteClient(id)
     );
   },
 
@@ -176,7 +105,7 @@ export const api = {
     return request<Product>(
       '/api/workspace/products',
       { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.createProduct(getStoredToken(), payload)
+      () => localFallback.createProduct(payload)
     );
   },
 
@@ -187,7 +116,7 @@ export const api = {
     return request<Product>(
       `/api/workspace/products/${id}`,
       { method: 'PUT', body: JSON.stringify(payload) },
-      () => localFallback.updateProduct(getStoredToken(), id, payload)
+      () => localFallback.updateProduct(id, payload)
     );
   },
 
@@ -195,7 +124,7 @@ export const api = {
     return request<{ ok: boolean }>(
       `/api/workspace/products/${id}`,
       { method: 'DELETE' },
-      () => localFallback.deleteProduct(getStoredToken(), id)
+      () => localFallback.deleteProduct(id)
     );
   },
 
@@ -207,7 +136,7 @@ export const api = {
     }>(
       '/api/workspace/invoices',
       { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.createInvoice(getStoredToken(), payload)
+      () => localFallback.createInvoice(payload)
     );
   },
 
@@ -219,7 +148,7 @@ export const api = {
     }>(
       `/api/workspace/invoices/${id}`,
       { method: 'PUT', body: JSON.stringify(payload) },
-      () => localFallback.updateInvoice(getStoredToken(), id, payload)
+      () => localFallback.updateInvoice(id, payload)
     );
   },
 
@@ -227,7 +156,7 @@ export const api = {
     return request<{ ok: boolean; products: Product[] }>(
       `/api/workspace/invoices/${id}`,
       { method: 'DELETE' },
-      () => localFallback.deleteInvoice(getStoredToken(), id)
+      () => localFallback.deleteInvoice(id)
     );
   },
 
@@ -241,7 +170,7 @@ export const api = {
     return request<{ payment: PaymentRecord; invoice: Invoice }>(
       '/api/workspace/payments',
       { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.createPayment(getStoredToken(), payload)
+      () => localFallback.createPayment(payload)
     );
   },
 
@@ -249,7 +178,7 @@ export const api = {
     return request<{ ok: boolean; invoice?: Invoice }>(
       `/api/workspace/payments/${id}`,
       { method: 'DELETE' },
-      () => localFallback.deletePayment(getStoredToken(), id)
+      () => localFallback.deletePayment(id)
     );
   },
 
@@ -264,7 +193,7 @@ export const api = {
     return request<Invoice>(
       `/api/workspace/deliveries/${invoiceId}`,
       { method: 'PUT', body: JSON.stringify(payload) },
-      () => localFallback.updateDelivery(getStoredToken(), invoiceId, payload)
+      () => localFallback.updateDelivery(invoiceId, payload)
     );
   },
 
@@ -272,7 +201,7 @@ export const api = {
     return request<ExpenseRecord>(
       '/api/workspace/expenses',
       { method: 'POST', body: JSON.stringify(payload) },
-      () => localFallback.createExpense(getStoredToken(), payload)
+      () => localFallback.createExpense(payload)
     );
   },
 
@@ -280,7 +209,7 @@ export const api = {
     return request<{ ok: boolean }>(
       `/api/workspace/expenses/${id}`,
       { method: 'DELETE' },
-      () => localFallback.deleteExpense(getStoredToken(), id)
+      () => localFallback.deleteExpense(id)
     );
   },
 
@@ -288,7 +217,7 @@ export const api = {
     return request<WorkspaceData>(
       '/api/workspace/restore',
       { method: 'POST', body: JSON.stringify(workspace) },
-      () => localFallback.restoreBackup(getStoredToken(), workspace)
+      () => localFallback.restoreBackup(workspace)
     );
   },
 

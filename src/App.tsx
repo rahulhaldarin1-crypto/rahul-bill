@@ -27,10 +27,9 @@ import {
   Invoice,
   PaymentMethod,
   Product,
-  UserAccount,
   WorkspaceData,
 } from './types/business';
-import { api, getStoredToken, setStoredToken } from './utils/api';
+import { api } from './utils/api';
 import { createEmptyWorkspace } from './utils/calculations';
 
 interface HistoryEntry {
@@ -39,10 +38,9 @@ interface HistoryEntry {
 }
 
 export default function App() {
-  const [authChecking, setAuthChecking] = useState(true);
-  const [user, setUser] = useState<UserAccount | null>(null);
+  const [loading, setLoading] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
-  const [showViewPanel, setShowViewPanel] = useState(false);
+  const [showViewPanel, setShowViewPanel] = useState(true);
 
   const [route, setRoute] = useState<AppRoute>('dashboard');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -60,39 +58,20 @@ export default function App() {
     }, 2600);
   }, []);
 
-  // Restore session if token exists
+  // Load Admin Panel workspace directly (no login required)
   useEffect(() => {
-    const token = getStoredToken();
-    if (!token) {
-      setAuthChecking(false);
-      return;
-    }
     api
-      .fetchSession()
+      .fetchWorkspace()
       .then((data) => {
-        setUser(data.user);
-        setWorkspace(data.workspace);
+        setWorkspace(data);
       })
       .catch(() => {
-        setStoredToken(null);
+        showToast('Could not connect to server. Please refresh.');
       })
       .finally(() => {
-        setAuthChecking(false);
+        setLoading(false);
       });
-  }, []);
-
-  const handleSignOut = () => {
-    setStoredToken(null);
-    setUser(null);
-    setWorkspace(createEmptyWorkspace());
-    setShowViewPanel(false);
-    setRoute('dashboard');
-    setHistory([]);
-    setSelectedClientId(null);
-    setEditingClient(null);
-    setBillClientId(null);
-    setEditingInvoice(null);
-  };
+  }, [showToast]);
 
   const navigateTo = useCallback(
     (
@@ -338,7 +317,7 @@ export default function App() {
     showToast('Backup restored successfully.');
   };
 
-  if (authChecking) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-[#FDF9FC] flex items-center justify-center">
         <div className="text-sm font-semibold text-[#7E22CE]">
@@ -348,18 +327,14 @@ export default function App() {
     );
   }
 
-  if (!user || showViewPanel) {
+  if (showViewPanel) {
     return (
       <StartPortal
-        initialPanel="view"
-        isLoggedIn={Boolean(user)}
-        onAuthenticated={(authUser, authWorkspace) => {
-          setUser(authUser);
-          setWorkspace(authWorkspace);
+        onOpenAdminPanel={() => {
           setShowViewPanel(false);
           setRoute('dashboard');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
         }}
-        onBackToDashboard={() => setShowViewPanel(false)}
       />
     );
   }
@@ -412,7 +387,14 @@ export default function App() {
           </nav>
 
           {/* Zone 3: Primary CTA */}
-          <div className="shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowViewPanel(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <span>View Panel</span>
+            </button>
             <button
               type="button"
               onClick={() => navigateTo('client-bill')}
@@ -534,12 +516,10 @@ export default function App() {
 
         {route === 'settings' && (
           <SettingsView
-            user={user}
             workspace={workspace}
             onBack={goBack}
             onSaveSettings={handleSaveSettings}
             onRestoreBackup={handleRestoreBackup}
-            onSignOut={handleSignOut}
           />
         )}
       </main>

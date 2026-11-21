@@ -8,37 +8,29 @@ import {
   PaymentMethod,
   PaymentRecord,
   Product,
-  UserAccount,
   WorkspaceData,
 } from '../types/business';
 import { createEmptyWorkspace, DEFAULT_SETTINGS } from './calculations';
 
 const LOCAL_DB_KEY = 'gg_local_db_v1';
 
-interface LocalStoredUser extends UserAccount {
-  passwordHash: string;
-  salt: string;
-}
-
 interface LocalDatabase {
-  users: LocalStoredUser[];
   workspaces: Record<string, WorkspaceData>;
 }
 
 function loadDb(): LocalDatabase {
   try {
     const raw = localStorage.getItem(LOCAL_DB_KEY);
-    if (!raw) return { users: [], workspaces: {} };
+    if (!raw) return { workspaces: {} };
     const parsed = JSON.parse(raw) as Partial<LocalDatabase>;
     return {
-      users: Array.isArray(parsed.users) ? parsed.users : [],
       workspaces:
         parsed.workspaces && typeof parsed.workspaces === 'object'
           ? parsed.workspaces
           : {},
     };
   } catch {
-    return { users: [], workspaces: {} };
+    return { workspaces: {} };
   }
 }
 
@@ -50,55 +42,17 @@ function saveDb(db: LocalDatabase): void {
   }
 }
 
-function getOrCreateWorkspace(db: LocalDatabase, userId: string): WorkspaceData {
-  if (!db.workspaces[userId]) {
-    db.workspaces[userId] = createEmptyWorkspace();
-  }
-  return db.workspaces[userId];
+function getActiveKey(db: LocalDatabase): string {
+  const keys = Object.keys(db.workspaces || {});
+  return keys.length > 0 ? keys[0] : 'default-workspace';
 }
 
-function randomHex(bytes = 16): string {
-  const arr = new Uint8Array(bytes);
-  crypto.getRandomValues(arr);
-  return Array.from(arr)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-async function hashWithSalt(password: string, salt: string): Promise<string> {
-  const data = new TextEncoder().encode(`${salt}:${password}`);
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    const digest = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(digest))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
+function getActiveWorkspace(db: LocalDatabase): WorkspaceData {
+  const key = getActiveKey(db);
+  if (!db.workspaces[key]) {
+    db.workspaces[key] = createEmptyWorkspace();
   }
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < data.length; i++) {
-    const ch = data[i];
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  return `${(h1 >>> 0).toString(16)}${(h2 >>> 0).toString(16)}`;
-}
-
-function makeLocalToken(userId: string): string {
-  return `local.${btoa(JSON.stringify({ uid: userId, iat: Date.now() }))}`;
-}
-
-function requireLocalUser(db: LocalDatabase, token: string | null): LocalStoredUser {
-  if (!token || !token.startsWith('local.')) {
-    throw new Error('Authentication required. Please sign in.');
-  }
-  try {
-    const decoded = JSON.parse(atob(token.slice(6))) as { uid?: string };
-    const user = db.users.find((u) => u.id === decoded.uid);
-    if (!user) throw new Error('Account not found. Please sign in again.');
-    return user;
-  } catch {
-    throw new Error('Session expired or invalid. Please sign in again.');
-  }
+  return db.workspaces[key];
 }
 
 function safeNum(v: unknown, fallback = 0): number {
@@ -212,123 +166,24 @@ function adjustStock(
 }
 
 export const localFallback = {
-  async register(payload: { name: string; email: string; password: string }) {
-    const name = payload.name.trim();
-    const email = payload.email.trim().toLowerCase();
-    const password = payload.password;
-
-    if (name.length < 2) {
-      throw new Error('Please enter your full name (at least 2 characters).');
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw new Error('Please enter a valid email address.');
-    }
-    if (password.length < 6) {
-      throw new Error('Password must be at least 6 characters long.');
-    }
-
+  fetchWorkspace(): WorkspaceData {
     const db = loadDb();
-    if (db.users.some((u) => u.email === email)) {
-      throw new Error('An account with this email already exists. Please sign in.');
-    }
-
-    const salt = randomHex(16);
-    const passwordHash = await hashWithSalt(password, salt);
-    const user: LocalStoredUser = {
-      id: `usr-${crypto.randomUUID()}`,
-      name,
-      email,
-      passwordHash,
-      salt,
-      createdAt: new Date().toISOString(),
-    };
-    db.users.push(user);
-    const workspace = getOrCreateWorkspace(db, user.id);
-    saveDb(db);
-
-    return {
-      token: makeLocalToken(user.id),
-      user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
-      workspace,
-    };
+    return getActiveWorkspace(db);
   },
 
-  async login(payload: { email: string; password: string }) {
-    const email = payload.email.trim().toLowerCase();
-    const password = payload.password;
-    if (!email || !password) {
-      throw new Error('Email and password are required.');
-    }
+  updateSettings(next: BusinessSettings): BusinessSettings {
     const db = loadDb();
-    const user = db.users.find((u) => u.email === email);
-    if (!user) {
-      throw new Error('Invalid email or password.');
-    }
-    const hash = await hashWithSalt(password, user.salt);
-    if (hash !== user.passwordHash) {
-      throw new Error('Invalid email or password.');
-    }
-    const workspace = getOrCreateWorkspace(db, user.id);
-    saveDb(db);
-    return {
-      token: makeLocalToken(user.id),
-      user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
-      workspace,
-    };
-  },
-
-  fetchSession(token: string | null) {
-    const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const workspace = getOrCreateWorkspace(db, user.id);
-    return {
-      user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
-      workspace,
-    };
-  },
-
-  async changePassword(
-    token: string | null,
-    payload: { currentPassword: string; newPassword: string }
-  ) {
-    const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const currentHash = await hashWithSalt(payload.currentPassword, user.salt);
-    if (currentHash !== user.passwordHash) {
-      throw new Error('Current password is incorrect.');
-    }
-    if (payload.newPassword.length < 6) {
-      throw new Error('New password must be at least 6 characters long.');
-    }
-    const salt = randomHex(16);
-    user.salt = salt;
-    user.passwordHash = await hashWithSalt(payload.newPassword, salt);
-    saveDb(db);
-    return { ok: true };
-  },
-
-  fetchWorkspace(token: string | null): WorkspaceData {
-    const db = loadDb();
-    const user = requireLocalUser(db, token);
-    return getOrCreateWorkspace(db, user.id);
-  },
-
-  updateSettings(token: string | null, next: BusinessSettings): BusinessSettings {
-    const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     ws.settings = { ...DEFAULT_SETTINGS, ...next };
     saveDb(db);
     return ws.settings;
   },
 
   createClient(
-    token: string | null,
     payload: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>
   ): Client {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const now = new Date().toISOString();
     const client: Client = {
       ...payload,
@@ -342,13 +197,11 @@ export const localFallback = {
   },
 
   updateClient(
-    token: string | null,
     id: string,
     payload: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>
   ): Client {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const idx = ws.clients.findIndex((c) => c.id === id);
     if (idx === -1) throw new Error('Customer not found.');
     const updated: Client = {
@@ -361,22 +214,19 @@ export const localFallback = {
     return updated;
   },
 
-  deleteClient(token: string | null, id: string) {
+  deleteClient(id: string) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     ws.clients = ws.clients.filter((c) => c.id !== id);
     saveDb(db);
     return { ok: true };
   },
 
   createProduct(
-    token: string | null,
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>
   ): Product {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const now = new Date().toISOString();
     const product: Product = {
       ...payload,
@@ -390,13 +240,11 @@ export const localFallback = {
   },
 
   updateProduct(
-    token: string | null,
     id: string,
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>
   ): Product {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const idx = ws.products.findIndex((p) => p.id === id);
     if (idx === -1) throw new Error('Product not found.');
     const updated: Product = {
@@ -409,19 +257,17 @@ export const localFallback = {
     return updated;
   },
 
-  deleteProduct(token: string | null, id: string) {
+  deleteProduct(id: string) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     ws.products = ws.products.filter((p) => p.id !== id);
     saveDb(db);
     return { ok: true };
   },
 
-  createInvoice(token: string | null, payload: Partial<Invoice>) {
+  createInvoice(payload: Partial<Invoice>) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const invoice = normalizeInvoice({ ...payload, id: `inv-${crypto.randomUUID()}` });
     adjustStock(ws, invoice.items, -1);
     ws.invoices.unshift(invoice);
@@ -448,10 +294,9 @@ export const localFallback = {
     return { invoice, payment, products: ws.products };
   },
 
-  updateInvoice(token: string | null, id: string, payload: Partial<Invoice>) {
+  updateInvoice(id: string, payload: Partial<Invoice>) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const idx = ws.invoices.findIndex((i) => i.id === id);
     if (idx === -1) throw new Error('Invoice not found.');
     const existing = ws.invoices[idx];
@@ -473,10 +318,9 @@ export const localFallback = {
     return { invoice: updated, products: ws.products, payments: ws.payments };
   },
 
-  deleteInvoice(token: string | null, id: string) {
+  deleteInvoice(id: string) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const existing = ws.invoices.find((i) => i.id === id);
     if (existing) adjustStock(ws, existing.items, 1);
     ws.invoices = ws.invoices.filter((i) => i.id !== id);
@@ -485,19 +329,15 @@ export const localFallback = {
     return { ok: true, products: ws.products };
   },
 
-  createPayment(
-    token: string | null,
-    payload: {
-      invoiceId: string;
-      amountPaid: number;
-      paymentDate: string;
-      paymentMethod: PaymentMethod;
-      note: string;
-    }
-  ) {
+  createPayment(payload: {
+    invoiceId: string;
+    amountPaid: number;
+    paymentDate: string;
+    paymentMethod: PaymentMethod;
+    note: string;
+  }) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const invoice = ws.invoices.find((i) => i.id === payload.invoiceId);
     if (!invoice) throw new Error('Invoice not found for this payment.');
     const amountPaid = Number(safeNum(payload.amountPaid, 0).toFixed(2));
@@ -530,10 +370,9 @@ export const localFallback = {
     return { payment, invoice };
   },
 
-  deletePayment(token: string | null, id: string) {
+  deletePayment(id: string) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const payment = ws.payments.find((p) => p.id === id);
     if (!payment) throw new Error('Payment record not found.');
     ws.payments = ws.payments.filter((p) => p.id !== id);
@@ -551,7 +390,6 @@ export const localFallback = {
   },
 
   updateDelivery(
-    token: string | null,
     invoiceId: string,
     payload: {
       courierName: string;
@@ -560,8 +398,7 @@ export const localFallback = {
     }
   ): Invoice {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const invoice = ws.invoices.find((i) => i.id === invoiceId);
     if (!invoice) throw new Error('Order not found.');
     invoice.courierName = payload.courierName.trim();
@@ -573,12 +410,10 @@ export const localFallback = {
   },
 
   createExpense(
-    token: string | null,
     payload: Omit<ExpenseRecord, 'id' | 'createdAt'>
   ): ExpenseRecord {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     const expense: ExpenseRecord = {
       ...payload,
       id: `exp-${crypto.randomUUID()}`,
@@ -589,18 +424,16 @@ export const localFallback = {
     return expense;
   },
 
-  deleteExpense(token: string | null, id: string) {
+  deleteExpense(id: string) {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
-    const ws = getOrCreateWorkspace(db, user.id);
+    const ws = getActiveWorkspace(db);
     ws.expenses = ws.expenses.filter((e) => e.id !== id);
     saveDb(db);
     return { ok: true };
   },
 
-  restoreBackup(token: string | null, workspace: WorkspaceData): WorkspaceData {
+  restoreBackup(workspace: WorkspaceData): WorkspaceData {
     const db = loadDb();
-    const user = requireLocalUser(db, token);
     const defaults = createEmptyWorkspace();
     const restored: WorkspaceData = {
       settings: { ...defaults.settings, ...(workspace.settings || {}) },
@@ -612,7 +445,7 @@ export const localFallback = {
       payments: Array.isArray(workspace.payments) ? workspace.payments : [],
       expenses: Array.isArray(workspace.expenses) ? workspace.expenses : [],
     };
-    db.workspaces[user.id] = restored;
+    db.workspaces[getActiveKey(db)] = restored;
     saveDb(db);
     return restored;
   },

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import express from 'express';
-import type { NextFunction, Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -106,34 +106,11 @@ interface DatabaseSchema {
   workspaces: Record<string, StoredWorkspace>;
 }
 
-interface AuthenticatedRequest extends Request {
-  authUser?: StoredUser;
-}
-
 function ensureDataDir(): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
 }
-
-function getSessionSecret(): string {
-  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16) {
-    return process.env.SESSION_SECRET;
-  }
-  try {
-    ensureDataDir();
-    if (fs.existsSync(SECRET_FILE)) {
-      return fs.readFileSync(SECRET_FILE, 'utf8').trim();
-    }
-    const generated = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(SECRET_FILE, generated, { encoding: 'utf8', mode: 0o600 });
-    return generated;
-  } catch {
-    return crypto.randomBytes(32).toString('hex');
-  }
-}
-
-const SESSION_SECRET = getSessionSecret();
 
 function createDefaultWorkspace(): StoredWorkspace {
   return {
@@ -212,67 +189,16 @@ function getOrCreateWorkspace(userId: string): StoredWorkspace {
   return dbState.workspaces[userId];
 }
 
-function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
-  const usedSalt = salt || crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, usedSalt, 64).toString('hex');
-  return { hash: derived, salt: usedSalt };
+function getActiveWorkspaceKey(): string {
+  const existingKeys = Object.keys(dbState.workspaces || {});
+  if (existingKeys.length > 0) {
+    return existingKeys[0];
+  }
+  return 'default-workspace';
 }
 
-function verifyPassword(password: string, salt: string, expectedHash: string): boolean {
-  const { hash } = hashPassword(password, salt);
-  const a = Buffer.from(hash, 'hex');
-  const b = Buffer.from(expectedHash, 'hex');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-function createAuthToken(userId: string): string {
-  const payload = Buffer.from(
-    JSON.stringify({ uid: userId, iat: Date.now(), exp: Date.now() + 1000 * 60 * 60 * 24 * 30 })
-  ).toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifyAuthToken(token: string): string | null {
-  const parts = token.split('.');
-  if (parts.length !== 2) return null;
-  const [payload, sig] = parts;
-  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expectedSig);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
-      uid?: string;
-      exp?: number;
-    };
-    if (!decoded.uid || !decoded.exp || decoded.exp < Date.now()) return null;
-    return decoded.uid;
-  } catch {
-    return null;
-  }
-}
-
-function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  if (!token) {
-    res.status(401).json({ error: 'Authentication required. Please sign in.' });
-    return;
-  }
-  const userId = verifyAuthToken(token);
-  if (!userId) {
-    res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
-    return;
-  }
-  const user = dbState.users.find((u) => u.id === userId);
-  if (!user) {
-    res.status(401).json({ error: 'Account not found. Please sign in again.' });
-    return;
-  }
-  req.authUser = user;
-  next();
+function getActiveWorkspace(): StoredWorkspace {
+  return getOrCreateWorkspace(getActiveWorkspaceKey());
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -389,140 +315,14 @@ async function startServer(): Promise<void> {
     res.json({ status: 'ok', app: 'Glamour Galleria' });
   });
 
-  // AUTH ROUTES (Sign In & Create Account)
-  app.post('/api/auth/register', async (req: Request, res: Response) => {
-    const name = String(req.body?.name || '').trim();
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const password = String(req.body?.password || '');
-
-    if (!name || name.length < 2) {
-      res.status(400).json({ error: 'Please enter your full name (at least 2 characters).' });
-      return;
-    }
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      res.status(400).json({ error: 'Please enter a valid email address.' });
-      return;
-    }
-    if (password.length < 6) {
-      res.status(400).json({ error: 'Password must be at least 6 characters long.' });
-      return;
-    }
-
-    const exists = dbState.users.find((u) => u.email === email);
-    if (exists) {
-      res.status(409).json({ error: 'An account with this email already exists. Please sign in.' });
-      return;
-    }
-
-    const { hash, salt } = hashPassword(password);
-    const user: StoredUser = {
-      id: `usr-${crypto.randomUUID()}`,
-      name,
-      email,
-      passwordHash: hash,
-      salt,
-      createdAt: new Date().toISOString(),
-    };
-
-    dbState.users.push(user);
-    const workspace = getOrCreateWorkspace(user.id);
-    await persistDatabase();
-
-    const token = createAuthToken(user.id);
-    res.status(201).json({
-      token,
-      user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
-      workspace,
-    });
-  });
-
-  app.post('/api/auth/login', async (req: Request, res: Response) => {
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const password = String(req.body?.password || '');
-
-    if (!email || !password) {
-      res.status(400).json({ error: 'Email and password are required.' });
-      return;
-    }
-
-    const envEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
-    const envPassword = process.env.ADMIN_PASSWORD || '';
-
-    let user = dbState.users.find((u) => u.email === email);
-
-    if (envEmail && envPassword && email === envEmail) {
-      const a = Buffer.from(password);
-      const b = Buffer.from(envPassword);
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        res.status(401).json({ error: 'Invalid email or password.' });
-        return;
-      }
-      if (!user) {
-        const { hash, salt } = hashPassword(envPassword);
-        user = {
-          id: `usr-${crypto.randomUUID()}`,
-          name: 'Owner',
-          email: envEmail,
-          passwordHash: hash,
-          salt,
-          createdAt: new Date().toISOString(),
-        };
-        dbState.users.push(user);
-        getOrCreateWorkspace(user.id);
-        await persistDatabase();
-      }
-    } else if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
-      res.status(401).json({ error: 'Invalid email or password.' });
-      return;
-    }
-
-    const token = createAuthToken(user.id);
-    const workspace = getOrCreateWorkspace(user.id);
-    res.json({
-      token,
-      user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
-      workspace,
-    });
-  });
-
-  app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-    const user = req.authUser!;
-    const workspace = getOrCreateWorkspace(user.id);
-    res.json({
-      user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
-      workspace,
-    });
-  });
-
-  app.post('/api/auth/change-password', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const user = req.authUser!;
-    const currentPassword = String(req.body?.currentPassword || '');
-    const newPassword = String(req.body?.newPassword || '');
-
-    if (!verifyPassword(currentPassword, user.salt, user.passwordHash)) {
-      res.status(400).json({ error: 'Current password is incorrect.' });
-      return;
-    }
-    if (newPassword.length < 6) {
-      res.status(400).json({ error: 'New password must be at least 6 characters long.' });
-      return;
-    }
-
-    const { hash, salt } = hashPassword(newPassword);
-    user.passwordHash = hash;
-    user.salt = salt;
-    await persistDatabase();
-    res.json({ ok: true });
-  });
-
-  // AUTHENTICATED WORKSPACE ROUTES
-  app.get('/api/workspace', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  // OPEN ADMIN PANEL WORKSPACE ROUTES (No Login Gate)
+  app.get('/api/workspace', (_req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     res.json(workspace);
   });
 
-  app.put('/api/workspace/settings', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.put('/api/workspace/settings', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const body = req.body || {};
     workspace.settings = {
       ...workspace.settings,
@@ -550,8 +350,8 @@ async function startServer(): Promise<void> {
   });
 
   // CLIENTS CRUD
-  app.post('/api/workspace/clients', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.post('/api/workspace/clients', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const body = req.body || {};
     const name = String(body.name || '').trim();
     const mobile = String(body.mobile || '').trim();
@@ -577,8 +377,8 @@ async function startServer(): Promise<void> {
     res.status(201).json(client);
   });
 
-  app.put('/api/workspace/clients/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.put('/api/workspace/clients/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const idx = workspace.clients.findIndex((c) => c.id === req.params.id);
     if (idx === -1) {
       res.status(404).json({ error: 'Customer not found.' });
@@ -607,16 +407,16 @@ async function startServer(): Promise<void> {
     res.json(updated);
   });
 
-  app.delete('/api/workspace/clients/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.delete('/api/workspace/clients/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     workspace.clients = workspace.clients.filter((c) => c.id !== req.params.id);
     await persistDatabase();
     res.json({ ok: true });
   });
 
   // PRODUCTS CRUD
-  app.post('/api/workspace/products', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.post('/api/workspace/products', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const body = req.body || {};
     const name = String(body.name || '').trim();
     if (!name) {
@@ -643,8 +443,8 @@ async function startServer(): Promise<void> {
     res.status(201).json(product);
   });
 
-  app.put('/api/workspace/products/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.put('/api/workspace/products/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const idx = workspace.products.findIndex((p) => p.id === req.params.id);
     if (idx === -1) {
       res.status(404).json({ error: 'Product not found.' });
@@ -674,16 +474,16 @@ async function startServer(): Promise<void> {
     res.json(updated);
   });
 
-  app.delete('/api/workspace/products/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.delete('/api/workspace/products/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     workspace.products = workspace.products.filter((p) => p.id !== req.params.id);
     await persistDatabase();
     res.json({ ok: true });
   });
 
   // INVOICES CRUD (with stock & payment sync)
-  app.post('/api/workspace/invoices', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.post('/api/workspace/invoices', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const raw = req.body || {};
     if (!String(raw.customerName || '').trim()) {
       res.status(400).json({ error: 'Please select or enter a customer.' });
@@ -729,8 +529,8 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.put('/api/workspace/invoices/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.put('/api/workspace/invoices/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const idx = workspace.invoices.findIndex((i) => i.id === req.params.id);
     if (idx === -1) {
       res.status(404).json({ error: 'Invoice not found.' });
@@ -763,8 +563,8 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.delete('/api/workspace/invoices/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.delete('/api/workspace/invoices/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const existing = workspace.invoices.find((i) => i.id === req.params.id);
     if (existing) {
       adjustProductStock(workspace, existing.items, 1);
@@ -776,8 +576,8 @@ async function startServer(): Promise<void> {
   });
 
   // PAYMENTS CRUD
-  app.post('/api/workspace/payments', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.post('/api/workspace/payments', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const body = req.body || {};
     const invoice = workspace.invoices.find((i) => i.id === body.invoiceId);
     if (!invoice) {
@@ -821,8 +621,8 @@ async function startServer(): Promise<void> {
     res.status(201).json({ payment, invoice });
   });
 
-  app.delete('/api/workspace/payments/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.delete('/api/workspace/payments/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const payment = workspace.payments.find((p) => p.id === req.params.id);
     if (!payment) {
       res.status(404).json({ error: 'Payment record not found.' });
@@ -841,8 +641,8 @@ async function startServer(): Promise<void> {
   });
 
   // DELIVERY TRACKING UPDATE
-  app.put('/api/workspace/deliveries/:invoiceId', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.put('/api/workspace/deliveries/:invoiceId', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const invoice = workspace.invoices.find((i) => i.id === req.params.invoiceId);
     if (!invoice) {
       res.status(404).json({ error: 'Order not found.' });
@@ -867,8 +667,8 @@ async function startServer(): Promise<void> {
   });
 
   // EXPENSES CRUD (for Profit & Loss)
-  app.post('/api/workspace/expenses', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.post('/api/workspace/expenses', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     const body = req.body || {};
     const title = String(body.title || '').trim();
     const amount = Number(safeNumber(body.amount, 0).toFixed(2));
@@ -890,15 +690,15 @@ async function startServer(): Promise<void> {
     res.status(201).json(expense);
   });
 
-  app.delete('/api/workspace/expenses/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const workspace = getOrCreateWorkspace(req.authUser!.id);
+  app.delete('/api/workspace/expenses/:id', async (req: Request, res: Response) => {
+    const workspace = getActiveWorkspace();
     workspace.expenses = workspace.expenses.filter((e) => e.id !== req.params.id);
     await persistDatabase();
     res.json({ ok: true });
   });
 
   // BACKUP RESTORE
-  app.post('/api/workspace/restore', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/workspace/restore', async (req: Request, res: Response) => {
     const body = req.body || {};
     if (!body || typeof body !== 'object' || !Array.isArray(body.clients) || !Array.isArray(body.invoices)) {
       res.status(400).json({ error: 'Invalid backup file format.' });
@@ -918,7 +718,7 @@ async function startServer(): Promise<void> {
       payments: Array.isArray(body.payments) ? body.payments : [],
       expenses: Array.isArray(body.expenses) ? body.expenses : [],
     };
-    dbState.workspaces[req.authUser!.id] = restored;
+    dbState.workspaces[getActiveWorkspaceKey()] = restored;
     await persistDatabase();
     res.json(restored);
   });

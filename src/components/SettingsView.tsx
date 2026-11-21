@@ -2,14 +2,11 @@ import React, { useState } from 'react';
 import {
   ArrowLeft,
   Download,
-  KeyRound,
-  LogOut,
   RotateCcw,
   Save,
   Upload,
 } from 'lucide-react';
-import { BusinessSettings, UserAccount, WorkspaceData } from '../types/business';
-import { api } from '../utils/api';
+import { BusinessSettings, WorkspaceData } from '../types/business';
 import {
   DEFAULT_SETTINGS,
   resizeImageFileToDataUrl,
@@ -19,31 +16,22 @@ import { BrandLogo } from './BrandLogo';
 import { ConfirmModal } from './ConfirmModal';
 
 interface SettingsViewProps {
-  user: UserAccount;
   workspace: WorkspaceData;
   onBack: () => void;
   onSaveSettings: (next: BusinessSettings) => Promise<void>;
   onRestoreBackup: (data: WorkspaceData) => Promise<void>;
-  onSignOut: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
-  user,
   workspace,
   onBack,
   onSaveSettings,
   onRestoreBackup,
-  onSignOut,
 }) => {
   const [draft, setDraft] = useState<BusinessSettings>(workspace.settings);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-
-  // Password change
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [changingPass, setChangingPass] = useState(false);
 
   // Restore confirmation
   const [pendingRestore, setPendingRestore] = useState<WorkspaceData | null>(null);
@@ -129,19 +117,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Settings &amp; Backup
             </h1>
             <p className="text-xs text-[#6B5B7B] mt-0.5">
-              Customize branding, invoice defaults, UPI/bank details, currency, and account security.
+              Customize branding, invoice defaults, UPI/bank details, currency, and backup/restore.
             </p>
           </div>
         </div>
-
-        <button
-          type="button"
-          onClick={onSignOut}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          <span>Sign Out ({user.email})</span>
-        </button>
       </div>
 
       {error && (
@@ -399,67 +378,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </label>
         </div>
       </div>
-
-      {/* Account Password Update */}
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setError('');
-          setNotice('');
-          if (newPassword.length < 6) {
-            setError('New password must be at least 6 characters long.');
-            return;
-          }
-          setChangingPass(true);
-          try {
-            await api.changePassword({ currentPassword, newPassword });
-            setCurrentPassword('');
-            setNewPassword('');
-            setNotice('Account password updated successfully.');
-            setTimeout(() => setNotice(''), 2500);
-          } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to update password.');
-          } finally {
-            setChangingPass(false);
-          }
-        }}
-        noValidate
-        className="rounded-2xl border border-[#EFE2F5] bg-white p-5 sm:p-6 space-y-4"
-      >
-        <div className="flex items-center gap-2">
-          <KeyRound className="w-4 h-4 text-[#7E22CE]" />
-          <h2 className="text-base font-bold text-[#1F122B]">Account Security</h2>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className={labelClass}>Current Password</label>
-            <input
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <label className={labelClass}>New Password (min 6 chars)</label>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className={inputClass}
-            />
-          </div>
-        </div>
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={changingPass}
-            className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-4 py-2 text-xs font-semibold text-[#1F122B] hover:border-[#9333EA] cursor-pointer disabled:opacity-60"
-          >
-            <span>{changingPass ? 'Updating...' : 'Update Password'}</span>
-          </button>
-        </div>
-      </form>
 
       <ConfirmModal
         open={Boolean(pendingRestore)}
