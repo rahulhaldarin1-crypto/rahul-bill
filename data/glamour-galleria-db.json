@@ -1,0 +1,41 @@
+{
+  "users": [
+    {
+      "id": "usr-aae55f16-6cb2-4291-9c10-a244f2154566",
+      "name": "Rahul Haldar",
+      "email": "rahulhaldar.in@gmail.com",
+      "passwordHash": "52c8eeef25980573fe36d46b772f3bcf5c89ee313b078a54c6c97fcbcb7cedc6d7ac1f88668a568e88984a914ec5de0e27281826d52c5df2164b6e29014b7cd8",
+      "salt": "82497ca06cd9943b6143b717cdda9cc4",
+      "createdAt": "2026-11-20T19:08:26.867Z"
+    }
+  ],
+  "workspaces": {
+    "usr-aae55f16-6cb2-4291-9c10-a244f2154566": {
+      "settings": {
+        "businessName": "Glamour Galleria",
+        "tagline": "Your Style, Our Priority",
+        "logoDataUrl": "",
+        "address": "",
+        "mobile": "",
+        "whatsapp": "",
+        "gstin": "",
+        "currencySymbol": "₹",
+        "currencyCode": "INR",
+        "invoicePrefix": "GG-",
+        "upiId": "",
+        "upiNumber": "",
+        "bankAccountName": "",
+        "bankAccountNo": "",
+        "bankIfscBranch": "",
+        "invoiceFooterNote": "Every piece is chosen with love to make you feel confident and beautiful. We truly appreciate your trust and support. If you have any question about your order, just message us anytime.",
+        "socialTagLine": "Loved your order? Tag us @glamour.galleria.in and share your look with us!",
+        "lowStockThreshold": 5
+      },
+      "clients": [],
+      "products": [],
+      "invoices": [],
+      "payments": [],
+      "expenses": []
+    }
+  }
+}

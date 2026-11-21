@@ -1,0 +1,8 @@
+{
+  "name": "Glamour Galleria — Invoice Studio",
+  "description": "Automated boutique invoice generator and PDF bill builder for fashion and retail orders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
