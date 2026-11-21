@@ -8,7 +8,8 @@ export type AppRoute =
   | 'payment-history'
   | 'delivery-tracking'
   | 'profit-loss'
-  | 'settings';
+  | 'settings'
+  | 'view-panel-control';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -26,10 +27,56 @@ export interface UserAccount {
   createdAt: string;
 }
 
+export interface ViewPanelDiscountOffer {
+  id: string;
+  title: string;
+  discountLabel: string;
+  promoCode?: string;
+  validTill?: string;
+  description: string;
+}
+
+export interface ViewPanelShoppingItem {
+  id: string;
+  name: string;
+  category: string;
+  price: number;
+  originalPrice?: number;
+  size?: string;
+  color?: string;
+  imageDataUrl?: string;
+  description?: string;
+}
+
+export interface ViewPanelConfig {
+  advertisement: {
+    enabled: boolean;
+    imageDataUrl: string;
+    title: string;
+    subtitle: string;
+    linkUrl: string;
+  };
+  discount: {
+    enabled: boolean;
+    sectionTitle: string;
+    headline: string;
+    offers: ViewPanelDiscountOffer[];
+  };
+  shopping: {
+    enabled: boolean;
+    sectionTitle: string;
+    subtitle: string;
+    includeCatalogProducts: boolean;
+    items: ViewPanelShoppingItem[];
+  };
+  updatedAt?: string;
+}
+
 export interface BusinessSettings {
   businessName: string;
   tagline: string;
   logoDataUrl: string;
+  backgroundImageDataUrl?: string;
   address: string;
   mobile: string;
   whatsapp: string;
@@ -45,6 +92,7 @@ export interface BusinessSettings {
   invoiceFooterNote: string;
   socialTagLine?: string;
   lowStockThreshold: number;
+  viewPanel?: ViewPanelConfig;
 }
 
 export interface Client {

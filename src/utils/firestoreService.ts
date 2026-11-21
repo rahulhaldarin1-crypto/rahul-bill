@@ -22,7 +22,11 @@ import {
   Product,
   WorkspaceData,
 } from '../types/business';
-import { createEmptyWorkspace, DEFAULT_SETTINGS } from './calculations';
+import {
+  createEmptyWorkspace,
+  DEFAULT_SETTINGS,
+  mergeBusinessSettings,
+} from './calculations';
 
 const SETTINGS_COL = 'settings';
 const SETTINGS_DOC = 'business';
@@ -182,11 +186,11 @@ async function computeStockDeltaProducts(
 
 export const firestoreService = {
   async fetchWorkspace(): Promise<WorkspaceData> {
-    let settings: BusinessSettings = { ...DEFAULT_SETTINGS };
+    let settings: BusinessSettings = mergeBusinessSettings();
     try {
       const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
       if (settingsSnap.exists()) {
-        settings = { ...DEFAULT_SETTINGS, ...(settingsSnap.data() as Partial<BusinessSettings>) };
+        settings = mergeBusinessSettings(settingsSnap.data() as Partial<BusinessSettings>);
       } else {
         await setDoc(doc(db, SETTINGS_COL, SETTINGS_DOC), stripUndefinedDeep(DEFAULT_SETTINGS));
       }
@@ -230,10 +234,9 @@ export const firestoreService = {
       doc(db, SETTINGS_COL, SETTINGS_DOC),
       (snap) => {
         if (snap.exists()) {
-          const nextSettings = {
-            ...DEFAULT_SETTINGS,
-            ...(snap.data() as Partial<BusinessSettings>),
-          };
+          const nextSettings = mergeBusinessSettings(
+            snap.data() as Partial<BusinessSettings>
+          );
           onUpdate((prev) => ({ ...prev, settings: nextSettings }));
         }
       },
@@ -296,7 +299,7 @@ export const firestoreService = {
   },
 
   async updateSettings(next: BusinessSettings): Promise<BusinessSettings> {
-    const clean = stripUndefinedDeep({ ...DEFAULT_SETTINGS, ...next });
+    const clean = stripUndefinedDeep(mergeBusinessSettings(next));
     try {
       await setDoc(doc(db, SETTINGS_COL, SETTINGS_DOC), clean);
       return clean;
@@ -776,12 +779,8 @@ export const firestoreService = {
   },
 
   async restoreBackup(workspace: WorkspaceData): Promise<WorkspaceData> {
-    const defaults = createEmptyWorkspace();
     const restored: WorkspaceData = {
-      settings: stripUndefinedDeep({
-        ...defaults.settings,
-        ...(workspace.settings || {}),
-      }),
+      settings: stripUndefinedDeep(mergeBusinessSettings(workspace.settings)),
       clients: Array.isArray(workspace.clients)
         ? workspace.clients.map((c) => stripUndefinedDeep(c))
         : [],
@@ -866,15 +865,11 @@ export const firestoreService = {
     const qLower = rawQuery.toLowerCase();
     const qDigits = rawQuery.replace(/[^\d]/g, '');
 
-    let settings: BusinessSettings = { ...DEFAULT_SETTINGS };
+    let settings: BusinessSettings = mergeBusinessSettings();
     try {
       const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
       if (settingsSnap.exists()) {
-        settings = {
-          ...DEFAULT_SETTINGS,
-          ...(settingsSnap.data() as Partial<BusinessSettings>),
-          lowStockThreshold: 5,
-        };
+        settings = mergeBusinessSettings(settingsSnap.data() as Partial<BusinessSettings>);
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`);

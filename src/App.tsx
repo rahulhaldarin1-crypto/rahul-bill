@@ -8,6 +8,7 @@ import {
   Users,
 } from 'lucide-react';
 import { AppBackground } from './components/AppBackground';
+import { BrandLogo } from './components/BrandLogo';
 import { ClientBillView } from './components/ClientBillView';
 import { ClientListView } from './components/ClientListView';
 import { DashboardView } from './components/DashboardView';
@@ -19,6 +20,7 @@ import { ProfitLossView } from './components/ProfitLossView';
 import { SalesReportView } from './components/SalesReportView';
 import { SettingsView } from './components/SettingsView';
 import { StartPortal } from './components/StartPortal';
+import { ViewPanelControlView } from './components/ViewPanelControlView';
 import {
   AppRoute,
   BusinessSettings,
@@ -28,11 +30,15 @@ import {
   Invoice,
   PaymentMethod,
   Product,
+  ViewPanelConfig,
   WorkspaceData,
 } from './types/business';
 import { isAdminUnlockedStored, setAdminUnlockedStored } from './utils/adminAuth';
 import { api } from './utils/api';
-import { createEmptyWorkspace } from './utils/calculations';
+import {
+  createEmptyWorkspace,
+  DEFAULT_VIEW_PANEL_CONFIG,
+} from './utils/calculations';
 
 interface HistoryEntry {
   route: AppRoute;
@@ -334,9 +340,23 @@ export default function App() {
   };
 
   const handleSaveSettings = async (next: BusinessSettings) => {
-    const saved = await api.updateSettings(next);
+    const merged: BusinessSettings = {
+      ...next,
+      viewPanel: next.viewPanel ?? workspace.settings.viewPanel,
+    };
+    const saved = await api.updateSettings(merged);
     setWorkspace((prev) => ({ ...prev, settings: saved }));
     showToast('Settings saved.');
+  };
+
+  const handleSaveViewPanel = async (nextViewPanel: ViewPanelConfig) => {
+    const merged: BusinessSettings = {
+      ...workspace.settings,
+      viewPanel: nextViewPanel,
+    };
+    const saved = await api.updateSettings(merged);
+    setWorkspace((prev) => ({ ...prev, settings: saved }));
+    showToast('View Panel updated & synced.');
   };
 
   const handleRestoreBackup = async (backup: WorkspaceData) => {
@@ -374,6 +394,8 @@ export default function App() {
   if (showViewPanel || !adminUnlocked) {
     return (
       <StartPortal
+        settings={workspace.settings}
+        products={workspace.products}
         isAdminUnlocked={adminUnlocked}
         onOpenAdminPanel={handleUnlockAdmin}
       />
@@ -384,18 +406,25 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen flex flex-col text-[#1F122B]">
-      <AppBackground />
+      <AppBackground backgroundImageDataUrl={workspace.settings.backgroundImageDataUrl} />
 
       {/* TOP NAVIGATION BAR (Strict 3-zone contract) */}
       <header className="no-print sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-[#EFE2F5]">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-8">
-          {/* Zone 1: Brand Wordmark */}
+          {/* Zone 1: Brand Logo & Wordmark */}
           <button
             type="button"
             onClick={() => navigateTo('dashboard')}
-            className="font-display-serif text-base sm:text-lg font-bold tracking-tight text-[#6D28D9] whitespace-nowrap truncate max-w-[130px] sm:max-w-none cursor-pointer"
+            className="flex items-center gap-2 min-w-0 cursor-pointer"
           >
-            {workspace.settings.businessName || 'Glamour Galleria'}
+            <BrandLogo
+              logoDataUrl={workspace.settings.logoDataUrl}
+              businessName={workspace.settings.businessName}
+              size={32}
+            />
+            <span className="font-display-serif text-base sm:text-lg font-bold tracking-tight text-[#6D28D9] whitespace-nowrap truncate max-w-[110px] sm:max-w-none">
+              {workspace.settings.businessName || 'Glamour Galleria'}
+            </span>
           </button>
 
           {/* Zone 2: 5 concise single-line nav links */}
@@ -569,6 +598,17 @@ export default function App() {
             onBack={goBack}
             onSaveSettings={handleSaveSettings}
             onRestoreBackup={handleRestoreBackup}
+          />
+        )}
+
+        {route === 'view-panel-control' && (
+          <ViewPanelControlView
+            viewPanel={workspace.settings.viewPanel || DEFAULT_VIEW_PANEL_CONFIG}
+            products={workspace.products}
+            currencySymbol={currencySymbol}
+            onBack={goBack}
+            onOpenViewPanel={() => setShowViewPanel(true)}
+            onSaveViewPanel={handleSaveViewPanel}
           />
         )}
       </main>

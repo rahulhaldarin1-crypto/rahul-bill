@@ -5,6 +5,7 @@ import {
   BarChart3,
   CreditCard,
   FilePlus2,
+  Megaphone,
   Package,
   Search,
   Settings,
@@ -157,12 +158,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     {
       route: 'settings',
       title: 'Settings',
-      subtitle: 'Logo, business details, GSTIN & backup/restore',
+      subtitle: 'Logo, background photo, business details & backup',
       metric: settings.currencyCode,
       icon: Settings,
       accentBg: 'from-[#6B5B7B] to-[#4A3B59]',
       accentText: 'text-[#4A3B59]',
       borderHover: 'hover:border-[#A78BFA]',
+    },
+    {
+      route: 'view-panel-control',
+      title: 'View Panel Control',
+      subtitle: 'Manage top advertisement banner, discount offers & shopping showcase',
+      metric: `${
+        [
+          settings.viewPanel?.advertisement?.enabled &&
+            Boolean(
+              settings.viewPanel?.advertisement?.imageDataUrl ||
+                settings.viewPanel?.advertisement?.title
+            ),
+          settings.viewPanel?.discount?.enabled,
+          settings.viewPanel?.shopping?.enabled,
+        ].filter(Boolean).length
+      } Active`,
+      icon: Megaphone,
+      accentBg: 'from-[#DB2777] to-[#7E22CE]',
+      accentText: 'text-[#9D174D]',
+      borderHover: 'hover:border-[#F472B6]',
     },
   ];
 
@@ -207,6 +228,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <UserPlus className="w-4 h-4 text-[#DB2777]" />
             <span>New Client</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('view-panel-control')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#F3D5E8] bg-[#FFF5FA] px-4 py-3 text-sm font-semibold text-[#9D174D] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Megaphone className="w-4 h-4 text-[#DB2777]" />
+            <span>View Panel Control</span>
           </button>
           {onOpenViewPanel && (
             <button

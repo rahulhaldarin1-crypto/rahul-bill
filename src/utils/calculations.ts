@@ -4,13 +4,39 @@ import {
   BusinessSettings,
   Invoice,
   InvoiceLineItem,
+  ViewPanelConfig,
   WorkspaceData,
 } from '../types/business';
+
+export const DEFAULT_VIEW_PANEL_CONFIG: ViewPanelConfig = {
+  advertisement: {
+    enabled: true,
+    imageDataUrl: '',
+    title: '',
+    subtitle: '',
+    linkUrl: '',
+  },
+  discount: {
+    enabled: true,
+    sectionTitle: 'Special Discounts & Offers',
+    headline: '',
+    offers: [],
+  },
+  shopping: {
+    enabled: true,
+    sectionTitle: 'Shop Our Collection',
+    subtitle: 'Handpicked styles & cosmetics available for quick WhatsApp order',
+    includeCatalogProducts: true,
+    items: [],
+  },
+  updatedAt: '',
+};
 
 export const DEFAULT_SETTINGS: BusinessSettings = {
   businessName: 'Glamour Galleria',
   tagline: 'Your Style, Our Priority',
   logoDataUrl: '',
+  backgroundImageDataUrl: '',
   address: '',
   mobile: '',
   whatsapp: '',
@@ -27,7 +53,39 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
     'Every piece is chosen with love to make you feel confident and beautiful. We truly appreciate your trust and support. If you have any question about your order, just message us anytime.',
   socialTagLine: 'Loved your order? Tag us @glamour.galleria.in and share your look with us!',
   lowStockThreshold: 5,
+  viewPanel: DEFAULT_VIEW_PANEL_CONFIG,
 };
+
+export function mergeBusinessSettings(
+  raw?: Partial<BusinessSettings> | null
+): BusinessSettings {
+  const rawVp = raw?.viewPanel;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...(raw || {}),
+    viewPanel: {
+      advertisement: {
+        ...DEFAULT_VIEW_PANEL_CONFIG.advertisement,
+        ...(rawVp?.advertisement || {}),
+      },
+      discount: {
+        ...DEFAULT_VIEW_PANEL_CONFIG.discount,
+        ...(rawVp?.discount || {}),
+        offers: Array.isArray(rawVp?.discount?.offers)
+          ? rawVp.discount.offers
+          : DEFAULT_VIEW_PANEL_CONFIG.discount.offers,
+      },
+      shopping: {
+        ...DEFAULT_VIEW_PANEL_CONFIG.shopping,
+        ...(rawVp?.shopping || {}),
+        items: Array.isArray(rawVp?.shopping?.items)
+          ? rawVp.shopping.items
+          : DEFAULT_VIEW_PANEL_CONFIG.shopping.items,
+      },
+      updatedAt: rawVp?.updatedAt || '',
+    },
+  };
+}
 
 export function createEmptyWorkspace(): WorkspaceData {
   return {
@@ -250,35 +308,86 @@ export async function exportInvoiceElementToPdf(
   pdf.save(filename);
 }
 
-export function resizeImageFileToDataUrl(file: File, maxSize = 480): Promise<string> {
+export function resizeImageFileToDataUrl(
+  file: File,
+  maxSize = 480,
+  options: {
+    quality?: number;
+    preserveTransparency?: boolean;
+    maxDataUrlLength?: number;
+  } = {}
+): Promise<string> {
+  const {
+    quality = 0.85,
+    preserveTransparency = false,
+    maxDataUrlLength = 350_000,
+  } = options;
+
   return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) {
+      reject(new Error('Please select a valid image file.'));
+      return;
+    }
+
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Failed to read image file.'));
     reader.onload = () => {
       const img = new Image();
       img.onerror = () => reject(new Error('Invalid image file.'));
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let w = img.width;
-        let h = img.height;
-        if (w > maxSize || h > maxSize) {
-          if (w > h) {
-            h = Math.round((h * maxSize) / w);
-            w = maxSize;
-          } else {
-            w = Math.round((w * maxSize) / h);
-            h = maxSize;
+        const renderAt = (targetMax: number, q: number, mime: string): string => {
+          const canvas = document.createElement('canvas');
+          let w = img.width;
+          let h = img.height;
+          if (w > targetMax || h > targetMax) {
+            if (w > h) {
+              h = Math.max(1, Math.round((h * targetMax) / w));
+              w = targetMax;
+            } else {
+              w = Math.max(1, Math.round((w * targetMax) / h));
+              h = targetMax;
+            }
+          }
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return String(reader.result);
+          ctx.drawImage(img, 0, 0, w, h);
+          return canvas.toDataURL(mime, q);
+        };
+
+        const prefersAlpha =
+          preserveTransparency &&
+          (file.type === 'image/png' ||
+            file.type === 'image/webp' ||
+            file.type === 'image/svg+xml');
+        const primaryMime = prefersAlpha ? 'image/webp' : 'image/jpeg';
+
+        let currentMax = maxSize;
+        let currentQuality = quality;
+        let output = renderAt(currentMax, currentQuality, primaryMime);
+
+        // Fallback if browser doesn't encode image/webp or output exceeds Firestore budget
+        if (prefersAlpha && !output.startsWith('data:image/webp')) {
+          output = renderAt(currentMax, currentQuality, 'image/png');
+        }
+
+        let attempts = 0;
+        while (output.length > maxDataUrlLength && attempts < 4) {
+          attempts += 1;
+          currentQuality = Math.max(0.5, currentQuality - 0.12);
+          currentMax = Math.max(240, Math.round(currentMax * 0.8));
+          output = renderAt(
+            currentMax,
+            currentQuality,
+            prefersAlpha ? 'image/webp' : 'image/jpeg'
+          );
+          if (output.length > maxDataUrlLength && attempts >= 3) {
+            output = renderAt(currentMax, currentQuality, 'image/jpeg');
           }
         }
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(String(reader.result));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
+
+        resolve(output);
       };
       img.src = String(reader.result);
     };

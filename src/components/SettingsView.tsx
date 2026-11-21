@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Download,
+  Image as ImageIcon,
   RotateCcw,
   Save,
   Upload,
@@ -12,6 +13,7 @@ import {
   resizeImageFileToDataUrl,
   todayIsoDate,
 } from '../utils/calculations';
+import { DEFAULT_BACKGROUND_IMAGE_PATH } from './AppBackground';
 import { BrandLogo } from './BrandLogo';
 import { ConfirmModal } from './ConfirmModal';
 
@@ -30,20 +32,104 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [draft, setDraft] = useState<BusinessSettings>(workspace.settings);
   const [saving, setSaving] = useState(false);
+  const [uploadingAsset, setUploadingAsset] = useState<'logo' | 'background' | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
   // Restore confirmation
   const [pendingRestore, setPendingRestore] = useState<WorkspaceData | null>(null);
 
+  useEffect(() => {
+    setDraft((prev) => ({
+      ...prev,
+      logoDataUrl: workspace.settings.logoDataUrl || '',
+      backgroundImageDataUrl: workspace.settings.backgroundImageDataUrl || '',
+      viewPanel: workspace.settings.viewPanel,
+    }));
+  }, [
+    workspace.settings.logoDataUrl,
+    workspace.settings.backgroundImageDataUrl,
+    workspace.settings.viewPanel,
+  ]);
+
+  const showTempNotice = (msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice((curr) => (curr === msg ? '' : curr)), 2800);
+  };
+
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    setError('');
+    setUploadingAsset('logo');
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 360);
-      setDraft((prev) => ({ ...prev, logoDataUrl: dataUrl }));
-    } catch {
-      setError('Invalid logo image file.');
+      const dataUrl = await resizeImageFileToDataUrl(file, 320, {
+        quality: 0.85,
+        preserveTransparency: true,
+        maxDataUrlLength: 140_000,
+      });
+      const nextDraft = { ...draft, logoDataUrl: dataUrl };
+      setDraft(nextDraft);
+      await onSaveSettings(nextDraft);
+      showTempNotice('Business logo uploaded and synced across devices.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid logo image file.');
+    } finally {
+      setUploadingAsset(null);
+    }
+  };
+
+  const handleResetLogo = async () => {
+    setError('');
+    setUploadingAsset('logo');
+    try {
+      const nextDraft = { ...draft, logoDataUrl: '' };
+      setDraft(nextDraft);
+      await onSaveSettings(nextDraft);
+      showTempNotice('Business logo reset to default.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset business logo.');
+    } finally {
+      setUploadingAsset(null);
+    }
+  };
+
+  const handleBackgroundUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+    setUploadingAsset('background');
+    try {
+      const dataUrl = await resizeImageFileToDataUrl(file, 1280, {
+        quality: 0.78,
+        preserveTransparency: false,
+        maxDataUrlLength: 360_000,
+      });
+      const nextDraft = { ...draft, backgroundImageDataUrl: dataUrl };
+      setDraft(nextDraft);
+      await onSaveSettings(nextDraft);
+      showTempNotice('Background photo updated and synced across devices.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid background image file.');
+    } finally {
+      setUploadingAsset(null);
+    }
+  };
+
+  const handleResetBackground = async () => {
+    setError('');
+    setUploadingAsset('background');
+    try {
+      const nextDraft = { ...draft, backgroundImageDataUrl: '' };
+      setDraft(nextDraft);
+      await onSaveSettings(nextDraft);
+      showTempNotice('Background photo reset to default.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset background photo.');
+    } finally {
+      setUploadingAsset(null);
     }
   };
 
@@ -54,8 +140,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setNotice('');
     try {
       await onSaveSettings(draft);
-      setNotice('Business settings saved.');
-      setTimeout(() => setNotice(''), 2500);
+      showTempNotice('Business settings saved.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings.');
     } finally {
@@ -139,35 +224,104 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         onSubmit={handleSubmit}
         className="rounded-2xl border border-[#EFE2F5] bg-white p-5 sm:p-6 space-y-5"
       >
-        <div className="flex flex-wrap items-center gap-5 pb-5 border-b border-[#F4ECF8]">
-          <BrandLogo
-            logoDataUrl={draft.logoDataUrl}
-            businessName={draft.businessName}
-            size={76}
-          />
-          <div className="space-y-2">
-            <div className="text-sm font-bold text-[#1F122B]">Business Logo</div>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
-                <Upload className="w-3.5 h-3.5" />
-                <span>Upload Logo</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleLogoUpload}
-                  className="sr-only"
-                />
-              </label>
-              {draft.logoDataUrl && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pb-5 border-b border-[#F4ECF8]">
+          {/* Business Logo Upload */}
+          <div className="rounded-2xl border border-[#F2E6F7] bg-[#FDF9FE] p-4 flex items-center gap-4">
+            <BrandLogo
+              logoDataUrl={draft.logoDataUrl}
+              businessName={draft.businessName}
+              size={72}
+            />
+            <div className="space-y-2 min-w-0 flex-1">
+              <div>
+                <div className="text-sm font-bold text-[#1F122B]">Business Logo</div>
+                <div className="text-[11px] text-[#6B5B7B]">
+                  {draft.logoDataUrl
+                    ? 'Custom logo active across headers & invoices'
+                    : 'Using default Glamour Galleria crest'}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer whitespace-nowrap">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>
+                    {uploadingAsset === 'logo' ? 'Uploading...' : 'Upload Logo'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={uploadingAsset !== null}
+                    onChange={handleLogoUpload}
+                    className="sr-only"
+                  />
+                </label>
                 <button
                   type="button"
-                  onClick={() => setDraft((prev) => ({ ...prev, logoDataUrl: '' }))}
-                  className="inline-flex items-center gap-1 rounded-xl border border-[#E6D9EE] px-3 py-2 text-xs font-semibold text-[#BE123C] cursor-pointer"
+                  disabled={!draft.logoDataUrl || uploadingAsset !== null}
+                  onClick={handleResetLogo}
+                  className="inline-flex items-center gap-1 rounded-xl border border-[#FECDD3] bg-white px-3 py-1.5 text-xs font-semibold text-[#BE123C] hover:bg-[#FFF1F2] cursor-pointer whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Reset Default Crest</span>
+                  <span>Reset to Default</span>
                 </button>
+              </div>
+            </div>
+          </div>
+
+          {/* App Background Photo Upload */}
+          <div className="rounded-2xl border border-[#F2E6F7] bg-[#FDF9FE] p-4 flex items-center gap-4">
+            <div className="w-[72px] h-[72px] rounded-xl overflow-hidden border border-[#E6D9EE] bg-white shrink-0 relative">
+              <img
+                src={
+                  draft.backgroundImageDataUrl && draft.backgroundImageDataUrl.trim()
+                    ? draft.backgroundImageDataUrl
+                    : DEFAULT_BACKGROUND_IMAGE_PATH
+                }
+                alt="App background preview"
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover object-top"
+              />
+              {!draft.backgroundImageDataUrl && (
+                <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-semibold text-white">
+                  Default
+                </span>
               )}
+            </div>
+            <div className="space-y-2 min-w-0 flex-1">
+              <div>
+                <div className="text-sm font-bold text-[#1F122B]">Background Photo</div>
+                <div className="text-[11px] text-[#6B5B7B]">
+                  {draft.backgroundImageDataUrl
+                    ? 'Custom background synced across devices'
+                    : 'Using default background photo'}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer whitespace-nowrap">
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  <span>
+                    {uploadingAsset === 'background'
+                      ? 'Uploading...'
+                      : 'Upload Background'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={uploadingAsset !== null}
+                    onChange={handleBackgroundUpload}
+                    className="sr-only"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!draft.backgroundImageDataUrl || uploadingAsset !== null}
+                  onClick={handleResetBackground}
+                  className="inline-flex items-center gap-1 rounded-xl border border-[#FECDD3] bg-white px-3 py-1.5 text-xs font-semibold text-[#BE123C] hover:bg-[#FFF1F2] cursor-pointer whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset to Default</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -331,7 +485,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="flex items-center justify-between pt-2 border-t border-[#F4ECF8]">
           <button
             type="button"
-            onClick={() => setDraft({ ...DEFAULT_SETTINGS })}
+            onClick={() =>
+              setDraft((prev) => ({
+                ...DEFAULT_SETTINGS,
+                viewPanel: prev.viewPanel,
+              }))
+            }
             className="text-xs font-semibold text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
           >
             Reset Defaults

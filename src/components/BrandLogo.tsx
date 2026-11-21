@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 
 interface BrandLogoProps {
@@ -16,8 +16,12 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   size = 64,
   className = '',
 }) => {
-  const [imgError, setImgError] = useState(false);
   const src = logoDataUrl && logoDataUrl.trim() ? logoDataUrl : DEFAULT_CREST_PATH;
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [src]);
 
   if (imgError) {
     return (
@@ -37,7 +41,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
       referrerPolicy="no-referrer"
       onError={() => setImgError(true)}
       style={{ width: size, height: size }}
-      className={`object-contain rounded-full shrink-0 ${className}`}
+      className={`object-contain rounded-xl shrink-0 ${className}`}
     />
   );
 };
