@@ -11,7 +11,8 @@ export type AppRoute =
   | 'settings'
   | 'view-panel-control'
   | 'orders'
-  | 'seller-hub-manage';
+  | 'seller-hub-manage'
+  | 'help-chat';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -298,7 +299,9 @@ export type SellerAccountStatus = 'pending' | 'approved' | 'rejected' | 'suspend
 export interface SellerApplication {
   id: string;
   clientId?: string;
+  sellerCode?: string;
   name: string;
+  email?: string;
   fullAddress: string;
   phone: string;
   normalizedPhone: string;
@@ -311,6 +314,11 @@ export interface SellerApplication {
   gstDocDataUrl?: string;
   bankDocDataUrl: string;
   bankAccountDetails?: string;
+  passwordSalt?: string;
+  passwordHash?: string;
+  runningPasswordEnc?: string;
+  passwordUpdatedAt?: string;
+  accountActivated?: boolean;
   status: SellerAccountStatus;
   adminRemarks?: string;
   reviewedAt?: string;

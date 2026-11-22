@@ -1,20 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   LifeBuoy,
   MessageCircle,
+  RefreshCw,
   Send,
   UserCheck,
 } from 'lucide-react';
 import { Client, SupportChatThread } from '../types/business';
 import { api, formatApiError } from '../utils/api';
-import {
-  normalizeIndianPhone,
-  phoneNumbersMatch,
-  stripPlus91Prefix,
-} from '../utils/calculations';
+import { normalizeIndianPhone, stripPlus91Prefix } from '../utils/calculations';
 
-const GUEST_SUPPORT_KEY = 'gg_support_guest_v1';
+const GUEST_SUPPORT_SESSION_KEY = 'gg_support_guest_session_v1';
 
 interface GuestIdentity {
   name: string;
@@ -23,7 +20,6 @@ interface GuestIdentity {
 
 interface HelpCenterChatViewProps {
   loggedInCustomer: Client | null;
-  supportChats: SupportChatThread[];
   onBackToShop: () => void;
   onRequestSignIn: () => void;
 }
@@ -37,23 +33,26 @@ function formatMessageTime(iso?: string): string {
 
 export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
   loggedInCustomer,
-  supportChats,
   onBackToShop,
   onRequestSignIn,
 }) => {
   const [guestIdentity, setGuestIdentity] = useState<GuestIdentity | null>(() => {
     try {
-      const raw = localStorage.getItem(GUEST_SUPPORT_KEY);
+      const raw = sessionStorage.getItem(GUEST_SUPPORT_SESSION_KEY);
       return raw ? (JSON.parse(raw) as GuestIdentity) : null;
     } catch {
       return null;
     }
   });
 
-  const [guestNameInput, setGuestNameInput] = useState(() => guestIdentity?.name || '');
+  const [guestNameInput, setGuestNameInput] = useState(
+    () => guestIdentity?.name || ''
+  );
   const [guestPhoneInput, setGuestPhoneInput] = useState(() =>
     guestIdentity?.phone ? stripPlus91Prefix(guestIdentity.phone) : ''
   );
+  const [activeThread, setActiveThread] = useState<SupportChatThread | null>(null);
+  const [loadingThread, setLoadingThread] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
@@ -62,24 +61,85 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
   const activeName = loggedInCustomer?.name || guestIdentity?.name || '';
   const activePhone = loggedInCustomer?.mobile || guestIdentity?.phone || '';
 
-  const activeThread = useMemo(() => {
+  // Automatically load ONLY the logged-in customer's own chat history
+  useEffect(() => {
+    let active = true;
+
     if (loggedInCustomer) {
-      const byClient = supportChats.find(
-        (c) =>
-          c.clientId === loggedInCustomer.id ||
-          phoneNumbersMatch(c.customerPhone, loggedInCustomer.mobile)
-      );
-      if (byClient) return byClient;
+      try {
+        sessionStorage.removeItem(GUEST_SUPPORT_SESSION_KEY);
+      } catch {
+        // ignore
+      }
+      setLoadingThread(true);
+      setError('');
+      api
+        .fetchSupportThreadForClient(loggedInCustomer.id, loggedInCustomer.mobile)
+        .then((thread) => {
+          if (active) setActiveThread(thread);
+        })
+        .catch((err) => {
+          if (active) {
+            setError(
+              formatApiError(err, 'Could not load your previous support chat.')
+            );
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingThread(false);
+        });
+      return () => {
+        active = false;
+      };
     }
-    if (guestIdentity?.phone) {
-      return (
-        supportChats.find((c) =>
-          phoneNumbersMatch(c.customerPhone, guestIdentity.phone)
-        ) || null
-      );
+
+    if (guestIdentity?.name && guestIdentity?.phone) {
+      setLoadingThread(true);
+      setError('');
+      api
+        .resolveGuestSupportThread(guestIdentity.name, guestIdentity.phone)
+        .then((thread) => {
+          if (active) setActiveThread(thread);
+        })
+        .catch((err) => {
+          if (active) {
+            try {
+              sessionStorage.removeItem(GUEST_SUPPORT_SESSION_KEY);
+            } catch {
+              // ignore
+            }
+            setGuestIdentity(null);
+            setActiveThread(null);
+            setError(formatApiError(err, 'Could not verify support chat identity.'));
+          }
+        })
+        .finally(() => {
+          if (active) setLoadingThread(false);
+        });
+    } else {
+      setActiveThread(null);
     }
-    return null;
-  }, [loggedInCustomer, guestIdentity, supportChats]);
+
+    return () => {
+      active = false;
+    };
+  }, [loggedInCustomer, guestIdentity?.name, guestIdentity?.phone]);
+
+  // Real-time listener restricted ONLY to this user's own thread ID
+  const threadId = activeThread?.id;
+  useEffect(() => {
+    if (!threadId) return;
+    const unsub = api.subscribeSingleSupportThread(
+      threadId,
+      (updated) => {
+        if (updated) {
+          setActiveThread(updated);
+        }
+      },
+      () => undefined
+    );
+    return () => unsub();
+  }, [threadId]);
 
   useEffect(() => {
     endOfChatRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -91,12 +151,12 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
     }
   }, [activeThread?.id, activeThread?.unreadForCustomer]);
 
-  const handleStartGuestChat = (e: React.FormEvent) => {
+  const handleStartGuestChat = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     const cleanName = guestNameInput.trim();
     if (cleanName.length < 2) {
-      setError('Please enter your name.');
+      setError('Please enter your full name (at least 2 characters).');
       return;
     }
     const phoneCheck = normalizeIndianPhone(guestPhoneInput);
@@ -106,19 +166,45 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
       );
       return;
     }
-    const next: GuestIdentity = { name: cleanName, phone: phoneCheck.formatted };
+
+    setLoadingThread(true);
     try {
-      localStorage.setItem(GUEST_SUPPORT_KEY, JSON.stringify(next));
-    } catch {
-      // ignore storage failure
+      const resolved = await api.resolveGuestSupportThread(
+        cleanName,
+        phoneCheck.formatted
+      );
+      const next: GuestIdentity = { name: cleanName, phone: phoneCheck.formatted };
+      try {
+        sessionStorage.setItem(GUEST_SUPPORT_SESSION_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage failure
+      }
+      setGuestIdentity(next);
+      setActiveThread(resolved);
+    } catch (err) {
+      setError(
+        formatApiError(err, 'Could not open your support inbox. Please check Name & Phone.')
+      );
+    } finally {
+      setLoadingThread(false);
     }
-    setGuestIdentity(next);
+  };
+
+  const handleSwitchGuest = () => {
+    try {
+      sessionStorage.removeItem(GUEST_SUPPORT_SESSION_KEY);
+    } catch {
+      // ignore
+    }
+    setGuestIdentity(null);
+    setActiveThread(null);
+    setError('');
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeName || !activePhone) {
-      setError('Please sign in or enter your name and mobile number first.');
+      setError('Please sign in or enter your Name and Mobile Number first.');
       return;
     }
     const text = messageText.trim();
@@ -127,7 +213,7 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
     setError('');
     setSending(true);
     try {
-      await api.sendSupportMessage({
+      const savedThread = await api.sendSupportMessage({
         chatId: activeThread?.id,
         clientId: loggedInCustomer?.id,
         customerName: activeName,
@@ -136,6 +222,7 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
         senderName: activeName,
         text,
       });
+      setActiveThread(savedThread);
       setMessageText('');
     } catch (err) {
       setError(formatApiError(err, 'Could not send message. Please try again.'));
@@ -156,16 +243,28 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
           <span>Back to Shop</span>
         </button>
 
-        {!loggedInCustomer && (
-          <button
-            type="button"
-            onClick={onRequestSignIn}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3.5 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
-          >
-            <UserCheck className="w-3.5 h-3.5" />
-            <span>Sign In</span>
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!loggedInCustomer && guestIdentity && (
+            <button
+              type="button"
+              onClick={handleSwitchGuest}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#5B4B6B] hover:border-[#9333EA] cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Change Name / Phone</span>
+            </button>
+          )}
+          {!loggedInCustomer && (
+            <button
+              type="button"
+              onClick={onRequestSignIn}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3.5 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>Sign In</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md shadow-sm overflow-hidden flex flex-col">
@@ -180,7 +279,7 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
                 Help Center (হেল্প সেন্টার)
               </h1>
               <p className="text-xs text-[#6B5B7B]">
-                Real-time Customer Support Chat synced with Glamour Galleria team
+                Private real-time support chat — only you and Admin can view this conversation
               </p>
             </div>
           </div>
@@ -205,10 +304,10 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
           <form onSubmit={handleStartGuestChat} className="p-6 space-y-4">
             <div className="space-y-1">
               <h2 className="text-sm font-bold text-[#1F122B]">
-                Start Live Support Chat
+                Start or Restore Your Private Support Chat
               </h2>
               <p className="text-xs text-[#6B5B7B]">
-                Enter your name and mobile number (or Sign In) so our support team can reply to you directly.
+                Enter your <strong>Name</strong> and <strong>Phone Number</strong> (or Sign In) to start chatting. Returning with the same Name &amp; Phone Number automatically restores your previous chat history.
               </p>
             </div>
 
@@ -222,7 +321,7 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
                   required
                   value={guestNameInput}
                   onChange={(e) => setGuestNameInput(e.target.value)}
-                  placeholder="Enter your name"
+                  placeholder="Enter your full name"
                   className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 />
               </div>
@@ -250,17 +349,24 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
 
             <button
               type="submit"
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer"
+              disabled={loadingThread}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
             >
               <MessageCircle className="w-4 h-4" />
-              <span>Start Support Chat</span>
+              <span>
+                {loadingThread ? 'Loading Inbox...' : 'Open My Support Chat'}
+              </span>
             </button>
           </form>
         ) : (
           <>
             {/* Live Message List */}
             <div className="h-[380px] sm:h-[420px] overflow-y-auto p-4 sm:p-5 space-y-3 bg-[#FDFBFE]">
-              {!activeThread || activeThread.messages.length === 0 ? (
+              {loadingThread && !activeThread ? (
+                <div className="h-full flex items-center justify-center text-xs font-semibold text-[#7E22CE]">
+                  Loading your chat history...
+                </div>
+              ) : !activeThread || activeThread.messages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center px-4 space-y-2">
                   <MessageCircle className="w-10 h-10 text-[#D8B4FE]" />
                   <div className="text-sm font-bold text-[#1F122B]">

@@ -43,6 +43,7 @@ import {
   normalizeIndianPhone,
   resizeImageFileToDataUrl,
   stripPlus91Prefix,
+  validateImageFileUnder200KB,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
@@ -161,6 +162,11 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setProfileError('');
+    const sizeErr = validateImageFileUnder200KB(file);
+    if (sizeErr) {
+      setProfileError(sizeErr);
+      return;
+    }
     setPhotoUploading(true);
     try {
       const dataUrl = await resizeImageFileToDataUrl(file, 240, {
@@ -269,6 +275,11 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setCheckoutError('');
+    const sizeErr = validateImageFileUnder200KB(file);
+    if (sizeErr) {
+      setCheckoutError(sizeErr);
+      return;
+    }
     setUploadingScreenshot(true);
     try {
       const dataUrl = await resizeImageFileToDataUrl(file, 640, {
@@ -281,7 +292,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       setCheckoutError(
         err instanceof Error
           ? err.message
-          : 'Invalid screenshot image. Please choose JPG or PNG.'
+          : 'Invalid screenshot image. Please upload JPG or PNG under 200KB.'
       );
     } finally {
       setUploadingScreenshot(false);
@@ -537,6 +548,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     Remove Photo
                   </button>
                 )}
+                <span className="text-[10px] text-[#6B5B7B]">
+                  Max 200KB
+                </span>
               </div>
             </div>
           </div>
@@ -1030,6 +1044,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                           <span>Attached</span>
                         </span>
                       )}
+                      <span className="text-[10px] text-[#6B5B7B]">
+                        Max 200KB (সর্বোচ্চ 200KB)
+                      </span>
                     </div>
                   </div>
                 )}

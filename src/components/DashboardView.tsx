@@ -5,6 +5,7 @@ import {
   BarChart3,
   CreditCard,
   FilePlus2,
+  LifeBuoy,
   Megaphone,
   Package,
   Search,
@@ -124,7 +125,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     {
       route: 'seller-hub-manage',
       title: 'Seller Hub Manage',
-      subtitle: 'Approve/reject/suspend sellers, inspect KYC/bank docs & approve seller products',
+      subtitle: 'Approve/reject/suspend sellers, manage credentials, KYC/bank docs & seller products',
       metric:
         pendingSellerTotal > 0
           ? `${pendingSellerTotal} Pending`
@@ -133,6 +134,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       accentBg: 'from-[#DB2777] to-[#9333EA]',
       accentText: pendingSellerTotal > 0 ? 'text-[#BE123C]' : 'text-[#7E22CE]',
       borderHover: 'hover:border-[#F472B6]',
+    },
+    {
+      route: 'help-chat',
+      title: 'Help Chat',
+      subtitle: 'Live customer support chat inbox synced with Help Center',
+      metric:
+        unreadSupportCount > 0
+          ? `${unreadSupportCount} Unread`
+          : `${supportChats.length} Chats`,
+      icon: LifeBuoy,
+      accentBg: 'from-[#7E22CE] to-[#DB2777]',
+      accentText: unreadSupportCount > 0 ? 'text-[#DB2777]' : 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#C084FC]',
     },
     {
       route: 'client-bill',

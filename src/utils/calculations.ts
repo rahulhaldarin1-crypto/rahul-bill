@@ -24,6 +24,26 @@ export const PRODUCT_CATEGORIES = [
 
 export const DEFAULT_PRODUCT_CATEGORY = PRODUCT_CATEGORIES[0];
 
+export const MAX_IMAGE_UPLOAD_BYTES = 200 * 1024; // Strict 200KB (204,800 bytes)
+
+export function validateImageFileUnder200KB(file: File): string | null {
+  if (!file.type || !file.type.startsWith('image/')) {
+    return 'Please select a valid JPG/PNG image file. অনুগ্রহ করে সঠিক ছবি (JPG/PNG) নির্বাচন করুন।';
+  }
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    const sizeKb = Math.ceil(file.size / 1024);
+    return `File size (${sizeKb}KB) exceeds the 200KB limit. অনুগ্রহ করে 200KB-এর কম সাইজের ফাইল আপলোড করুন। (Please upload an image under 200KB.)`;
+  }
+  return null;
+}
+
+export function normalizeSupportName(name?: string): string {
+  return String(name || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
 export function normalizeIndianPhone(raw?: string): {
   valid: boolean;
   formatted: string;
@@ -485,17 +505,34 @@ export function resizeImageFileToDataUrl(
     quality?: number;
     preserveTransparency?: boolean;
     maxDataUrlLength?: number;
+    maxFileBytes?: number | false;
   } = {}
 ): Promise<string> {
   const {
     quality = 0.85,
     preserveTransparency = false,
     maxDataUrlLength = 350_000,
+    maxFileBytes = MAX_IMAGE_UPLOAD_BYTES,
   } = options;
 
   return new Promise((resolve, reject) => {
-    if (!file.type.startsWith('image/')) {
-      reject(new Error('Please select a valid image file.'));
+    if (!file.type || !file.type.startsWith('image/')) {
+      reject(
+        new Error(
+          'Please select a valid JPG/PNG image file. অনুগ্রহ করে সঠিক ছবি (JPG/PNG) নির্বাচন করুন।'
+        )
+      );
+      return;
+    }
+
+    if (maxFileBytes !== false && file.size > maxFileBytes) {
+      const limitKb = Math.round(maxFileBytes / 1024);
+      const fileKb = Math.ceil(file.size / 1024);
+      reject(
+        new Error(
+          `File size (${fileKb}KB) exceeds the ${limitKb}KB limit. অনুগ্রহ করে ${limitKb}KB-এর কম সাইজের ফাইল আপলোড করুন। (Please upload an image under ${limitKb}KB.)`
+        )
+      );
       return;
     }
 

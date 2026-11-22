@@ -7,12 +7,17 @@ import {
   Clock,
   Download,
   Eye,
+  EyeOff,
   FileText,
+  KeyRound,
+  Mail,
   MapPin,
   Package,
   Pencil,
   Phone,
+  Save,
   Search,
+  ShieldCheck,
   Store,
   Trash2,
   X,
@@ -30,6 +35,7 @@ import {
   downloadImageAsset,
   formatCurrency,
 } from '../utils/calculations';
+import { decryptRunningPassword } from '../utils/adminAuth';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
@@ -42,7 +48,16 @@ interface SellerHubManageViewProps {
   onUpdateSellerStatus: (
     applicationId: string,
     status: SellerAccountStatus,
-    adminRemarks?: string
+    adminRemarks?: string,
+    credentials?: {
+      sellerCode?: string;
+      email?: string;
+      password?: string;
+    }
+  ) => Promise<void>;
+  onSetSellerPassword: (
+    applicationId: string,
+    newPassword: string
   ) => Promise<void>;
   onDeleteSellerApplication: (applicationId: string) => Promise<void>;
   onUpdateProductApproval: (
@@ -109,6 +124,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
   defaultLowStock,
   onBack,
   onUpdateSellerStatus,
+  onSetSellerPassword,
   onDeleteSellerApplication,
   onUpdateProductApproval,
   onSaveProduct,
@@ -125,6 +141,15 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
   >('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [remarksMap, setRemarksMap] = useState<Record<string, string>>({});
+  const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>(
+    {}
+  );
+  const [revealedPasswords, setRevealedPasswords] = useState<
+    Record<string, boolean>
+  >({});
+  const [savingPasswordAppId, setSavingPasswordAppId] = useState<string | null>(
+    null
+  );
   const [busyAppId, setBusyAppId] = useState<string | null>(null);
   const [busyProdId, setBusyProdId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -211,6 +236,8 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
       if (!q) return true;
       return (
         app.name.toLowerCase().includes(q) ||
+        (app.sellerCode && app.sellerCode.toLowerCase().includes(q)) ||
+        (app.email && app.email.toLowerCase().includes(q)) ||
         app.phone.toLowerCase().includes(q) ||
         app.panNumber.toLowerCase().includes(q) ||
         app.aadhaarNumber.toLowerCase().includes(q) ||
@@ -253,7 +280,16 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
         remarksMap[app.id] !== undefined
           ? remarksMap[app.id]
           : app.adminRemarks || '';
-      await onUpdateSellerStatus(app.id, nextStatus, remarks);
+      const draftPwd = (passwordDrafts[app.id] || '').trim();
+      await onUpdateSellerStatus(
+        app.id,
+        nextStatus,
+        remarks,
+        nextStatus === 'approved' && draftPwd ? { password: draftPwd } : undefined
+      );
+      if (nextStatus === 'approved' && draftPwd) {
+        setPasswordDrafts((prev) => ({ ...prev, [app.id]: '' }));
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -262,6 +298,26 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
       );
     } finally {
       setBusyAppId(null);
+    }
+  };
+
+  const handleSaveSellerPassword = async (app: SellerApplication) => {
+    const nextPwd = (passwordDrafts[app.id] || '').trim();
+    if (nextPwd.length < 4) {
+      setError('Seller login password must be at least 4 characters.');
+      return;
+    }
+    setError('');
+    setSavingPasswordAppId(app.id);
+    try {
+      await onSetSellerPassword(app.id, nextPwd);
+      setPasswordDrafts((prev) => ({ ...prev, [app.id]: '' }));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to update seller password.'
+      );
+    } finally {
+      setSavingPasswordAppId(null);
     }
   };
 
@@ -609,12 +665,23 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                           >
                             {badge.label}
                           </span>
+                          {app.sellerCode && (
+                            <span className="rounded-lg border border-[#E9D5FF] bg-[#FAF5FF] px-2.5 py-0.5 text-[11px] font-mono-num font-bold text-[#6D28D9]">
+                              ID: {app.sellerCode}
+                            </span>
+                          )}
                         </div>
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#5B4B6B]">
                           <span className="inline-flex items-center gap-1 font-mono-num font-semibold text-[#1F122B]">
                             <Phone className="w-3.5 h-3.5 text-[#DB2777]" />
                             {app.phone}
                           </span>
+                          {app.email && (
+                            <span className="inline-flex items-center gap-1 font-medium text-[#1F122B]">
+                              <Mail className="w-3.5 h-3.5 text-[#7E22CE]" />
+                              {app.email}
+                            </span>
+                          )}
                           <span className="inline-flex items-center gap-1 font-mono-num">
                             <Clock className="w-3.5 h-3.5 text-[#7E22CE]" />
                             Applied {app.createdAt.slice(0, 10)}
@@ -723,6 +790,125 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                     </div>
                   </div>
 
+                  {/* Seller Login Credentials & Activation */}
+                  {(() => {
+                    const runningPassword = decryptRunningPassword(
+                      app.runningPasswordEnc,
+                      app.passwordSalt
+                    );
+                    const isRevealed = Boolean(revealedPasswords[app.id]);
+                    const isAccountActive =
+                      app.status === 'approved' &&
+                      (app.accountActivated ?? true);
+                    const pwdDraft = passwordDrafts[app.id] || '';
+                    const isSavingPwd = savingPasswordAppId === app.id;
+
+                    return (
+                      <div className="rounded-xl border border-[#EFE2F5] bg-[#FDF9FE] p-3.5 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]">
+                            <ShieldCheck className="w-4 h-4 text-[#7E22CE]" />
+                            <span>Seller Login Credentials &amp; Account Activation</span>
+                          </div>
+                          <span
+                            className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${
+                              isAccountActive
+                                ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                                : 'border-[#E6D9EE] bg-white text-[#6B5B7B]'
+                            }`}
+                          >
+                            {isAccountActive
+                              ? 'Account Activated (Login Enabled)'
+                              : 'Inactive until Admin Approves'}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                          <div className="rounded-lg border border-[#E6D9EE] bg-white px-3 py-2">
+                            <div className="text-[11px] text-[#6B5B7B]">Seller ID</div>
+                            <div className="font-mono-num font-bold text-[#6D28D9] mt-0.5 select-all">
+                              {app.sellerCode || 'Assigned on Approval'}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-[#E6D9EE] bg-white px-3 py-2">
+                            <div className="text-[11px] text-[#6B5B7B]">
+                              Login Email / Phone
+                            </div>
+                            <div className="font-medium text-[#1F122B] mt-0.5 truncate">
+                              {app.email || app.phone}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-[#E6D9EE] bg-white px-3 py-2 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-[11px] text-[#6B5B7B]">
+                                রানিং পাসওয়ার্ড
+                              </div>
+                              <div className="font-mono-num font-bold text-[#1F122B] mt-0.5 truncate">
+                                {runningPassword
+                                  ? isRevealed
+                                    ? runningPassword
+                                    : '••••••••'
+                                  : app.passwordHash
+                                    ? 'Set (Hidden)'
+                                    : 'Auto-assigned on Approval'}
+                              </div>
+                            </div>
+                            {runningPassword && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRevealedPasswords((prev) => ({
+                                    ...prev,
+                                    [app.id]: !prev[app.id],
+                                  }))
+                                }
+                                title={
+                                  isRevealed ? 'Hide password' : 'Show password'
+                                }
+                                className="p-1.5 rounded-md border border-[#EFE2F5] text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer shrink-0"
+                              >
+                                {isRevealed ? (
+                                  <EyeOff className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Eye className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <div className="relative flex-1">
+                            <KeyRound className="w-3.5 h-3.5 text-[#8E7C9E] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                            <input
+                              type="text"
+                              value={pwdDraft}
+                              onChange={(e) =>
+                                setPasswordDrafts((prev) => ({
+                                  ...prev,
+                                  [app.id]: e.target.value,
+                                }))
+                              }
+                              placeholder="Set or reset seller login password (min 4 chars)..."
+                              className="w-full rounded-lg border border-[#E6D9EE] bg-white pl-8 pr-3 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isSavingPwd || pwdDraft.trim().length < 4}
+                            onClick={() => handleSaveSellerPassword(app)}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer disabled:opacity-45 whitespace-nowrap shrink-0"
+                          >
+                            <Save className="w-3.5 h-3.5" />
+                            <span>
+                              {isSavingPwd ? 'Saving...' : 'Save Password'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Admin Remarks & Actions */}
                   <div className="pt-3 border-t border-[#F4ECF8] flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                     <input
@@ -743,17 +929,21 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                         type="button"
                         disabled={isBusy || app.status === 'approved'}
                         onClick={() => handleSellerAction(app, 'approved')}
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-[#15803D] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-45"
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-[#15803D] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-45 whitespace-nowrap"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Approve Seller</span>
+                        <span>
+                          {app.status === 'suspended' || app.status === 'rejected'
+                            ? 'Re-activate / Approve'
+                            : 'Approve Seller'}
+                        </span>
                       </button>
 
                       <button
                         type="button"
                         disabled={isBusy || app.status === 'rejected'}
                         onClick={() => handleSellerAction(app, 'rejected')}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer disabled:opacity-45"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer disabled:opacity-45 whitespace-nowrap"
                       >
                         <XCircle className="w-3.5 h-3.5" />
                         <span>Reject</span>
@@ -763,10 +953,10 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                         type="button"
                         disabled={isBusy || app.status === 'suspended'}
                         onClick={() => handleSellerAction(app, 'suspended')}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-[#FED7AA] bg-[#FFF7ED] px-3.5 py-2 text-xs font-semibold text-[#C2410C] hover:bg-[#FFEDD5] cursor-pointer disabled:opacity-45"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-[#FED7AA] bg-[#FFF7ED] px-3.5 py-2 text-xs font-semibold text-[#C2410C] hover:bg-[#FFEDD5] cursor-pointer disabled:opacity-45 whitespace-nowrap"
                       >
                         <Ban className="w-3.5 h-3.5" />
-                        <span>Suspend</span>
+                        <span>Suspend / Disable</span>
                       </button>
                     </div>
                   </div>

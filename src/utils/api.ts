@@ -2,6 +2,7 @@ import {
   BusinessSettings,
   Client,
   CustomerCartItem,
+  CustomerOrder,
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
   DeliveryStatus,
@@ -10,7 +11,9 @@ import {
   PaymentMethod,
   Product,
   SellerAccountStatus,
+  SellerApplication,
   SellerApprovalStatus,
+  SupportChatThread,
   SupportSenderRole,
   WorkspaceData,
 } from '../types/business';
@@ -100,13 +103,14 @@ export const api = {
 
   updateProduct(
     id: string,
-    payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>
+    payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
+    expectedSellerId?: string
   ) {
-    return firestoreService.updateProduct(id, payload);
+    return firestoreService.updateProduct(id, payload, expectedSellerId);
   },
 
-  deleteProduct(id: string) {
-    return firestoreService.deleteProduct(id);
+  deleteProduct(id: string, expectedSellerId?: string) {
+    return firestoreService.deleteProduct(id, expectedSellerId);
   },
 
   createInvoice(payload: Partial<Invoice>) {
@@ -203,11 +207,13 @@ export const api = {
     existingId?: string;
     clientId?: string;
     name: string;
+    email?: string;
     fullAddress: string;
     phone: string;
     panNumber: string;
     aadhaarNumber: string;
     gstNumber?: string;
+    password?: string;
     sellerPhotoDataUrl: string;
     panDocDataUrl: string;
     aadhaarDocDataUrl: string;
@@ -221,13 +227,27 @@ export const api = {
   updateSellerApplicationStatus(
     applicationId: string,
     status: SellerAccountStatus,
-    adminRemarks?: string
+    adminRemarks?: string,
+    credentials?: {
+      sellerCode?: string;
+      email?: string;
+      password?: string;
+    }
   ) {
     return firestoreService.updateSellerApplicationStatus(
       applicationId,
       status,
-      adminRemarks
+      adminRemarks,
+      credentials
     );
+  },
+
+  setSellerPassword(applicationId: string, newPassword: string) {
+    return firestoreService.setSellerPassword(applicationId, newPassword);
+  },
+
+  loginSellerAccount(identifier: string, password: string) {
+    return firestoreService.loginSellerAccount(identifier, password);
   },
 
   deleteSellerApplication(applicationId: string) {
@@ -255,5 +275,80 @@ export const api = {
 
   markSupportChatRead(chatId: string, readerRole: SupportSenderRole) {
     return firestoreService.markSupportChatRead(chatId, readerRole);
+  },
+
+  fetchCustomerStorefront() {
+    return firestoreService.fetchCustomerStorefront();
+  },
+
+  subscribeCustomerStorefront(
+    onSettings: (settings: BusinessSettings) => void,
+    onProducts: (products: Product[]) => void,
+    onApprovedSellerIds: (sellerIds: string[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeCustomerStorefront(
+      onSettings,
+      onProducts,
+      onApprovedSellerIds,
+      onError
+    );
+  },
+
+  subscribeCustomerAccount(
+    clientId: string,
+    onClient: (client: Client | null) => void,
+    onOrders: (orders: CustomerOrder[]) => void,
+    onInvoices: (invoices: Invoice[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeCustomerAccount(
+      clientId,
+      onClient,
+      onOrders,
+      onInvoices,
+      onError
+    );
+  },
+
+  subscribeSingleSellerApplication(
+    sellerId: string,
+    onSeller: (seller: SellerApplication | null) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeSingleSellerApplication(
+      sellerId,
+      onSeller,
+      onError
+    );
+  },
+
+  fetchSellerApplicationStatus(params: {
+    applicationId?: string;
+    clientId?: string;
+    phone?: string;
+    panNumber?: string;
+  }) {
+    return firestoreService.fetchSellerApplicationStatus(params);
+  },
+
+  fetchSupportThreadForClient(clientId: string, phone?: string) {
+    return firestoreService.fetchSupportThreadForClient(clientId, phone);
+  },
+
+  resolveGuestSupportThread(name: string, phone: string) {
+    return firestoreService.resolveGuestSupportThread(name, phone);
+  },
+
+  subscribeSingleSupportThread(
+    chatId: string,
+    onThread: (thread: SupportChatThread | null) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeSingleSupportThread(
+      chatId,
+      onThread,
+      onError
+    );
   },
 };

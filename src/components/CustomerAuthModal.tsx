@@ -15,6 +15,7 @@ import {
   buildForgotPasswordWhatsAppUrl,
   normalizeIndianPhone,
   resizeImageFileToDataUrl,
+  validateImageFileUnder200KB,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
@@ -69,6 +70,11 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     e.target.value = '';
     if (!file) return;
     setError('');
+    const sizeErr = validateImageFileUnder200KB(file);
+    if (sizeErr) {
+      setError(sizeErr);
+      return;
+    }
     setUploadingPhoto(true);
     try {
       const dataUrl = await resizeImageFileToDataUrl(file, 240, {
@@ -81,7 +87,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not process profile photo. Please pick a JPG or PNG.'
+          : 'Could not process profile photo. Please pick a JPG/PNG under 200KB.'
       );
     } finally {
       setUploadingPhoto(false);
@@ -351,7 +357,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-semibold text-[#1F122B]">
-                    Profile Photo (Optional)
+                    Profile Photo (Optional · Max 200KB / সর্বোচ্চ 200KB)
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">

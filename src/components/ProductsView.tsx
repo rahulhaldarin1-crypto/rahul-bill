@@ -17,6 +17,7 @@ import {
   formatCurrency,
   PRODUCT_CATEGORIES,
   resizeImageFileToDataUrl,
+  validateImageFileUnder200KB,
 } from '../utils/calculations';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
@@ -135,6 +136,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     }
 
     const filesToProcess = fileList.slice(0, remainingSlots);
+    for (const file of filesToProcess) {
+      const sizeErr = validateImageFileUnder200KB(file);
+      if (sizeErr) {
+        setError(sizeErr);
+        return;
+      }
+    }
+
     setError('');
     setCompressingImg(true);
     try {
@@ -159,7 +168,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not load selected images. Please choose valid JPG/PNG files.'
+          : 'Could not load selected images. Please choose valid JPG/PNG files under 200KB.'
       );
     } finally {
       setCompressingImg(false);
@@ -372,7 +381,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   Product Photos ({imageDataUrls.length}/{MAX_PRODUCT_IMAGES})
                 </div>
                 <div className="text-[11px] text-[#6B5B7B]">
-                  Upload up to {MAX_PRODUCT_IMAGES} photos. First photo is shown as Main Photo on product cards.
+                  Upload up to {MAX_PRODUCT_IMAGES} photos (<strong>Max 200KB / সর্বোচ্চ 200KB</strong> per image). First photo is shown as Main Photo on product cards.
                 </div>
               </div>
 

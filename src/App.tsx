@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FilePlus2,
   Home,
+  LifeBuoy,
   Lock,
   Package,
   Settings,
   ShoppingBag,
+  Store,
   Users,
 } from 'lucide-react';
 import { AdminLockView } from './components/AdminLockView';
@@ -15,6 +17,7 @@ import { ClientBillView } from './components/ClientBillView';
 import { ClientListView } from './components/ClientListView';
 import { DashboardView } from './components/DashboardView';
 import { DeliveryTrackingView } from './components/DeliveryTrackingView';
+import { HelpChatAdminView } from './components/HelpChatAdminView';
 import { NewClientView } from './components/NewClientView';
 import { OrdersView } from './components/OrdersView';
 import { PaymentHistoryView } from './components/PaymentHistoryView';
@@ -29,6 +32,7 @@ import {
   AppRoute,
   BusinessSettings,
   Client,
+  CustomerOrder,
   DeliveryStatus,
   ExpenseRecord,
   Invoice,
@@ -41,6 +45,7 @@ import {
 } from './types/business';
 import {
   getCustomerSessionId,
+  getSellerSessionId,
   isAdminUnlockedStored,
   setAdminUnlockedStored,
   setCustomerSessionId,
@@ -50,7 +55,6 @@ import { api } from './utils/api';
 import {
   createEmptyWorkspace,
   DEFAULT_VIEW_PANEL_CONFIG,
-  phoneNumbersMatch,
 } from './utils/calculations';
 
 interface HistoryEntry {
@@ -63,12 +67,36 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
+  const [customerSettings, setCustomerSettings] = useState<BusinessSettings>(
+    () => createEmptyWorkspace().settings
+  );
+  const [customerProducts, setCustomerProducts] = useState<Product[]>([]);
+  const [approvedSellerIds, setApprovedSellerIds] = useState<string[]>([]);
+  const [isolatedCustomer, setIsolatedCustomer] = useState<Client | null>(null);
+  const [isolatedCustomerOrders, setIsolatedCustomerOrders] = useState<CustomerOrder[]>([]);
+  const [isolatedCustomerBills, setIsolatedCustomerBills] = useState<Invoice[]>([]);
+
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() =>
     adminOnlyMode ? isAdminUnlockedStored() : false
   );
   const [customerSessionId, setCustomerSessionIdState] = useState<string | null>(() =>
     getCustomerSessionId()
   );
+  const [sellerSessionId, setSellerSessionIdState] = useState<string | null>(() =>
+    getSellerSessionId()
+  );
+
+  useEffect(() => {
+    const syncSellerSession = () => {
+      setSellerSessionIdState(getSellerSessionId());
+    };
+    window.addEventListener('gg-seller-session-changed', syncSellerSession);
+    window.addEventListener('storage', syncSellerSession);
+    return () => {
+      window.removeEventListener('gg-seller-session-changed', syncSellerSession);
+      window.removeEventListener('storage', syncSellerSession);
+    };
+  }, []);
 
   const [route, setRoute] = useState<AppRoute>('dashboard');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -86,46 +114,141 @@ export default function App() {
     }, 2600);
   }, []);
 
-  // Load from Cloud Firestore and keep synced across all devices in real time
+  // Load from Cloud Firestore and keep synced in real time
+  // Admin Mode loads full workspace; Customer Mode loads ONLY public storefront + settings + approved seller IDs
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
 
-    api
-      .fetchWorkspace()
-      .then((data) => {
-        if (!active) return;
-        setWorkspace(data);
-        setWorkspaceLoaded(true);
-        unsubscribe = api.subscribeWorkspace(
-          (updater) => {
-            if (active) setWorkspace(updater);
-          },
-          (err) => {
-            const msg = err.message || '';
-            if (msg.includes('permission-denied') || msg.includes('Missing or insufficient permissions')) {
-              showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
+    if (adminOnlyMode) {
+      api
+        .fetchWorkspace()
+        .then((data) => {
+          if (!active) return;
+          setWorkspace(data);
+          setWorkspaceLoaded(true);
+          unsubscribe = api.subscribeWorkspace(
+            (updater) => {
+              if (active) setWorkspace(updater);
+            },
+            (err) => {
+              const msg = err.message || '';
+              if (
+                msg.includes('permission-denied') ||
+                msg.includes('Missing or insufficient permissions')
+              ) {
+                showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
+              }
             }
+          );
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : '';
+          if (
+            msg.includes('permission-denied') ||
+            msg.includes('Missing or insufficient permissions')
+          ) {
+            showToast('Firestore permission denied. Update Firestore Rules in Firebase Console.');
+          } else {
+            showToast('Could not connect to Cloud Firestore. Please refresh.');
           }
-        );
-      })
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : '';
-        if (msg.includes('permission-denied') || msg.includes('Missing or insufficient permissions')) {
-          showToast('Firestore permission denied. Update Firestore Rules in Firebase Console.');
-        } else {
-          showToast('Could not connect to Cloud Firestore. Please refresh.');
-        }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    } else {
+      api
+        .fetchCustomerStorefront()
+        .then((data) => {
+          if (!active) return;
+          setCustomerSettings(data.settings);
+          setCustomerProducts(data.products);
+          setApprovedSellerIds(data.approvedSellerIds);
+          setWorkspaceLoaded(true);
+          unsubscribe = api.subscribeCustomerStorefront(
+            (nextSettings) => {
+              if (active) setCustomerSettings(nextSettings);
+            },
+            (nextProducts) => {
+              if (active) setCustomerProducts(nextProducts);
+            },
+            (nextApprovedIds) => {
+              if (active) setApprovedSellerIds(nextApprovedIds);
+            },
+            (err) => {
+              const msg = err.message || '';
+              if (
+                msg.includes('permission-denied') ||
+                msg.includes('Missing or insufficient permissions')
+              ) {
+                showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
+              }
+            }
+          );
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : '';
+          if (
+            msg.includes('permission-denied') ||
+            msg.includes('Missing or insufficient permissions')
+          ) {
+            showToast('Firestore permission denied. Update Firestore Rules in Firebase Console.');
+          } else {
+            showToast('Could not connect to Cloud Firestore. Please refresh.');
+          }
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    }
 
     return () => {
       active = false;
       if (unsubscribe) unsubscribe();
     };
-  }, [showToast]);
+  }, [adminOnlyMode, showToast]);
+
+  // In Customer Mode, subscribe ONLY to the logged-in customer's own client record, orders, and bills
+  useEffect(() => {
+    if (adminOnlyMode) return;
+    if (!customerSessionId) {
+      setIsolatedCustomer(null);
+      setIsolatedCustomerOrders([]);
+      setIsolatedCustomerBills([]);
+      return;
+    }
+
+    let active = true;
+    const unsubscribe = api.subscribeCustomerAccount(
+      customerSessionId,
+      (client) => {
+        if (!active) return;
+        if (!client) {
+          setIsolatedCustomer(null);
+          setIsolatedCustomerOrders([]);
+          setIsolatedCustomerBills([]);
+          setCustomerSessionId(null);
+          setCustomerSessionIdState(null);
+          return;
+        }
+        setIsolatedCustomer(client);
+      },
+      (orders) => {
+        if (active) setIsolatedCustomerOrders(orders);
+      },
+      (bills) => {
+        if (active) setIsolatedCustomerBills(bills);
+      },
+      () => {
+        // ignore transient snapshot errors
+      }
+    );
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [adminOnlyMode, customerSessionId]);
 
   const navigateTo = useCallback(
     (
@@ -234,31 +357,46 @@ export default function App() {
 
   const handleSaveProduct = async (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
-    existingId?: string
+    existingId?: string,
+    expectedSellerId?: string
   ) => {
     if (existingId) {
-      const updated = await api.updateProduct(existingId, payload);
-      setWorkspace((prev) => ({
-        ...prev,
-        products: prev.products.map((p) => (p.id === updated.id ? updated : p)),
-      }));
+      const updated = await api.updateProduct(existingId, payload, expectedSellerId);
+      if (adminOnlyMode) {
+        setWorkspace((prev) => ({
+          ...prev,
+          products: prev.products.map((p) => (p.id === updated.id ? updated : p)),
+        }));
+      } else {
+        setCustomerProducts((prev) =>
+          prev.map((p) => (p.id === updated.id ? updated : p))
+        );
+      }
       showToast('Product updated.');
       return;
     }
     const created = await api.createProduct(payload);
-    setWorkspace((prev) => ({
-      ...prev,
-      products: [created, ...prev.products],
-    }));
+    if (adminOnlyMode) {
+      setWorkspace((prev) => ({
+        ...prev,
+        products: [created, ...prev.products],
+      }));
+    } else {
+      setCustomerProducts((prev) => [created, ...prev]);
+    }
     showToast('Product added to catalog.');
   };
 
-  const handleDeleteProduct = async (id: string) => {
-    await api.deleteProduct(id);
-    setWorkspace((prev) => ({
-      ...prev,
-      products: prev.products.filter((p) => p.id !== id),
-    }));
+  const handleDeleteProduct = async (id: string, expectedSellerId?: string) => {
+    await api.deleteProduct(id, expectedSellerId);
+    if (adminOnlyMode) {
+      setWorkspace((prev) => ({
+        ...prev,
+        products: prev.products.filter((p) => p.id !== id),
+      }));
+    } else {
+      setCustomerProducts((prev) => prev.filter((p) => p.id !== id));
+    }
     showToast('Product removed.');
   };
 
@@ -440,12 +578,18 @@ export default function App() {
   const handleUpdateSellerStatus = async (
     applicationId: string,
     status: SellerAccountStatus,
-    adminRemarks?: string
+    adminRemarks?: string,
+    credentials?: {
+      sellerCode?: string;
+      email?: string;
+      password?: string;
+    }
   ) => {
     const updated = await api.updateSellerApplicationStatus(
       applicationId,
       status,
-      adminRemarks
+      adminRemarks,
+      credentials
     );
     setWorkspace((prev) => ({
       ...prev,
@@ -453,7 +597,25 @@ export default function App() {
         a.id === updated.id ? updated : a
       ),
     }));
-    showToast(`Seller status updated to ${status}.`);
+    showToast(
+      status === 'approved'
+        ? `Seller approved (${updated.sellerCode || updated.name}) — account activated.`
+        : `Seller status updated to ${status}.`
+    );
+  };
+
+  const handleSetSellerPassword = async (
+    applicationId: string,
+    newPassword: string
+  ) => {
+    const updated = await api.setSellerPassword(applicationId, newPassword);
+    setWorkspace((prev) => ({
+      ...prev,
+      sellerApplications: (prev.sellerApplications || []).map((a) =>
+        a.id === updated.id ? updated : a
+      ),
+    }));
+    showToast(`Seller login password updated for ${updated.name}.`);
   };
 
   const handleDeleteSellerApplication = async (applicationId: string) => {
@@ -496,88 +658,37 @@ export default function App() {
     showToast('Admin Panel locked.');
   };
 
-  const loggedInCustomer = useMemo(
-    () =>
-      customerSessionId
-        ? workspace.clients.find((c) => c.id === customerSessionId) || null
-        : null,
-    [customerSessionId, workspace.clients]
-  );
-
-  useEffect(() => {
-    if (!loading && workspaceLoaded && customerSessionId && !loggedInCustomer) {
-      setCustomerSessionId(null);
-      setCustomerSessionIdState(null);
-    }
-  }, [loading, workspaceLoaded, customerSessionId, loggedInCustomer]);
-
-  const customerOrders = useMemo(() => {
-    if (!loggedInCustomer) return [];
-    return (workspace.orders || []).filter(
-      (ord) =>
-        ord.clientId === loggedInCustomer.id ||
-        phoneNumbersMatch(ord.customerPhone, loggedInCustomer.mobile)
-    );
-  }, [loggedInCustomer, workspace.orders]);
-
-  const customerBills = useMemo(() => {
-    if (!loggedInCustomer) return [];
-    return workspace.invoices
-      .filter(
-        (inv) =>
-          inv.clientId === loggedInCustomer.id ||
-          phoneNumbersMatch(inv.customerMobile, loggedInCustomer.mobile)
-      )
-      .map((inv) => ({
-        ...inv,
-        totalPurchaseCost: 0,
-        profitAmount: 0,
-        notes: '',
-        items: inv.items.map((item) => ({
-          ...item,
-          purchasePrice: 0,
-          lineCost: 0,
-          lineProfit: 0,
-        })),
-      }));
-  }, [loggedInCustomer, workspace.invoices]);
-
-  const upsertWorkspaceClient = useCallback((client: Client) => {
-    setWorkspace((prev) => {
-      const exists = prev.clients.some((c) => c.id === client.id);
-      return {
-        ...prev,
-        clients: exists
-          ? prev.clients.map((c) => (c.id === client.id ? client : c))
-          : [client, ...prev.clients],
-      };
-    });
-  }, []);
-
   const handleCustomerLogin = useCallback(
     (client: Client) => {
-      upsertWorkspaceClient(client);
+      setIsolatedCustomer(client);
       setCustomerSessionId(client.id);
       setCustomerSessionIdState(client.id);
     },
-    [upsertWorkspaceClient]
+    []
   );
 
   const handleCustomerLogout = useCallback(() => {
     setCustomerSessionId(null);
     setCustomerSessionIdState(null);
+    setIsolatedCustomer(null);
+    setIsolatedCustomerOrders([]);
+    setIsolatedCustomerBills([]);
   }, []);
 
-  const sanitizedLoggedInCustomer = useMemo(() => {
-    if (!loggedInCustomer) return null;
-    const {
-      passwordHash: _ph,
-      passwordSalt: _ps,
-      runningPasswordEnc: _rp,
-      ...safeClient
-    } = loggedInCustomer;
-    return safeClient;
-  }, [loggedInCustomer]);
+  const handleCustomerUpdated = useCallback((client: Client) => {
+    setIsolatedCustomer(client);
+  }, []);
+
+  const sanitizedCustomerProducts = useMemo(() => {
+    return customerProducts.map((p) =>
+      sellerSessionId && p.sellerId === sellerSessionId
+        ? p
+        : { ...p, purchasePrice: 0 }
+    );
+  }, [customerProducts, sellerSessionId]);
+
+  // Keep workspaceLoaded read cleanly for admin-mode sanity checks
+  void workspaceLoaded;
 
   if (loading) {
     return (
@@ -592,16 +703,15 @@ export default function App() {
   if (!adminOnlyMode) {
     return (
       <StartPortal
-        settings={workspace.settings}
-        products={workspace.products}
-        sellerApplications={workspace.sellerApplications || []}
-        supportChats={workspace.supportChats || []}
-        loggedInCustomer={sanitizedLoggedInCustomer}
-        customerOrders={customerOrders}
-        customerBills={customerBills}
+        settings={customerSettings}
+        products={sanitizedCustomerProducts}
+        approvedSellerIds={approvedSellerIds}
+        loggedInCustomer={isolatedCustomer}
+        customerOrders={isolatedCustomerOrders}
+        customerBills={isolatedCustomerBills}
         onCustomerLogin={handleCustomerLogin}
         onCustomerLogout={handleCustomerLogout}
-        onCustomerUpdated={upsertWorkspaceClient}
+        onCustomerUpdated={handleCustomerUpdated}
         onSaveProduct={handleSaveProduct}
         onDeleteProduct={handleDeleteProduct}
       />
@@ -625,6 +735,19 @@ export default function App() {
   }
 
   const currencySymbol = workspace.settings.currencySymbol || '₹';
+  const pendingSellerCount =
+    (workspace.sellerApplications || []).filter((a) => a.status === 'pending')
+      .length +
+    workspace.products.filter(
+      (p) =>
+        Boolean(p.sellerId) &&
+        p.sellerApprovalStatus !== 'approved' &&
+        p.sellerApprovalStatus !== 'rejected'
+    ).length;
+  const unreadHelpChatCount = (workspace.supportChats || []).reduce(
+    (sum, t) => sum + Math.max(0, Number(t.unreadForAdmin) || 0),
+    0
+  );
 
   return (
     <div className="relative min-h-screen flex flex-col text-[#1F122B]">
@@ -632,32 +755,31 @@ export default function App() {
 
       {/* TOP NAVIGATION BAR (Strict 3-zone contract) */}
       <header className="no-print sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-[#EFE2F5]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-8">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4">
           {/* Zone 1: Brand Logo & Wordmark */}
           <button
             type="button"
             onClick={() => navigateTo('dashboard')}
-            className="flex items-center gap-2 min-w-0 cursor-pointer"
+            className="flex items-center gap-2 min-w-0 shrink cursor-pointer"
           >
             <BrandLogo
               logoDataUrl={workspace.settings.logoDataUrl}
               businessName={workspace.settings.businessName}
               size={32}
             />
-            <span className="font-display-serif text-base sm:text-lg font-bold tracking-tight text-[#6D28D9] whitespace-nowrap truncate max-w-[110px] sm:max-w-none">
+            <span className="font-display-serif text-base sm:text-lg font-bold tracking-tight text-[#6D28D9] whitespace-nowrap truncate max-w-[92px] sm:max-w-none">
               {workspace.settings.businessName || 'Glamour Galleria'}
             </span>
           </button>
 
           {/* Zone 2: Concise single-line nav links */}
-          <nav className="hidden md:flex items-center gap-4 lg:gap-5 overflow-x-auto">
+          <nav className="hidden lg:flex items-center gap-4 xl:gap-5 overflow-x-auto">
             {(
               [
                 { id: 'dashboard', label: 'Dashboard' },
                 { id: 'orders', label: 'Orders' },
                 { id: 'client-list', label: 'Clients' },
                 { id: 'products', label: 'Product Listing' },
-                { id: 'seller-hub-manage', label: 'Seller Hub Manage' },
                 { id: 'sales-report', label: 'Reports' },
                 { id: 'settings', label: 'Settings' },
               ] as const
@@ -680,23 +802,60 @@ export default function App() {
             })}
           </nav>
 
-          {/* Zone 3: Primary CTA & Actions */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Zone 3: Seller Hub Manage, Help Chat, New Bill & Lock Admin */}
+          <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto shrink-0">
             <button
               type="button"
-              onClick={handleLockAdmin}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-2.5 sm:px-3 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => navigateTo('seller-hub-manage')}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                route === 'seller-hub-manage'
+                  ? 'border-[#DB2777] bg-[#FDF2F8] text-[#9D174D]'
+                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE]'
+              }`}
             >
-              <Lock className="w-3.5 h-3.5" />
-              <span>Lock Admin</span>
+              <Store className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
+              <span>Seller Hub Manage</span>
+              {pendingSellerCount > 0 && (
+                <span className="rounded-md bg-[#DB2777] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num leading-none">
+                  {pendingSellerCount}
+                </span>
+              )}
             </button>
+
+            <button
+              type="button"
+              onClick={() => navigateTo('help-chat')}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                route === 'help-chat'
+                  ? 'border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE]'
+              }`}
+            >
+              <LifeBuoy className="w-3.5 h-3.5 text-[#7E22CE] shrink-0" />
+              <span>Help Chat</span>
+              {unreadHelpChatCount > 0 && (
+                <span className="rounded-md bg-[#7E22CE] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num leading-none">
+                  {unreadHelpChatCount}
+                </span>
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => navigateTo('client-bill')}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 sm:px-4 py-2 text-xs font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 sm:px-3.5 py-1.5 sm:py-2 text-xs font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <FilePlus2 className="w-3.5 h-3.5" />
+              <FilePlus2 className="w-3.5 h-3.5 shrink-0" />
               <span>New Bill</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLockAdmin}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Lock className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">Lock Admin</span>
             </button>
           </div>
         </div>
@@ -850,10 +1009,22 @@ export default function App() {
             defaultLowStock={workspace.settings.lowStockThreshold || 5}
             onBack={goBack}
             onUpdateSellerStatus={handleUpdateSellerStatus}
+            onSetSellerPassword={handleSetSellerPassword}
             onDeleteSellerApplication={handleDeleteSellerApplication}
             onUpdateProductApproval={handleUpdateProductApproval}
             onSaveProduct={handleSaveProduct}
             onDeleteProduct={handleDeleteProduct}
+          />
+        )}
+
+        {route === 'help-chat' && (
+          <HelpChatAdminView
+            supportChats={workspace.supportChats || []}
+            clients={workspace.clients}
+            onBack={goBack}
+            onOpenCustomerProfile={(clientId) =>
+              navigateTo('client-list', { clientId })
+            }
           />
         )}
       </main>

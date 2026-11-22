@@ -5,8 +5,10 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
+  query,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
@@ -49,6 +51,7 @@ import {
   mergeBusinessSettings,
   normalizeIndianPhone,
   normalizePhoneDigits,
+  normalizeSupportName,
   phoneNumbersMatch,
   todayIsoDate,
 } from './calculations';
@@ -99,6 +102,43 @@ function sortDescByUpdated<T extends { updatedAt?: string; createdAt?: string }>
       String(a.updatedAt || a.createdAt || '')
     )
   );
+}
+
+function sanitizePublicClient(c: Client): Client {
+  const {
+    passwordHash: _ph,
+    passwordSalt: _ps,
+    runningPasswordEnc: _rp,
+    ...safe
+  } = c;
+  return safe as Client;
+}
+
+function sanitizePublicSeller(app: SellerApplication): SellerApplication {
+  const {
+    passwordHash: _ph,
+    passwordSalt: _ps,
+    runningPasswordEnc: _rp,
+    ...safe
+  } = app;
+  return safe as SellerApplication;
+}
+
+function sanitizePublicInvoice(inv: Invoice): Invoice {
+  return {
+    ...inv,
+    totalPurchaseCost: 0,
+    profitAmount: 0,
+    notes: '',
+    items: Array.isArray(inv.items)
+      ? inv.items.map((item) => ({
+          ...item,
+          purchasePrice: 0,
+          lineCost: 0,
+          lineProfit: 0,
+        }))
+      : [],
+  };
 }
 
 function normalizeInvoice(raw: Partial<Invoice>, existing?: Invoice): Invoice {
@@ -484,32 +524,58 @@ export const firestoreService = {
 
   async updateProduct(
     id: string,
-    payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>
+    payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
+    expectedSellerId?: string
   ): Promise<Product> {
     const ref = doc(db, PRODUCTS_COL, id);
     try {
       const snap = await getDoc(ref);
       if (!snap.exists()) throw new Error('Product not found.');
       const existing = snap.data() as Product;
+      if (expectedSellerId && existing.sellerId !== expectedSellerId) {
+        throw new Error('You can only edit products belonging to your Seller account.');
+      }
       const updated: Product = stripUndefinedDeep({
         ...existing,
         ...payload,
+        sellerId: expectedSellerId ? existing.sellerId : payload.sellerId,
         id,
         updatedAt: new Date().toISOString(),
       });
       await setDoc(ref, updated);
       return updated;
     } catch (error) {
-      if (error instanceof Error && error.message === 'Product not found.') throw error;
+      if (
+        error instanceof Error &&
+        (error.message === 'Product not found.' ||
+          error.message.includes('only edit products'))
+      ) {
+        throw error;
+      }
       handleFirestoreError(error, OperationType.UPDATE, `${PRODUCTS_COL}/${id}`);
     }
   },
 
-  async deleteProduct(id: string): Promise<{ ok: boolean }> {
+  async deleteProduct(
+    id: string,
+    expectedSellerId?: string
+  ): Promise<{ ok: boolean }> {
+    const ref = doc(db, PRODUCTS_COL, id);
     try {
-      await deleteDoc(doc(db, PRODUCTS_COL, id));
+      if (expectedSellerId) {
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return { ok: true };
+        const existing = snap.data() as Product;
+        if (existing.sellerId !== expectedSellerId) {
+          throw new Error('You can only delete products belonging to your Seller account.');
+        }
+      }
+      await deleteDoc(ref);
       return { ok: true };
     } catch (error) {
+      if (error instanceof Error && error.message.includes('only delete products')) {
+        throw error;
+      }
       handleFirestoreError(error, OperationType.DELETE, `${PRODUCTS_COL}/${id}`);
     }
   },
@@ -1935,11 +2001,13 @@ export const firestoreService = {
     existingId?: string;
     clientId?: string;
     name: string;
+    email?: string;
     fullAddress: string;
     phone: string;
     panNumber: string;
     aadhaarNumber: string;
     gstNumber?: string;
+    password?: string;
     sellerPhotoDataUrl: string;
     panDocDataUrl: string;
     aadhaarDocDataUrl: string;
@@ -1948,14 +2016,19 @@ export const firestoreService = {
     bankAccountDetails?: string;
   }): Promise<SellerApplication> {
     const cleanName = String(payload.name || '').trim();
+    const cleanEmail = String(payload.email || '').trim().toLowerCase();
     const cleanAddress = String(payload.fullAddress || '').trim();
     const phoneCheck = normalizeIndianPhone(payload.phone);
     const cleanPan = String(payload.panNumber || '').trim().toUpperCase();
     const cleanAadhaar = String(payload.aadhaarNumber || '').replace(/[^\d]/g, '');
     const cleanGst = String(payload.gstNumber || '').trim().toUpperCase();
+    const cleanPassword = String(payload.password || '').trim();
 
     if (cleanName.length < 2) {
       throw new Error('Please enter your full name.');
+    }
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('Please enter a valid email address.');
     }
     if (!cleanAddress) {
       throw new Error('Please enter your full address.');
@@ -1970,6 +2043,9 @@ export const firestoreService = {
     }
     if (cleanAadhaar.length !== 12) {
       throw new Error('Please enter a valid 12-digit Aadhaar number.');
+    }
+    if (cleanPassword && cleanPassword.length < 4) {
+      throw new Error('Seller login password must be at least 4 characters.');
     }
     if (!payload.sellerPhotoDataUrl) {
       throw new Error('Please upload your Seller Photo.');
@@ -1986,33 +2062,77 @@ export const firestoreService = {
       );
     }
 
-    let existingApps: SellerApplication[] = [];
+    let matchedExisting: SellerApplication | undefined;
     try {
-      const snap = await getDocs(collection(db, SELLER_APPLICATIONS_COL));
-      existingApps = snap.docs.map((d) => d.data() as SellerApplication);
+      if (payload.existingId) {
+        const exactSnap = await getDoc(
+          doc(db, SELLER_APPLICATIONS_COL, payload.existingId)
+        );
+        if (exactSnap.exists()) {
+          matchedExisting = exactSnap.data() as SellerApplication;
+        }
+      }
+      if (!matchedExisting && payload.clientId) {
+        const cliSnap = await getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('clientId', '==', payload.clientId)
+          )
+        );
+        if (!cliSnap.empty) {
+          matchedExisting = cliSnap.docs[0].data() as SellerApplication;
+        }
+      }
+      if (!matchedExisting) {
+        const phoneSnap = await getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('normalizedPhone', '==', phoneCheck.digits10)
+          )
+        );
+        if (!phoneSnap.empty) {
+          matchedExisting = phoneSnap.docs[0].data() as SellerApplication;
+        }
+      }
+      if (!matchedExisting && cleanEmail) {
+        const emailSnap = await getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('email', '==', cleanEmail)
+          )
+        );
+        if (!emailSnap.empty) {
+          matchedExisting = emailSnap.docs[0].data() as SellerApplication;
+        }
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, SELLER_APPLICATIONS_COL);
     }
 
-    const matchedExisting =
-      (payload.existingId
-        ? existingApps.find((a) => a.id === payload.existingId)
-        : undefined) ||
-      existingApps.find(
-        (a) =>
-          (payload.clientId && a.clientId === payload.clientId) ||
-          phoneNumbersMatch(a.phone, phoneCheck.formatted)
-      );
-
     if (matchedExisting && matchedExisting.status === 'approved') {
-      throw new Error('Your seller account is already approved.');
+      throw new Error('Your seller account is already approved. Please use Seller Login.');
     }
 
     const now = new Date().toISOString();
+    let passwordSalt = matchedExisting?.passwordSalt || '';
+    let passwordHash = matchedExisting?.passwordHash || '';
+    let runningPasswordEnc = matchedExisting?.runningPasswordEnc || '';
+    let passwordUpdatedAt = matchedExisting?.passwordUpdatedAt || '';
+
+    if (cleanPassword) {
+      const hashed = await hashCustomerPassword(cleanPassword);
+      passwordSalt = hashed.salt;
+      passwordHash = hashed.hash;
+      runningPasswordEnc = encryptRunningPassword(cleanPassword, hashed.salt);
+      passwordUpdatedAt = now;
+    }
+
     const record: SellerApplication = stripUndefinedDeep({
       id: matchedExisting ? matchedExisting.id : `seller-${crypto.randomUUID()}`,
       clientId: payload.clientId || matchedExisting?.clientId || '',
+      sellerCode: matchedExisting?.sellerCode || '',
       name: cleanName,
+      email: cleanEmail || matchedExisting?.email || '',
       fullAddress: cleanAddress,
       phone: phoneCheck.formatted,
       normalizedPhone: phoneCheck.digits10,
@@ -2025,6 +2145,11 @@ export const firestoreService = {
       gstDocDataUrl: String(payload.gstDocDataUrl || ''),
       bankDocDataUrl: payload.bankDocDataUrl,
       bankAccountDetails: String(payload.bankAccountDetails || '').trim(),
+      passwordSalt,
+      passwordHash,
+      runningPasswordEnc,
+      passwordUpdatedAt,
+      accountActivated: false,
       status: 'pending',
       adminRemarks: '',
       reviewedAt: '',
@@ -2047,7 +2172,12 @@ export const firestoreService = {
   async updateSellerApplicationStatus(
     applicationId: string,
     status: SellerAccountStatus,
-    adminRemarks?: string
+    adminRemarks?: string,
+    credentials?: {
+      sellerCode?: string;
+      email?: string;
+      password?: string;
+    }
   ): Promise<SellerApplication> {
     const ref = doc(db, SELLER_APPLICATIONS_COL, applicationId);
     try {
@@ -2055,14 +2185,113 @@ export const firestoreService = {
       if (!snap.exists()) throw new Error('Seller application not found.');
       const existing = snap.data() as SellerApplication;
       const now = new Date().toISOString();
+
+      let nextSellerCode =
+        credentials?.sellerCode?.trim().toUpperCase() || existing.sellerCode || '';
+      const nextEmail =
+        credentials?.email !== undefined
+          ? credentials.email.trim().toLowerCase()
+          : existing.email || '';
+      let passwordSalt = existing.passwordSalt || '';
+      let passwordHash = existing.passwordHash || '';
+      let runningPasswordEnc = existing.runningPasswordEnc || '';
+      let passwordUpdatedAt = existing.passwordUpdatedAt || '';
+
+      if (status === 'approved') {
+        if (!nextSellerCode) {
+          const digitsSuffix =
+            (existing.normalizedPhone || normalizePhoneDigits(existing.phone)).slice(
+              -4
+            ) || String(Math.floor(1000 + Math.random() * 9000));
+          const randSuffix = Math.floor(10 + Math.random() * 90);
+          nextSellerCode = `GGS-${digitsSuffix}${randSuffix}`;
+        }
+
+        const requestedPassword = String(credentials?.password || '').trim();
+        if (requestedPassword) {
+          if (requestedPassword.length < 4) {
+            throw new Error('Seller password must be at least 4 characters.');
+          }
+          const hashed = await hashCustomerPassword(requestedPassword);
+          passwordSalt = hashed.salt;
+          passwordHash = hashed.hash;
+          runningPasswordEnc = encryptRunningPassword(
+            requestedPassword,
+            hashed.salt
+          );
+          passwordUpdatedAt = now;
+        } else if (!passwordHash) {
+          const fallbackDigits = (
+            existing.normalizedPhone ||
+            normalizePhoneDigits(existing.phone) ||
+            '7890'
+          ).slice(-4);
+          const autoPassword = `GG${fallbackDigits}`;
+          const hashed = await hashCustomerPassword(autoPassword);
+          passwordSalt = hashed.salt;
+          passwordHash = hashed.hash;
+          runningPasswordEnc = encryptRunningPassword(autoPassword, hashed.salt);
+          passwordUpdatedAt = now;
+        }
+      }
+
       const updated: SellerApplication = stripUndefinedDeep({
         ...existing,
+        sellerCode: nextSellerCode,
+        email: nextEmail,
+        passwordSalt,
+        passwordHash,
+        runningPasswordEnc,
+        passwordUpdatedAt,
+        accountActivated: status === 'approved',
         status,
         adminRemarks:
           adminRemarks !== undefined
             ? adminRemarks.trim()
             : existing.adminRemarks || '',
         reviewedAt: now,
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message === 'Seller application not found.' ||
+          error.message === 'Seller password must be at least 4 characters.')
+      ) {
+        throw error;
+      }
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${SELLER_APPLICATIONS_COL}/${applicationId}`
+      );
+    }
+  },
+
+  async setSellerPassword(
+    applicationId: string,
+    newPassword: string
+  ): Promise<SellerApplication> {
+    const cleanPassword = String(newPassword || '').trim();
+    if (cleanPassword.length < 4) {
+      throw new Error('Password must be at least 4 characters long.');
+    }
+    const ref = doc(db, SELLER_APPLICATIONS_COL, applicationId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Seller application not found.');
+      const existing = snap.data() as SellerApplication;
+      const now = new Date().toISOString();
+      const { salt, hash } = await hashCustomerPassword(cleanPassword);
+      const runningPasswordEnc = encryptRunningPassword(cleanPassword, salt);
+      const updated: SellerApplication = stripUndefinedDeep({
+        ...existing,
+        passwordSalt: salt,
+        passwordHash: hash,
+        runningPasswordEnc,
+        passwordUpdatedAt: now,
         updatedAt: now,
       });
       await setDoc(ref, updated);
@@ -2077,6 +2306,72 @@ export const firestoreService = {
         `${SELLER_APPLICATIONS_COL}/${applicationId}`
       );
     }
+  },
+
+  async loginSellerAccount(
+    identifier: string,
+    password: string
+  ): Promise<{ seller: SellerApplication }> {
+    const cleanIdentifier = String(identifier || '').trim();
+    const cleanPassword = String(password || '').trim();
+    if (!cleanIdentifier) {
+      throw new Error('Please enter your Seller ID, Email, or Phone number.');
+    }
+    if (!cleanPassword) {
+      throw new Error('Please enter your Seller password.');
+    }
+
+    let apps: SellerApplication[] = [];
+    try {
+      const snap = await getDocs(collection(db, SELLER_APPLICATIONS_COL));
+      apps = snap.docs.map((d) => d.data() as SellerApplication);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, SELLER_APPLICATIONS_COL);
+    }
+
+    const lowerIdent = cleanIdentifier.toLowerCase();
+    const upperIdent = cleanIdentifier.toUpperCase();
+    const matched = apps.find(
+      (a) =>
+        (a.sellerCode && a.sellerCode.toUpperCase() === upperIdent) ||
+        (a.email && a.email.toLowerCase() === lowerIdent) ||
+        phoneNumbersMatch(a.phone, cleanIdentifier)
+    );
+
+    if (!matched) {
+      throw new Error('No seller account found matching that Seller ID, Email, or Phone.');
+    }
+
+    if (matched.status === 'pending') {
+      throw new Error(
+        'Your Seller Application is pending Admin approval. Login activates once Admin approves.'
+      );
+    }
+    if (matched.status === 'rejected') {
+      throw new Error(
+        matched.adminRemarks
+          ? `Your Seller Application was rejected: ${matched.adminRemarks}`
+          : 'Your Seller Application was rejected. Please review and re-submit.'
+      );
+    }
+    if (matched.status === 'suspended' || matched.accountActivated === false) {
+      throw new Error(
+        matched.adminRemarks
+          ? `Your Seller Account is suspended/disabled: ${matched.adminRemarks}`
+          : 'Your Seller Account is currently suspended/disabled. Contact Admin via Help Center.'
+      );
+    }
+
+    const valid = await verifyCustomerPassword(
+      cleanPassword,
+      matched.passwordSalt,
+      matched.passwordHash
+    );
+    if (!valid) {
+      throw new Error('Incorrect password. Please try again or contact Admin.');
+    }
+
+    return { seller: matched };
   },
 
   async deleteSellerApplication(applicationId: string): Promise<{ ok: boolean }> {
@@ -2114,6 +2409,406 @@ export const firestoreService = {
     }
   },
 
+  async fetchCustomerStorefront(): Promise<{
+    settings: BusinessSettings;
+    products: Product[];
+    approvedSellerIds: string[];
+  }> {
+    let settings: BusinessSettings = mergeBusinessSettings();
+    try {
+      const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
+      if (settingsSnap.exists()) {
+        settings = mergeBusinessSettings(
+          settingsSnap.data() as Partial<BusinessSettings>
+        );
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`);
+    }
+
+    let products: Product[] = [];
+    let approvedSellerIds: string[] = [];
+    try {
+      const [prodSnap, sellerSnap] = await Promise.all([
+        getDocs(collection(db, PRODUCTS_COL)),
+        getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('status', '==', 'approved')
+          )
+        ),
+      ]);
+      products = sortDescByCreated(prodSnap.docs.map((d) => d.data() as Product));
+      approvedSellerIds = sellerSnap.docs
+        .map((d) => d.data() as SellerApplication)
+        .filter((a) => a.status === 'approved' && a.accountActivated !== false)
+        .map((a) => a.id);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, PRODUCTS_COL);
+    }
+
+    return { settings, products, approvedSellerIds };
+  },
+
+  subscribeCustomerStorefront(
+    onSettings: (settings: BusinessSettings) => void,
+    onProducts: (products: Product[]) => void,
+    onApprovedSellerIds: (sellerIds: string[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    const reportError = (op: OperationType, path: string, err: unknown) => {
+      try {
+        handleFirestoreError(err, op, path);
+      } catch (wrapped) {
+        onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+      }
+    };
+
+    const unsubSettings = onSnapshot(
+      doc(db, SETTINGS_COL, SETTINGS_DOC),
+      (snap) => {
+        if (snap.exists()) {
+          onSettings(
+            mergeBusinessSettings(snap.data() as Partial<BusinessSettings>)
+          );
+        }
+      },
+      (err) => reportError(OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`, err)
+    );
+
+    const unsubProducts = onSnapshot(
+      collection(db, PRODUCTS_COL),
+      (snap) => {
+        onProducts(sortDescByCreated(snap.docs.map((d) => d.data() as Product)));
+      },
+      (err) => reportError(OperationType.LIST, PRODUCTS_COL, err)
+    );
+
+    const unsubSellers = onSnapshot(
+      query(
+        collection(db, SELLER_APPLICATIONS_COL),
+        where('status', '==', 'approved')
+      ),
+      (snap) => {
+        const ids = snap.docs
+          .map((d) => d.data() as SellerApplication)
+          .filter((a) => a.status === 'approved' && a.accountActivated !== false)
+          .map((a) => a.id);
+        onApprovedSellerIds(ids);
+      },
+      (err) => reportError(OperationType.LIST, SELLER_APPLICATIONS_COL, err)
+    );
+
+    return () => {
+      unsubSettings();
+      unsubProducts();
+      unsubSellers();
+    };
+  },
+
+  subscribeCustomerAccount(
+    clientId: string,
+    onClient: (client: Client | null) => void,
+    onOrders: (orders: CustomerOrder[]) => void,
+    onInvoices: (invoices: Invoice[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    const reportError = (op: OperationType, path: string, err: unknown) => {
+      try {
+        handleFirestoreError(err, op, path);
+      } catch (wrapped) {
+        onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+      }
+    };
+
+    let ordersByClient: CustomerOrder[] = [];
+    let ordersByPhone: CustomerOrder[] = [];
+    let unsubOrdersPhone: (() => void) | undefined;
+    let activePhoneDigits = '';
+
+    const emitOrders = () => {
+      const merged = new Map<string, CustomerOrder>();
+      for (const o of [...ordersByClient, ...ordersByPhone]) {
+        merged.set(o.id, o);
+      }
+      onOrders(sortDescByCreated(Array.from(merged.values())));
+    };
+
+    const unsubClient = onSnapshot(
+      doc(db, CLIENTS_COL, clientId),
+      (snap) => {
+        if (!snap.exists()) {
+          onClient(null);
+          return;
+        }
+        const safeClient = sanitizePublicClient(snap.data() as Client);
+        onClient(safeClient);
+
+        const nextDigits = normalizePhoneDigits(safeClient.mobile);
+        if (nextDigits && nextDigits !== activePhoneDigits) {
+          activePhoneDigits = nextDigits;
+          if (unsubOrdersPhone) unsubOrdersPhone();
+          unsubOrdersPhone = onSnapshot(
+            query(
+              collection(db, ORDERS_COL),
+              where('normalizedPhone', '==', nextDigits)
+            ),
+            (ordSnap) => {
+              ordersByPhone = ordSnap.docs.map((d) => d.data() as CustomerOrder);
+              emitOrders();
+            },
+            (err) => reportError(OperationType.LIST, ORDERS_COL, err)
+          );
+        }
+      },
+      (err) => reportError(OperationType.GET, `${CLIENTS_COL}/${clientId}`, err)
+    );
+
+    const unsubOrdersClient = onSnapshot(
+      query(collection(db, ORDERS_COL), where('clientId', '==', clientId)),
+      (snap) => {
+        ordersByClient = snap.docs.map((d) => d.data() as CustomerOrder);
+        emitOrders();
+      },
+      (err) => reportError(OperationType.LIST, ORDERS_COL, err)
+    );
+
+    const unsubInvoices = onSnapshot(
+      query(collection(db, INVOICES_COL), where('clientId', '==', clientId)),
+      (snap) => {
+        const list = sortDescByCreated(
+          snap.docs.map((d) => sanitizePublicInvoice(d.data() as Invoice))
+        );
+        onInvoices(list);
+      },
+      (err) => reportError(OperationType.LIST, INVOICES_COL, err)
+    );
+
+    return () => {
+      unsubClient();
+      unsubOrdersClient();
+      if (unsubOrdersPhone) unsubOrdersPhone();
+      unsubInvoices();
+    };
+  },
+
+  subscribeSingleSellerApplication(
+    sellerId: string,
+    onSeller: (seller: SellerApplication | null) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      doc(db, SELLER_APPLICATIONS_COL, sellerId),
+      (snap) => {
+        if (!snap.exists()) {
+          onSeller(null);
+          return;
+        }
+        onSeller(sanitizePublicSeller(snap.data() as SellerApplication));
+      },
+      (err) => {
+        try {
+          handleFirestoreError(
+            err,
+            OperationType.GET,
+            `${SELLER_APPLICATIONS_COL}/${sellerId}`
+          );
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
+  async fetchSellerApplicationStatus(params: {
+    applicationId?: string;
+    clientId?: string;
+    phone?: string;
+    panNumber?: string;
+  }): Promise<SellerApplication | null> {
+    try {
+      if (params.applicationId) {
+        const snap = await getDoc(
+          doc(db, SELLER_APPLICATIONS_COL, params.applicationId)
+        );
+        if (snap.exists()) {
+          return sanitizePublicSeller(snap.data() as SellerApplication);
+        }
+      }
+
+      if (params.clientId) {
+        const snap = await getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('clientId', '==', params.clientId)
+          )
+        );
+        if (!snap.empty) {
+          const sorted = sortDescByCreated(
+            snap.docs.map((d) => d.data() as SellerApplication)
+          );
+          return sanitizePublicSeller(sorted[0]);
+        }
+      }
+
+      if (params.phone && params.panNumber) {
+        const phoneCheck = normalizeIndianPhone(params.phone);
+        const cleanPan = params.panNumber.trim().toUpperCase();
+        if (!phoneCheck.valid) {
+          throw new Error(
+            phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+          );
+        }
+        if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(cleanPan)) {
+          throw new Error(
+            'Please enter your valid 10-character PAN number to verify ownership.'
+          );
+        }
+
+        const snap = await getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('normalizedPhone', '==', phoneCheck.digits10)
+          )
+        );
+        const match = snap.docs
+          .map((d) => d.data() as SellerApplication)
+          .find((a) => String(a.panNumber || '').trim().toUpperCase() === cleanPan);
+        if (!match) {
+          throw new Error(
+            'No seller application found matching that Phone Number + PAN Number.'
+          );
+        }
+        return sanitizePublicSeller(match);
+      }
+
+      return null;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('PAN') ||
+          error.message.includes('mobile') ||
+          error.message.includes('No seller application'))
+      ) {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.GET, SELLER_APPLICATIONS_COL);
+    }
+  },
+
+  async fetchSupportThreadForClient(
+    clientId: string,
+    phone?: string
+  ): Promise<SupportChatThread | null> {
+    try {
+      const byClientSnap = await getDocs(
+        query(collection(db, SUPPORT_CHATS_COL), where('clientId', '==', clientId))
+      );
+      if (!byClientSnap.empty) {
+        const threads = sortDescByUpdated(
+          byClientSnap.docs.map((d) => d.data() as SupportChatThread)
+        );
+        return threads[0];
+      }
+
+      const digits10 = normalizePhoneDigits(phone);
+      if (digits10.length >= 10) {
+        const byPhoneSnap = await getDocs(
+          query(
+            collection(db, SUPPORT_CHATS_COL),
+            where('normalizedPhone', '==', digits10)
+          )
+        );
+        const match = sortDescByUpdated(
+          byPhoneSnap.docs.map((d) => d.data() as SupportChatThread)
+        ).find((t) => !t.clientId || t.clientId === clientId);
+        if (match) return match;
+      }
+
+      return null;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, SUPPORT_CHATS_COL);
+    }
+  },
+
+  async resolveGuestSupportThread(
+    name: string,
+    phone: string
+  ): Promise<SupportChatThread | null> {
+    const cleanName = String(name || '').trim();
+    if (cleanName.length < 2) {
+      throw new Error('Please enter your name (at least 2 characters).');
+    }
+    const phoneCheck = normalizeIndianPhone(phone);
+    if (!phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
+    }
+
+    try {
+      const snap = await getDocs(
+        query(
+          collection(db, SUPPORT_CHATS_COL),
+          where('normalizedPhone', '==', phoneCheck.digits10)
+        )
+      );
+      if (snap.empty) return null;
+
+      const threads = sortDescByUpdated(
+        snap.docs.map((d) => d.data() as SupportChatThread)
+      );
+      const exactMatch = threads.find(
+        (t) => normalizeSupportName(t.customerName) === normalizeSupportName(cleanName)
+      );
+      if (exactMatch) {
+        return exactMatch;
+      }
+
+      throw new Error(
+        'A support chat for this mobile number exists under a different name. Please enter the exact Name & Phone Number used previously, or Sign In. / এই মোবাইল নম্বরে অন্য নামে আগের চ্যাট রয়েছে। অনুগ্রহ করে আগের সঠিক নাম ও ফোন নম্বর দিন বা সাইন ইন করুন।'
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('different name') ||
+          error.message.includes('valid 10-digit') ||
+          error.message.includes('enter your name'))
+      ) {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.LIST, SUPPORT_CHATS_COL);
+    }
+  },
+
+  subscribeSingleSupportThread(
+    chatId: string,
+    onThread: (thread: SupportChatThread | null) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      doc(db, SUPPORT_CHATS_COL, chatId),
+      (snap) => {
+        if (!snap.exists()) {
+          onThread(null);
+          return;
+        }
+        onThread(snap.data() as SupportChatThread);
+      },
+      (err) => {
+        try {
+          handleFirestoreError(
+            err,
+            OperationType.GET,
+            `${SUPPORT_CHATS_COL}/${chatId}`
+          );
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
   async sendSupportMessage(payload: {
     chatId?: string;
     clientId?: string;
@@ -2143,28 +2838,83 @@ export const firestoreService = {
       );
     }
 
-    let existingChats: SupportChatThread[] = [];
+    let matched: SupportChatThread | undefined;
     try {
-      const snap = await getDocs(collection(db, SUPPORT_CHATS_COL));
-      existingChats = snap.docs.map((d) => d.data() as SupportChatThread);
+      if (payload.chatId) {
+        const exactSnap = await getDoc(doc(db, SUPPORT_CHATS_COL, payload.chatId));
+        if (exactSnap.exists()) {
+          matched = exactSnap.data() as SupportChatThread;
+        }
+      }
+
+      if (!matched && payload.clientId) {
+        const cliSnap = await getDocs(
+          query(
+            collection(db, SUPPORT_CHATS_COL),
+            where('clientId', '==', payload.clientId)
+          )
+        );
+        if (!cliSnap.empty) {
+          matched = sortDescByUpdated(
+            cliSnap.docs.map((d) => d.data() as SupportChatThread)
+          )[0];
+        }
+      }
+
+      if (!matched && digits10.length >= 10) {
+        const phoneSnap = await getDocs(
+          query(
+            collection(db, SUPPORT_CHATS_COL),
+            where('normalizedPhone', '==', digits10)
+          )
+        );
+        if (!phoneSnap.empty) {
+          const threads = sortDescByUpdated(
+            phoneSnap.docs.map((d) => d.data() as SupportChatThread)
+          );
+          if (payload.senderRole === 'customer' && !payload.clientId) {
+            const nameMatch = threads.find(
+              (t) =>
+                normalizeSupportName(t.customerName) ===
+                normalizeSupportName(cleanName)
+            );
+            if (!nameMatch) {
+              throw new Error(
+                'A support chat for this mobile number exists under a different name. Please enter the exact Name & Phone Number used previously, or Sign In.'
+              );
+            }
+            matched = nameMatch;
+          } else {
+            matched = threads[0];
+          }
+        }
+      }
+
+      if (matched && payload.senderRole === 'customer') {
+        if (payload.clientId) {
+          if (matched.clientId && matched.clientId !== payload.clientId) {
+            throw new Error('You can only send messages in your own support chat.');
+          }
+        } else if (
+          normalizeSupportName(matched.customerName) !==
+          normalizeSupportName(cleanName)
+        ) {
+          throw new Error(
+            'Support chat identity mismatch. Please re-enter your exact Name & Phone Number.'
+          );
+        }
+      }
     } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('different name') ||
+          error.message.includes('own support chat') ||
+          error.message.includes('identity mismatch'))
+      ) {
+        throw error;
+      }
       handleFirestoreError(error, OperationType.LIST, SUPPORT_CHATS_COL);
     }
-
-    const matched =
-      (payload.chatId
-        ? existingChats.find((c) => c.id === payload.chatId)
-        : undefined) ||
-      (payload.clientId
-        ? existingChats.find((c) => c.clientId === payload.clientId)
-        : undefined) ||
-      (digits10.length >= 10
-        ? existingChats.find(
-            (c) =>
-              c.normalizedPhone === digits10 ||
-              phoneNumbersMatch(c.customerPhone, formattedPhone)
-          )
-        : undefined);
 
     const now = new Date().toISOString();
     const msg: SupportChatMessage = {

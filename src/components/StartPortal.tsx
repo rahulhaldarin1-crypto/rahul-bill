@@ -34,8 +34,6 @@ import {
   CustomerOrderPaymentMethod,
   Invoice,
   Product,
-  SellerApplication,
-  SupportChatThread,
   ViewPanelConfig,
 } from '../types/business';
 import { api, formatApiError } from '../utils/api';
@@ -48,6 +46,7 @@ import {
   normalizeIndianPhone,
   resizeImageFileToDataUrl,
   stripPlus91Prefix,
+  validateImageFileUnder200KB,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { AppBackground } from './AppBackground';
@@ -65,8 +64,7 @@ import { SellerHubView } from './SellerHubView';
 interface StartPortalProps {
   settings?: BusinessSettings;
   products?: Product[];
-  sellerApplications?: SellerApplication[];
-  supportChats?: SupportChatThread[];
+  approvedSellerIds?: string[];
   loggedInCustomer?: Client | null;
   customerOrders?: CustomerOrder[];
   customerBills?: Invoice[];
@@ -75,9 +73,10 @@ interface StartPortalProps {
   onCustomerUpdated?: (client: Client) => void;
   onSaveProduct?: (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
-    existingId?: string
+    existingId?: string,
+    expectedSellerId?: string
   ) => Promise<void>;
-  onDeleteProduct?: (id: string) => Promise<void>;
+  onDeleteProduct?: (id: string, expectedSellerId?: string) => Promise<void>;
 }
 
 interface PublicShopProduct {
@@ -147,8 +146,7 @@ function buildProductWhatsAppUrl(
 export const StartPortal: React.FC<StartPortalProps> = ({
   settings,
   products = [],
-  sellerApplications = [],
-  supportChats = [],
+  approvedSellerIds = [],
   loggedInCustomer = null,
   customerOrders = [],
   customerBills = [],
@@ -280,14 +278,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         viewPanel.advertisement.title.trim()
     );
 
-  const approvedSellerIds = useMemo(
-    () =>
-      new Set(
-        sellerApplications
-          .filter((a) => a.status === 'approved')
-          .map((a) => a.id)
-      ),
-    [sellerApplications]
+  const approvedSellerIdsSet = useMemo(
+    () => new Set(approvedSellerIds),
+    [approvedSellerIds]
   );
 
   const shoppingItems: PublicShopProduct[] = useMemo(() => {
@@ -319,7 +312,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       if (!prod.sellerId) return true;
       return (
         prod.sellerApprovalStatus === 'approved' &&
-        approvedSellerIds.has(prod.sellerId)
+        approvedSellerIdsSet.has(prod.sellerId)
       );
     });
 
@@ -356,7 +349,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     viewPanel.shopping.items,
     viewPanel.shopping.includeCatalogProducts,
     products,
-    approvedSellerIds,
+    approvedSellerIdsSet,
   ]);
 
   const filteredShoppingItems = useMemo(() => {
@@ -640,6 +633,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     e.target.value = '';
     if (!file) return;
     setOrderError('');
+    const sizeErr = validateImageFileUnder200KB(file);
+    if (sizeErr) {
+      setOrderError(sizeErr);
+      return;
+    }
     setUploadingScreenshot(true);
     try {
       const dataUrl = await resizeImageFileToDataUrl(file, 640, {
@@ -652,7 +650,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       setOrderError(
         err instanceof Error
           ? err.message
-          : 'Invalid screenshot image. Please choose a JPG or PNG.'
+          : 'Invalid screenshot image. Please choose JPG or PNG under 200KB.'
       );
     } finally {
       setUploadingScreenshot(false);
@@ -1000,7 +998,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         ) : portalView === 'seller-hub' ? (
           <SellerHubView
             loggedInCustomer={loggedInCustomer}
-            sellerApplications={sellerApplications}
             products={products}
             currencySymbol={sym}
             defaultLowStock={settings?.lowStockThreshold || 5}
@@ -1016,11 +1013,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 'login'
               )
             }
-            onSaveProduct={async (payload, existingId) => {
+            onSaveProduct={async (payload, existingId, expectedSellerId) => {
               if (onSaveProduct) {
-                await onSaveProduct(payload, existingId);
+                await onSaveProduct(payload, existingId, expectedSellerId);
               } else if (existingId) {
-                await api.updateProduct(existingId, payload);
+                await api.updateProduct(existingId, payload, expectedSellerId);
               } else {
                 await api.createProduct(payload);
               }
@@ -1030,11 +1027,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   : 'Product submitted for Admin approval!'
               );
             }}
-            onDeleteProduct={async (id) => {
+            onDeleteProduct={async (id, expectedSellerId) => {
               if (onDeleteProduct) {
-                await onDeleteProduct(id);
+                await onDeleteProduct(id, expectedSellerId);
               } else {
-                await api.deleteProduct(id);
+                await api.deleteProduct(id, expectedSellerId);
               }
               triggerStoreNotice('Product deleted.');
             }}
@@ -1045,7 +1042,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         ) : portalView === 'help-center' ? (
           <HelpCenterChatView
             loggedInCustomer={loggedInCustomer}
-            supportChats={supportChats}
             onBackToShop={() => setPortalView('shop')}
             onRequestSignIn={() =>
               openAuthForAction(
@@ -2079,6 +2075,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                               </button>
                             </div>
                           )}
+                          <span className="text-[11px] text-[#6B5B7B]">
+                            Max 200KB (সর্বোচ্চ 200KB)
+                          </span>
                         </div>
                       </div>
                     </div>

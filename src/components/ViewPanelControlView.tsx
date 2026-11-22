@@ -129,6 +129,7 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
         quality: 0.78,
         preserveTransparency: false,
         maxDataUrlLength: 240_000,
+        maxFileBytes: false,
       });
       const next: ViewPanelConfig = {
         ...draft,

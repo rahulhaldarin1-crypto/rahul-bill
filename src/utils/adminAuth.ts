@@ -103,6 +103,7 @@ const LEGACY_ADMIN_SESSION_KEY = 'gg_admin_unlocked_session_v1';
 const LEGACY_ADMIN_KEY = 'gg_admin_unlocked_v1';
 const CUSTOMER_SESSION_KEY = 'gg_customer_client_id_persistent_v2';
 const LEGACY_CUSTOMER_KEY = 'gg_customer_client_id_v1';
+const SELLER_SESSION_KEY = 'gg_seller_session_id_v1';
 
 export function isAdminUnlockedStored(): boolean {
   try {
@@ -163,6 +164,30 @@ export function setCustomerSessionId(clientId: string | null): void {
       localStorage.setItem(CUSTOMER_SESSION_KEY, clientId.trim());
     } else {
       localStorage.removeItem(CUSTOMER_SESSION_KEY);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+export function getSellerSessionId(): string | null {
+  try {
+    const id = localStorage.getItem(SELLER_SESSION_KEY);
+    return id && id.trim() ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSellerSessionId(sellerId: string | null): void {
+  try {
+    if (sellerId && sellerId.trim()) {
+      localStorage.setItem(SELLER_SESSION_KEY, sellerId.trim());
+    } else {
+      localStorage.removeItem(SELLER_SESSION_KEY);
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('gg-seller-session-changed'));
     }
   } catch {
     // ignore storage failures

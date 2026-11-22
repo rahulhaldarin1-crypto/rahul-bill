@@ -69,6 +69,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         quality: 0.85,
         preserveTransparency: true,
         maxDataUrlLength: 140_000,
+        maxFileBytes: false,
       });
       const nextDraft = { ...draft, logoDataUrl: dataUrl };
       setDraft(nextDraft);
@@ -107,6 +108,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         quality: 0.78,
         preserveTransparency: false,
         maxDataUrlLength: 360_000,
+        maxFileBytes: false,
       });
       const nextDraft = { ...draft, backgroundImageDataUrl: dataUrl };
       setDraft(nextDraft);
