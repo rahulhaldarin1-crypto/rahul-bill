@@ -77,6 +77,38 @@ export interface ViewPanelConfig {
   updatedAt?: string;
 }
 
+export type HighlightPlacementRule =
+  | 'top_featured'
+  | 'priority_category'
+  | 'featured_badge_only';
+
+export interface HighlightPlan {
+  id: string;
+  label: string;
+  durationDays: number;
+  price: number;
+  enabled: boolean;
+}
+
+export interface HighlightOfferSeat {
+  id: string;
+  title: string;
+  durationDays: number;
+  price: number;
+  originalPrice?: number;
+  totalSeats: number;
+  badgeText?: string;
+  enabled: boolean;
+}
+
+export interface HighlightConfig {
+  upiId: string;
+  placementRule: HighlightPlacementRule;
+  plans: HighlightPlan[];
+  offerSeats: HighlightOfferSeat[];
+  updatedAt?: string;
+}
+
 export interface BusinessSettings {
   businessName: string;
   tagline: string;
@@ -98,6 +130,7 @@ export interface BusinessSettings {
   socialTagLine?: string;
   lowStockThreshold: number;
   viewPanel?: ViewPanelConfig;
+  highlightConfig?: HighlightConfig;
 }
 
 export interface CustomerCartItem {
@@ -146,6 +179,9 @@ export interface Product {
   sellingPrice: number;
   originalPrice?: number;
   highlighted?: boolean;
+  highlightExpiresAt?: string;
+  highlightPlacement?: HighlightPlacementRule;
+  highlightPlanTitle?: string;
   stockQty: number;
   lowStockAlert: number;
   size: string;
@@ -302,6 +338,7 @@ export interface SellerApplication {
   sellerCode?: string;
   name: string;
   email?: string;
+  dateOfBirth?: string;
   fullAddress: string;
   phone: string;
   normalizedPhone: string;
@@ -322,6 +359,35 @@ export interface SellerApplication {
   status: SellerAccountStatus;
   adminRemarks?: string;
   reviewedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type HighlightRequestStatus = 'pending_approval' | 'approved' | 'rejected';
+
+export interface HighlightRequest {
+  id: string;
+  productId: string;
+  productName: string;
+  productCategory?: string;
+  productImageDataUrl?: string;
+  sellerId: string;
+  sellerCode?: string;
+  sellerName: string;
+  sellerPhone: string;
+  requestType: 'plan' | 'offer_seat';
+  planOrSeatId: string;
+  planTitle: string;
+  durationDays: number;
+  amount: number;
+  upiIdUsed: string;
+  transactionRef?: string;
+  paymentScreenshotDataUrl?: string;
+  placementRule?: HighlightPlacementRule;
+  status: HighlightRequestStatus;
+  adminRemarks?: string;
+  approvedAt?: string;
+  expiresAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -367,4 +433,5 @@ export interface WorkspaceData {
   orders: CustomerOrder[];
   sellerApplications: SellerApplication[];
   supportChats: SupportChatThread[];
+  highlightRequests: HighlightRequest[];
 }

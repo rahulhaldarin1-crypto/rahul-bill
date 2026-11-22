@@ -151,17 +151,18 @@
         "sellerCode": { "type": "string", "maxLength": 40 },
         "name": { "type": "string", "minLength": 1, "maxLength": 160 },
         "email": { "type": "string", "maxLength": 160 },
+        "dateOfBirth": { "type": "string", "maxLength": 20 },
         "fullAddress": { "type": "string", "minLength": 1, "maxLength": 500 },
         "phone": { "type": "string", "minLength": 5, "maxLength": 40 },
         "normalizedPhone": { "type": "string", "maxLength": 20 },
-        "panNumber": { "type": "string", "minLength": 10, "maxLength": 20 },
-        "aadhaarNumber": { "type": "string", "minLength": 12, "maxLength": 20 },
+        "panNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "aadhaarNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
         "gstNumber": { "type": "string", "maxLength": 30 },
-        "sellerPhotoDataUrl": { "type": "string", "maxLength": 200000 },
-        "panDocDataUrl": { "type": "string", "maxLength": 200000 },
-        "aadhaarDocDataUrl": { "type": "string", "maxLength": 200000 },
-        "gstDocDataUrl": { "type": "string", "maxLength": 200000 },
-        "bankDocDataUrl": { "type": "string", "maxLength": 200000 },
+        "sellerPhotoDataUrl": { "type": "string", "maxLength": 320000 },
+        "panDocDataUrl": { "type": "string", "maxLength": 320000 },
+        "aadhaarDocDataUrl": { "type": "string", "maxLength": 320000 },
+        "gstDocDataUrl": { "type": "string", "maxLength": 320000 },
+        "bankDocDataUrl": { "type": "string", "maxLength": 320000 },
         "bankAccountDetails": { "type": "string", "maxLength": 300 },
         "passwordSalt": { "type": "string", "maxLength": 80 },
         "passwordHash": { "type": "string", "maxLength": 160 },
@@ -175,6 +176,34 @@
         "updatedAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "name", "fullAddress", "phone", "panNumber", "aadhaarNumber", "status", "createdAt", "updatedAt"]
+    },
+    "HighlightRequest": {
+      "title": "HighlightRequest",
+      "description": "Paid seller product highlight and offer-seat promotion request.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "sellerId": { "type": "string", "maxLength": 128 },
+        "sellerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sellerPhone": { "type": "string", "maxLength": 40 },
+        "requestType": { "type": "string", "enum": ["plan", "offer_seat"] },
+        "planOrSeatId": { "type": "string", "maxLength": 80 },
+        "planTitle": { "type": "string", "maxLength": 160 },
+        "durationDays": { "type": "number" },
+        "amount": { "type": "number" },
+        "upiIdUsed": { "type": "string", "maxLength": 120 },
+        "transactionRef": { "type": "string", "maxLength": 120 },
+        "paymentScreenshotDataUrl": { "type": "string", "maxLength": 320000 },
+        "status": { "type": "string", "enum": ["pending_approval", "approved", "rejected"] },
+        "adminRemarks": { "type": "string", "maxLength": 400 },
+        "approvedAt": { "type": "string", "maxLength": 40 },
+        "expiresAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "productId", "productName", "sellerId", "sellerName", "durationDays", "amount", "status", "createdAt", "updatedAt"]
     },
     "SupportChatThread": {
       "title": "SupportChatThread",
@@ -225,6 +254,10 @@
     "/seller_applications/{applicationId}": {
       "schema": { "$ref": "#/entities/SellerApplication" },
       "description": "Seller Hub registration applications and KYC documents."
+    },
+    "/highlight_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/HighlightRequest" },
+      "description": "Paid seller product highlight and offer-seat promotion requests."
     },
     "/support_chats/{chatId}": {
       "schema": { "$ref": "#/entities/SupportChatThread" },

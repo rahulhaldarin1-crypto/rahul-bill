@@ -4,12 +4,16 @@ import {
   ArrowLeft,
   BadgeCheck,
   Building2,
+  Calendar,
+  Check,
   CheckCircle2,
   Clock,
+  Copy,
   CreditCard,
   Eye,
   EyeOff,
   FileText,
+  Image as ImageIcon,
   KeyRound,
   LifeBuoy,
   LogIn,
@@ -18,26 +22,40 @@ import {
   Package,
   Phone,
   ShieldAlert,
+  Sparkles,
+  Star,
   Store,
   Upload,
   UserCheck,
   X,
 } from 'lucide-react';
-import { Client, Product, SellerApplication } from '../types/business';
+import {
+  BusinessSettings,
+  Client,
+  HighlightRequest,
+  Product,
+  SellerApplication,
+} from '../types/business';
 import { getSellerSessionId, setSellerSessionId } from '../utils/adminAuth';
 import { api, formatApiError } from '../utils/api';
 import {
+  DEFAULT_HIGHLIGHT_CONFIG,
+  HIGHLIGHT_UPI_ID,
+  formatCurrency,
+  getMaxAdultDobIso,
+  isProductHighlightActive,
   resizeImageFileToDataUrl,
   stripPlus91Prefix,
-  validateImageFileUnder200KB,
+  validateAdultDateOfBirth,
+  validateImageFileUnder300KB,
 } from '../utils/calculations';
 import { ProductsView } from './ProductsView';
-
-const SELLER_APP_STORAGE_KEY = 'gg_seller_app_id_v1';
 
 interface SellerHubViewProps {
   loggedInCustomer: Client | null;
   products: Product[];
+  settings?: BusinessSettings;
+  highlightSeatUsage?: Record<string, number>;
   currencySymbol: string;
   defaultLowStock: number;
   onBackToShop: () => void;
@@ -62,6 +80,8 @@ type DocFieldKey =
 export const SellerHubView: React.FC<SellerHubViewProps> = ({
   loggedInCustomer,
   products,
+  settings,
+  highlightSeatUsage = {},
   currencySymbol,
   defaultLowStock,
   onBackToShop,
@@ -74,20 +94,8 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [sellerSessionId, setSellerSessionIdState] = useState<string | null>(
     () => getSellerSessionId()
   );
-  const [storedAppId, setStoredAppId] = useState<string>(() => {
-    try {
-      return localStorage.getItem(SELLER_APP_STORAGE_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
-  const [hubTab, setHubTab] = useState<'login' | 'apply' | 'status'>(() => {
-    try {
-      return localStorage.getItem(SELLER_APP_STORAGE_KEY) ? 'status' : 'apply';
-    } catch {
-      return 'apply';
-    }
-  });
+  // Strict Privacy: Unauthenticated visitors only see 'login' or 'apply' — never any status lookup tab.
+  const [hubTab, setHubTab] = useState<'login' | 'apply'>('login');
 
   // Seller Login State
   const [loginIdent, setLoginIdent] = useState('');
@@ -96,25 +104,36 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
 
-  // Isolated active Seller & own tracked application
+  // Authenticated Seller (supports pending, rejected, suspended, approved privately)
   const [loggedInSeller, setLoggedInSeller] =
     useState<SellerApplication | null>(null);
   const [sellerLoading, setSellerLoading] = useState<boolean>(() =>
     Boolean(getSellerSessionId())
   );
-  const [trackedApplication, setTrackedApplication] =
-    useState<SellerApplication | null>(null);
-  const [statusLoading, setStatusLoading] = useState(false);
-  const [statusError, setStatusError] = useState('');
-
-  // Status Lookup State (requires Phone + PAN verification)
-  const [lookupPhone, setLookupPhone] = useState('');
-  const [lookupPan, setLookupPan] = useState('');
   const [editingRejected, setEditingRejected] = useState(false);
+
+  // Paid Highlight Requests (for logged-in approved seller)
+  const [highlightRequests, setHighlightRequests] = useState<HighlightRequest[]>(
+    []
+  );
+  const [highlightTargetProduct, setHighlightTargetProduct] =
+    useState<Product | null>(null);
+  const [selectedChoiceType, setSelectedChoiceType] = useState<
+    'plan' | 'offer_seat'
+  >('offer_seat');
+  const [selectedChoiceId, setSelectedChoiceId] = useState('');
+  const [highlightTxRef, setHighlightTxRef] = useState('');
+  const [highlightScreenshot, setHighlightScreenshot] = useState('');
+  const [uploadingHighlightShot, setUploadingHighlightShot] = useState(false);
+  const [submittingHighlight, setSubmittingHighlight] = useState(false);
+  const [highlightError, setHighlightError] = useState('');
+  const [highlightNotice, setHighlightNotice] = useState('');
+  const [upiCopied, setUpiCopied] = useState(false);
 
   // Registration Form State
   const [name, setName] = useState(() => loggedInCustomer?.name || '');
   const [email, setEmail] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
   const [fullAddress, setFullAddress] = useState(() => {
     if (!loggedInCustomer) return '';
     return [
@@ -149,6 +168,8 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
+  const maxAdultDob = useMemo(() => getMaxAdultDobIso(), []);
+
   useEffect(() => {
     if (!loggedInCustomer) return;
     setName((prev) => prev || loggedInCustomer.name);
@@ -166,7 +187,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     });
   }, [loggedInCustomer]);
 
-  // Real-time subscription restricted strictly to ONLY this seller's own record
+  // Real-time subscription restricted strictly to ONLY the authenticated seller's own record
   useEffect(() => {
     if (!sellerSessionId) {
       setLoggedInSeller(null);
@@ -178,11 +199,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       sellerSessionId,
       (seller) => {
         setSellerLoading(false);
-        if (
-          !seller ||
-          seller.status !== 'approved' ||
-          seller.accountActivated === false
-        ) {
+        if (!seller) {
           setLoggedInSeller(null);
           setSellerSessionId(null);
           setSellerSessionIdState(null);
@@ -197,39 +214,83 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     return () => unsub();
   }, [sellerSessionId]);
 
-  // Fetch ONLY the user's own submitted application status when viewing Status tab
+  // Subscribe to ONLY this authenticated approved seller's highlight requests
   useEffect(() => {
-    if (loggedInSeller) return;
-    if (!storedAppId && !loggedInCustomer?.id) return;
-    let active = true;
-    setStatusLoading(true);
-    api
-      .fetchSellerApplicationStatus({
-        applicationId: storedAppId || undefined,
-        clientId: loggedInCustomer?.id,
-      })
-      .then((app) => {
-        if (active && app) {
-          setTrackedApplication(app);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setStatusLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [loggedInSeller, storedAppId, loggedInCustomer?.id]);
+    if (!loggedInSeller || loggedInSeller.status !== 'approved') {
+      setHighlightRequests([]);
+      return;
+    }
+    const unsub = api.subscribeSellerHighlightRequests(
+      loggedInSeller.id,
+      (list) => setHighlightRequests(list),
+      () => undefined
+    );
+    return () => unsub();
+  }, [loggedInSeller?.id, loggedInSeller?.status]);
 
   const sellerProducts = useMemo(() => {
     if (!loggedInSeller) return [];
     return products.filter((p) => p.sellerId === loggedInSeller.id);
   }, [products, loggedInSeller]);
 
+  const pendingHighlightProductIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const req of highlightRequests) {
+      if (req.status === 'pending_approval') {
+        set.add(req.productId);
+      }
+    }
+    return set;
+  }, [highlightRequests]);
+
+  const highlightConfig = useMemo(
+    () => settings?.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG,
+    [settings?.highlightConfig]
+  );
+
+  const enabledOfferSeats = useMemo(
+    () => (highlightConfig.offerSeats || []).filter((s) => s.enabled),
+    [highlightConfig.offerSeats]
+  );
+
+  const enabledPlans = useMemo(
+    () => (highlightConfig.plans || []).filter((p) => p.enabled),
+    [highlightConfig.plans]
+  );
+
+  const activeHighlightUpi =
+    (highlightConfig.upiId || '').trim() || HIGHLIGHT_UPI_ID;
+
+  const selectedHighlightItem = useMemo(() => {
+    if (selectedChoiceType === 'offer_seat') {
+      return enabledOfferSeats.find((s) => s.id === selectedChoiceId) || null;
+    }
+    return enabledPlans.find((p) => p.id === selectedChoiceId) || null;
+  }, [selectedChoiceType, selectedChoiceId, enabledOfferSeats, enabledPlans]);
+
+  // Soft (non-blocking) hints for PAN & Aadhaar typos
+  const panFormatHint = useMemo(() => {
+    const clean = panNumber.trim().toUpperCase();
+    if (!clean) return '';
+    if (!/^[A-Z]{5}\d{4}[A-Z]$/.test(clean)) {
+      return 'Optional hint: Standard PAN is 10 chars like ABCDE1234F (you can still submit).';
+    }
+    return '';
+  }, [panNumber]);
+
+  const aadhaarFormatHint = useMemo(() => {
+    const clean = aadhaarNumber.trim();
+    if (!clean) return '';
+    if (!/^\d{12}$/.test(clean)) {
+      return 'Optional hint: Standard Aadhaar has 12 digits (you can still submit).';
+    }
+    return '';
+  }, [aadhaarNumber]);
+
   const handleSellerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    setSuccessMsg('');
     setLoginBusy(true);
     try {
       const res = await api.loginSellerAccount(loginIdent, loginPassword);
@@ -237,6 +298,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       setSellerSessionId(res.seller.id);
       setSellerSessionIdState(res.seller.id);
       setLoginPassword('');
+      setEditingRejected(false);
     } catch (err) {
       setLoginError(
         formatApiError(err, 'Could not sign in to your Seller account.')
@@ -250,6 +312,9 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     setSellerSessionId(null);
     setSellerSessionIdState(null);
     setLoggedInSeller(null);
+    setEditingRejected(false);
+    setHighlightTargetProduct(null);
+    setSuccessMsg('');
     setHubTab('login');
   };
 
@@ -261,7 +326,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setError('');
-    const sizeErr = validateImageFileUnder200KB(file);
+    const sizeErr = validateImageFileUnder300KB(file);
     if (sizeErr) {
       setError(sizeErr);
       return;
@@ -282,7 +347,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not process selected document image. Please upload an image under 200KB.'
+          : 'Could not process selected document image. Please upload an image under 300KB.'
       );
     } finally {
       setUploadingField(null);
@@ -290,44 +355,55 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   };
 
   const handleStartReapply = () => {
-    if (!trackedApplication) return;
-    setName(trackedApplication.name);
-    setEmail(trackedApplication.email || '');
-    setFullAddress(trackedApplication.fullAddress);
-    setPhone(stripPlus91Prefix(trackedApplication.phone));
-    setPanNumber(trackedApplication.panNumber);
-    setAadhaarNumber(trackedApplication.aadhaarNumber);
-    setGstNumber(trackedApplication.gstNumber || '');
-    setBankAccountDetails(trackedApplication.bankAccountDetails || '');
-    setSellerPhotoDataUrl(trackedApplication.sellerPhotoDataUrl);
-    setPanDocDataUrl(trackedApplication.panDocDataUrl);
-    setAadhaarDocDataUrl(trackedApplication.aadhaarDocDataUrl);
-    setGstDocDataUrl(trackedApplication.gstDocDataUrl || '');
-    setBankDocDataUrl(trackedApplication.bankDocDataUrl);
+    if (!loggedInSeller) return;
+    setName(loggedInSeller.name);
+    setEmail(loggedInSeller.email || '');
+    setDateOfBirth(loggedInSeller.dateOfBirth || '');
+    setFullAddress(loggedInSeller.fullAddress);
+    setPhone(stripPlus91Prefix(loggedInSeller.phone));
+    setPanNumber(loggedInSeller.panNumber);
+    setAadhaarNumber(loggedInSeller.aadhaarNumber);
+    setGstNumber(loggedInSeller.gstNumber || '');
+    setBankAccountDetails(loggedInSeller.bankAccountDetails || '');
+    setSellerPhotoDataUrl(loggedInSeller.sellerPhotoDataUrl);
+    setPanDocDataUrl(loggedInSeller.panDocDataUrl);
+    setAadhaarDocDataUrl(loggedInSeller.aadhaarDocDataUrl);
+    setGstDocDataUrl(loggedInSeller.gstDocDataUrl || '');
+    setBankDocDataUrl(loggedInSeller.bankDocDataUrl);
     setRegPassword('');
     setError('');
     setSuccessMsg('');
     setEditingRejected(true);
-    setHubTab('apply');
   };
 
   const handleSubmitApplication = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
-    if (!editingRejected && regPassword.trim().length < 4) {
+
+    const dobCheck = validateAdultDateOfBirth(dateOfBirth);
+    if (!dobCheck.valid) {
       setError(
-        'Please create a Seller Login Password (minimum 4 characters). It will activate after Admin approval.'
+        dobCheck.error || 'Applicant must be at least 18 years old to register as a Seller.'
       );
       return;
     }
+
+    if (!editingRejected && regPassword.trim().length < 4) {
+      setError(
+        'Please create a Seller Login Password (minimum 4 characters).'
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       const saved = await api.submitSellerApplication({
-        existingId: editingRejected ? trackedApplication?.id : undefined,
+        existingId: editingRejected ? loggedInSeller?.id : undefined,
         clientId: loggedInCustomer?.id,
         name,
         email,
+        dateOfBirth: dobCheck.dob,
         fullAddress,
         phone,
         panNumber,
@@ -341,17 +417,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         bankDocDataUrl,
         bankAccountDetails,
       });
-      try {
-        localStorage.setItem(SELLER_APP_STORAGE_KEY, saved.id);
-      } catch {
-        // ignore storage errors
-      }
-      setStoredAppId(saved.id);
-      setTrackedApplication(saved);
+
+      // Privately sign in ONLY the submitting applicant so they can view their own Pending Seller ID & status
+      setSellerSessionId(saved.id);
+      setSellerSessionIdState(saved.id);
+      setLoggedInSeller(saved);
       setEditingRejected(false);
-      setHubTab('status');
       setSuccessMsg(
-        'Seller application submitted with status "Pending"! Your seller login will activate once Admin approves.'
+        `Application submitted! Your Seller ID is ${saved.sellerCode || 'Pending'} (Status: Pending Admin Approval).`
       );
       onApplicationSubmitted?.(saved);
     } catch (err) {
@@ -366,43 +439,130 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     }
   };
 
-  const handleCheckPhoneStatus = async (e: React.FormEvent) => {
+  const openHighlightModal = (
+    prod: Product,
+    presetType?: 'plan' | 'offer_seat',
+    presetId?: string
+  ) => {
+    setHighlightTargetProduct(prod);
+    setHighlightError('');
+    setHighlightTxRef('');
+    setHighlightScreenshot('');
+
+    if (presetType && presetId) {
+      setSelectedChoiceType(presetType);
+      setSelectedChoiceId(presetId);
+      return;
+    }
+
+    const firstAvailableSeat = enabledOfferSeats.find(
+      (s) => Math.max(0, s.totalSeats - (highlightSeatUsage[s.id] || 0)) > 0
+    );
+    if (firstAvailableSeat) {
+      setSelectedChoiceType('offer_seat');
+      setSelectedChoiceId(firstAvailableSeat.id);
+    } else if (enabledPlans.length > 0) {
+      setSelectedChoiceType('plan');
+      setSelectedChoiceId(enabledPlans[0].id);
+    } else if (enabledOfferSeats.length > 0) {
+      setSelectedChoiceType('offer_seat');
+      setSelectedChoiceId(enabledOfferSeats[0].id);
+    } else {
+      setSelectedChoiceType('plan');
+      setSelectedChoiceId('');
+    }
+  };
+
+  const handleCopyHighlightUpi = async () => {
+    try {
+      await navigator.clipboard.writeText(activeHighlightUpi);
+      setUpiCopied(true);
+      setTimeout(() => setUpiCopied(false), 2200);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
+  const handleUploadHighlightScreenshot = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setHighlightError('');
+    const sizeErr = validateImageFileUnder300KB(file);
+    if (sizeErr) {
+      setHighlightError(sizeErr);
+      return;
+    }
+    setUploadingHighlightShot(true);
+    try {
+      const dataUrl = await resizeImageFileToDataUrl(file, 640, {
+        quality: 0.72,
+        preserveTransparency: false,
+        maxDataUrlLength: 140_000,
+      });
+      setHighlightScreenshot(dataUrl);
+    } catch (err) {
+      setHighlightError(
+        err instanceof Error
+          ? err.message
+          : 'Invalid screenshot image. Please choose JPG/PNG under 300KB.'
+      );
+    } finally {
+      setUploadingHighlightShot(false);
+    }
+  };
+
+  const handleSubmitHighlightRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    setStatusError('');
-    const trimmedPhone = lookupPhone.trim();
-    const trimmedPan = lookupPan.trim().toUpperCase();
-    if (!trimmedPhone || !trimmedPan) {
-      setStatusError(
-        'Please enter both your registered Phone Number and 10-character PAN Number.'
+    if (!loggedInSeller || !highlightTargetProduct || !selectedHighlightItem) {
+      return;
+    }
+    setHighlightError('');
+
+    if (selectedChoiceType === 'offer_seat') {
+      const seat = enabledOfferSeats.find((s) => s.id === selectedChoiceId);
+      const remaining = seat
+        ? Math.max(0, seat.totalSeats - (highlightSeatUsage[seat.id] || 0))
+        : 0;
+      if (!seat || remaining <= 0) {
+        setHighlightError('No remaining seats for this offer. Please pick another plan.');
+        return;
+      }
+    }
+
+    if (
+      selectedHighlightItem.price > 0 &&
+      !highlightTxRef.trim() &&
+      !highlightScreenshot
+    ) {
+      setHighlightError(
+        `Please pay ${formatCurrency(selectedHighlightItem.price, currencySymbol)} to ${activeHighlightUpi} and upload the screenshot or enter the UTR / Transaction ID.`
       );
       return;
     }
-    setStatusLoading(true);
+
+    setSubmittingHighlight(true);
     try {
-      const matched = await api.fetchSellerApplicationStatus({
-        phone: trimmedPhone,
-        panNumber: trimmedPan,
+      const created = await api.submitHighlightRequest({
+        sellerId: loggedInSeller.id,
+        productId: highlightTargetProduct.id,
+        requestType: selectedChoiceType,
+        planOrSeatId: selectedHighlightItem.id,
+        transactionRef: highlightTxRef.trim(),
+        paymentScreenshotDataUrl: highlightScreenshot,
       });
-      setTrackedApplication(matched);
-      if (matched) {
-        try {
-          localStorage.setItem(SELLER_APP_STORAGE_KEY, matched.id);
-        } catch {
-          // ignore
-        }
-        setStoredAppId(matched.id);
-      }
-      setHubTab('status');
+      setHighlightTargetProduct(null);
+      setHighlightNotice(
+        `Highlight request submitted for "${created.productName}" (${created.planTitle})! Pending Admin payment verification.`
+      );
     } catch (err) {
-      setTrackedApplication(null);
-      setStatusError(
-        formatApiError(
-          err,
-          'No seller application found matching that Phone Number and PAN Number.'
-        )
+      setHighlightError(
+        formatApiError(err, 'Could not submit highlight request. Please try again.')
       );
     } finally {
-      setStatusLoading(false);
+      setSubmittingHighlight(false);
     }
   };
 
@@ -449,7 +609,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             {uploadingField === field ? 'Compressing...' : 'Upload Image'}
           </span>
           <span className="text-[10px] font-medium text-[#6B5B7B]">
-            JPG / PNG · Max 200KB (সর্বোচ্চ 200KB)
+            JPG / PNG · Max 300KB (সর্বোচ্চ 300KB)
           </span>
           <input
             type="file"
@@ -466,15 +626,198 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   if (sellerLoading) {
     return (
       <div className="max-w-3xl mx-auto rounded-3xl border border-[#EFE2F5] bg-white/95 p-10 text-center text-xs font-semibold text-[#7E22CE]">
-        Loading your Seller Dashboard...
+        Loading your Seller Hub...
       </div>
     );
   }
 
   // ============================================================================
-  // 1. LOGGED-IN APPROVED SELLER DASHBOARD
+  // 1. LOGGED-IN SELLER VIEW (PRIVATE TO AUTHENTICATED SELLER ONLY)
   // ============================================================================
-  if (loggedInSeller) {
+  if (loggedInSeller && !editingRejected) {
+    const isApproved =
+      loggedInSeller.status === 'approved' &&
+      loggedInSeller.accountActivated !== false;
+    const isPending = loggedInSeller.status === 'pending';
+    const isRejected = loggedInSeller.status === 'rejected';
+    const isSuspended =
+      loggedInSeller.status === 'suspended' ||
+      (loggedInSeller.status === 'approved' &&
+        loggedInSeller.accountActivated === false);
+
+    // 1A. Authenticated Seller awaiting approval / rejected / suspended
+    if (!isApproved) {
+      return (
+        <div className="space-y-5 max-w-3xl mx-auto">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={onBackToShop}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back to Shop</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSellerLogout}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+
+          {successMsg && (
+            <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{successMsg}</span>
+            </div>
+          )}
+
+          <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-6 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#F4ECF8] pb-5">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-16 h-16 rounded-2xl border border-[#E6D9EE] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
+                  {loggedInSeller.sellerPhotoDataUrl ? (
+                    <img
+                      src={loggedInSeller.sellerPhotoDataUrl}
+                      alt={loggedInSeller.name}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <Store className="w-7 h-7 text-[#9333EA]" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <h2 className="font-display-serif text-2xl font-bold text-[#1F122B] truncate">
+                    {loggedInSeller.name}
+                  </h2>
+                  <div className="text-xs text-[#6B5B7B] font-mono-num mt-0.5 flex flex-wrap items-center gap-x-2.5">
+                    <span>{loggedInSeller.phone}</span>
+                    {loggedInSeller.email && <span>· {loggedInSeller.email}</span>}
+                    <span>· Submitted {loggedInSeller.createdAt.slice(0, 10)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-bold shrink-0 ${
+                  isPending
+                    ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                    : isRejected
+                      ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
+                      : 'border-[#FED7AA] bg-[#FFF7ED] text-[#C2410C]'
+                }`}
+              >
+                {isPending && <Clock className="w-4 h-4" />}
+                {isRejected && <AlertTriangle className="w-4 h-4" />}
+                {isSuspended && <ShieldAlert className="w-4 h-4" />}
+                <span>
+                  {isPending
+                    ? 'Pending Admin Approval'
+                    : isRejected
+                      ? 'Application Rejected'
+                      : 'Account Suspended / Disabled'}
+                </span>
+              </div>
+            </div>
+
+            {/* Generated Seller ID Box (Visible ONLY to this authenticated seller) */}
+            <div className="rounded-2xl border border-[#E9D5FF] bg-[#FAF5FF] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold text-[#6D28D9]">
+                  Your Private Seller ID (সেভ করে রাখুন / Save for Sign-In)
+                </div>
+                <div className="font-mono-num text-lg font-bold text-[#1F122B] select-all mt-0.5">
+                  {loggedInSeller.sellerCode || 'Pending Assignment'}
+                </div>
+              </div>
+              <div className="text-xs text-[#5B4B6B] max-w-sm">
+                {isPending
+                  ? 'You can sign back in anytime using this Seller ID or your registered Phone Number & Password to check approval status.'
+                  : isRejected
+                    ? 'Please review the note below, update your KYC/Bank details, and re-submit for approval.'
+                    : 'Your seller account is currently suspended. Contact our support team via Help Center.'}
+              </div>
+            </div>
+
+            {loggedInSeller.adminRemarks && (
+              <div className="rounded-2xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs text-[#9F1239]">
+                <strong>Admin Note:</strong> {loggedInSeller.adminRemarks}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+              <div>
+                <div className="text-[#6B5B7B]">Date of Birth</div>
+                <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
+                  {loggedInSeller.dateOfBirth || 'Provided'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[#6B5B7B]">PAN Number</div>
+                <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
+                  {loggedInSeller.panNumber}
+                </div>
+              </div>
+              <div>
+                <div className="text-[#6B5B7B]">Aadhaar Number</div>
+                <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
+                  {loggedInSeller.aadhaarNumber}
+                </div>
+              </div>
+              <div>
+                <div className="text-[#6B5B7B]">GST Number</div>
+                <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
+                  {loggedInSeller.gstNumber || 'Not provided'}
+                </div>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-4">
+                <div className="text-[#6B5B7B]">Full Address</div>
+                <div className="font-medium text-[#1F122B] mt-0.5">
+                  {loggedInSeller.fullAddress}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[#F4ECF8]">
+              <p className="text-xs text-[#6B5B7B]">
+                {isPending
+                  ? 'Product listing unlocks automatically as soon as Admin approves your application.'
+                  : isRejected
+                    ? 'Edit and re-submit your documents for Admin review.'
+                    : 'Reach out to Admin support if you have questions about your account.'}
+              </p>
+              <div className="flex items-center gap-2.5">
+                {isRejected && (
+                  <button
+                    type="button"
+                    onClick={handleStartReapply}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white cursor-pointer"
+                  >
+                    <UserCheck className="w-3.5 h-3.5" />
+                    <span>Edit &amp; Re-submit</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onOpenHelpCenter}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-4 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                >
+                  <LifeBuoy className="w-3.5 h-3.5" />
+                  <span>Help Center Support</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // 1B. Authenticated Approved Seller Dashboard
     const approvedLiveCount = sellerProducts.filter(
       (p) => p.sellerApprovalStatus === 'approved'
     ).length;
@@ -483,6 +826,16 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         p.sellerApprovalStatus !== 'approved' &&
         p.sellerApprovalStatus !== 'rejected'
     ).length;
+    const activeHighlightedCount = sellerProducts.filter((p) =>
+      isProductHighlightActive(p)
+    ).length;
+
+    const modalPayAmount = selectedHighlightItem?.price || 0;
+    const highlightUpiDeepLink = `upi://pay?pa=${encodeURIComponent(
+      activeHighlightUpi
+    )}&pn=${encodeURIComponent(
+      settings?.businessName || 'Glamour Galleria'
+    )}&am=${modalPayAmount.toFixed(2)}&cu=INR`;
 
     return (
       <div className="space-y-6">
@@ -502,7 +855,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
-            <span>Seller Logout</span>
+            <span>Seller Sign Out</span>
           </button>
         </div>
 
@@ -555,13 +908,124 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-[#6B5B7B]">Pending Review</div>
-              <div className="font-mono-num text-lg font-bold text-[#B45309]">
-                {pendingReviewCount}
+              <div className="text-[11px] text-[#6B5B7B]">Highlighted</div>
+              <div className="font-mono-num text-lg font-bold text-[#DB2777]">
+                {activeHighlightedCount}
+                {pendingReviewCount > 0 ? (
+                  <span className="text-[10px] text-[#B45309] ml-1">
+                    ({pendingReviewCount} rev.)
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>
         </div>
+
+        {highlightNotice && (
+          <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{highlightNotice}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setHighlightNotice('')}
+              className="text-[#15803D] hover:opacity-75 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Admin Highlight Offer Seats Banner for Approved Sellers */}
+        {(enabledOfferSeats.length > 0 || enabledPlans.length > 0) && (
+          <section className="rounded-3xl border border-[#FBCFE8] bg-gradient-to-br from-[#FFF5FA] via-white to-[#FAF5FF] p-5 sm:p-6 space-y-4 shadow-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#DB2777]">
+                  <Sparkles className="w-4 h-4" />
+                  <span>Boost Your Products · Paid Highlight &amp; Offer Seats</span>
+                </div>
+                <h2 className="font-display-serif text-lg font-bold text-[#1F122B] mt-0.5">
+                  Feature Your Products at the Top of Storefront
+                </h2>
+                <p className="text-xs text-[#5B4B6B]">
+                  Click <strong>&ldquo;Highlight&rdquo;</strong> on any of your products below, pick a plan or limited Offer Seat, pay via UPI (<span className="font-mono-num font-bold text-[#6D28D9]">{activeHighlightUpi}</span>), and submit proof for instant Admin activation.
+                </p>
+              </div>
+            </div>
+
+            {enabledOfferSeats.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {enabledOfferSeats.map((seat) => {
+                  const used = highlightSeatUsage[seat.id] || 0;
+                  const remaining = Math.max(0, seat.totalSeats - used);
+                  const soldOut = remaining <= 0;
+                  return (
+                    <div
+                      key={seat.id}
+                      className={`rounded-2xl border p-4 bg-white flex flex-col justify-between gap-3 ${
+                        soldOut
+                          ? 'border-[#E6D9EE] opacity-70'
+                          : 'border-[#F9A8D4] shadow-xs'
+                      }`}
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="rounded-md bg-[#FDF2F8] border border-[#FBCFE8] px-2 py-0.5 text-[10px] font-bold text-[#DB2777]">
+                            {seat.badgeText || 'OFFER SEAT'}
+                          </span>
+                          <span
+                            className={`text-[11px] font-mono-num font-bold ${
+                              soldOut ? 'text-[#BE123C]' : 'text-[#15803D]'
+                            }`}
+                          >
+                            {soldOut
+                              ? 'All Seats Claimed'
+                              : `${remaining}/${seat.totalSeats} seats left`}
+                          </span>
+                        </div>
+                        <div className="text-sm font-bold text-[#1F122B]">
+                          {seat.title}
+                        </div>
+                        <div className="flex items-baseline gap-2 font-mono-num">
+                          <span className="text-base font-bold text-[#7E22CE]">
+                            {formatCurrency(seat.price, currencySymbol)}
+                          </span>
+                          {seat.originalPrice && seat.originalPrice > seat.price && (
+                            <span className="text-xs text-[#8E7C9E] line-through">
+                              {formatCurrency(seat.originalPrice, currencySymbol)}
+                            </span>
+                          )}
+                          <span className="text-xs text-[#5B4B6B]">
+                            · {seat.durationDays} Days
+                          </span>
+                        </div>
+                      </div>
+
+                      {sellerProducts.length > 0 && !soldOut && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openHighlightModal(
+                              sellerProducts[0],
+                              'offer_seat',
+                              seat.id
+                            )
+                          }
+                          className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2 px-3 text-xs font-semibold text-white hover:opacity-95 cursor-pointer"
+                        >
+                          <Star className="w-3.5 h-3.5 fill-current" />
+                          <span>Claim Offer Seat</span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Seller Product Management (same workflow as Admin Product Listing) */}
         <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md">
@@ -570,6 +1034,8 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             currencySymbol={currencySymbol}
             defaultLowStock={defaultLowStock}
             hideBackButton
+            pendingHighlightProductIds={pendingHighlightProductIds}
+            onRequestHighlight={(prod) => openHighlightModal(prod)}
             sellerContext={{
               sellerId: loggedInSeller.id,
               sellerName: loggedInSeller.name,
@@ -582,12 +1048,382 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             onDeleteProduct={(id) => onDeleteProduct(id, loggedInSeller.id)}
           />
         </div>
+
+        {/* My Paid Highlight Requests Tracker */}
+        {highlightRequests.length > 0 && (
+          <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+            <div className="flex items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+              <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B]">
+                <Star className="w-4 h-4 text-[#DB2777]" />
+                <span>My Product Highlight Requests ({highlightRequests.length})</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {highlightRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 space-y-2 text-xs"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-bold text-sm text-[#1F122B] truncate">
+                        {req.productName}
+                      </div>
+                      <div className="text-[#5B4B6B] font-mono-num mt-0.5">
+                        {req.planTitle} · {req.durationDays} Days ·{' '}
+                        <strong className="text-[#7E22CE]">
+                          {formatCurrency(req.amount, currencySymbol)}
+                        </strong>
+                      </div>
+                    </div>
+                    <span
+                      className={`rounded-lg border px-2 py-0.5 text-[11px] font-bold shrink-0 ${
+                        req.status === 'approved'
+                          ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                          : req.status === 'rejected'
+                            ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
+                            : 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                      }`}
+                    >
+                      {req.status === 'approved'
+                        ? 'Approved & Active'
+                        : req.status === 'rejected'
+                          ? 'Rejected'
+                          : 'Pending Approval'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#6B5B7B] font-mono-num">
+                    <span>
+                      Submitted {req.createdAt.slice(0, 10)}
+                      {req.transactionRef ? ` · UTR: ${req.transactionRef}` : ''}
+                    </span>
+                    {req.expiresAt && req.status === 'approved' && (
+                      <span className="text-[#15803D] font-semibold">
+                        Expires {req.expiresAt.slice(0, 10)}
+                      </span>
+                    )}
+                  </div>
+                  {req.adminRemarks && (
+                    <div className="rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-2.5 py-1.5 text-[11px] text-[#9F1239]">
+                      Admin Note: {req.adminRemarks}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Paid Product Highlight Request Modal */}
+        {highlightTargetProduct && (
+          <div
+            className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-5"
+            role="dialog"
+            aria-modal="true"
+          >
+            <form
+              onSubmit={handleSubmitHighlightRequest}
+              className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-3xl border border-[#EFE2F5] bg-white p-5 sm:p-6 space-y-4 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-[#F4ECF8] pb-3">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#DB2777]">
+                    <Star className="w-3.5 h-3.5 fill-current" />
+                    <span>Highlight Product on Storefront</span>
+                  </div>
+                  <h3 className="font-display-serif text-lg font-bold text-[#1F122B] mt-0.5">
+                    {highlightTargetProduct.name}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setHighlightTargetProduct(null)}
+                  className="p-1.5 rounded-lg text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Allow switching which seller product to highlight */}
+              {sellerProducts.length > 1 && (
+                <div>
+                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                    Select Product to Highlight
+                  </label>
+                  <select
+                    value={highlightTargetProduct.id}
+                    onChange={(e) => {
+                      const found = sellerProducts.find(
+                        (p) => p.id === e.target.value
+                      );
+                      if (found) setHighlightTargetProduct(found);
+                    }}
+                    className={inputClass}
+                  >
+                    {sellerProducts.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({formatCurrency(p.sellingPrice, currencySymbol)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {highlightError && (
+                <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
+                  {highlightError}
+                </div>
+              )}
+
+              {/* Offer Seats Selection */}
+              {enabledOfferSeats.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-bold text-[#1F122B]">
+                    Special Highlight Offer Seats (সীমিত অফার সিট)
+                  </div>
+                  <div className="grid grid-cols-1 gap-2">
+                    {enabledOfferSeats.map((seat) => {
+                      const used = highlightSeatUsage[seat.id] || 0;
+                      const remaining = Math.max(0, seat.totalSeats - used);
+                      const soldOut = remaining <= 0;
+                      const isSelected =
+                        selectedChoiceType === 'offer_seat' &&
+                        selectedChoiceId === seat.id;
+                      return (
+                        <button
+                          key={seat.id}
+                          type="button"
+                          disabled={soldOut}
+                          onClick={() => {
+                            setSelectedChoiceType('offer_seat');
+                            setSelectedChoiceId(seat.id);
+                          }}
+                          className={`rounded-xl border p-3 text-left flex items-center justify-between gap-3 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                            isSelected
+                              ? 'border-[#DB2777] bg-[#FDF2F8] ring-1 ring-[#DB2777]'
+                              : 'border-[#E6D9EE] bg-[#FDFBFE] hover:border-[#C084FC]'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-[#1F122B]">
+                                {seat.title}
+                              </span>
+                              {seat.badgeText && (
+                                <span className="rounded bg-[#DB2777] px-1.5 py-0.5 text-[9px] font-bold text-white">
+                                  {seat.badgeText}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-[#6B5B7B] mt-0.5">
+                              {seat.durationDays} Days ·{' '}
+                              <span
+                                className={
+                                  soldOut
+                                    ? 'text-[#BE123C] font-bold'
+                                    : 'text-[#15803D] font-semibold'
+                                }
+                              >
+                                {soldOut
+                                  ? 'Sold Out'
+                                  : `${remaining} of ${seat.totalSeats} seats available`}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-right font-mono-num shrink-0">
+                            <div className="text-sm font-bold text-[#7E22CE]">
+                              {formatCurrency(seat.price, currencySymbol)}
+                            </div>
+                            {seat.originalPrice && seat.originalPrice > seat.price && (
+                              <div className="text-[10px] text-[#8E7C9E] line-through">
+                                {formatCurrency(seat.originalPrice, currencySymbol)}
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Standard Highlight Plans Selection */}
+              {enabledPlans.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-bold text-[#1F122B]">
+                    Standard Highlight Plans
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {enabledPlans.map((plan) => {
+                      const isSelected =
+                        selectedChoiceType === 'plan' &&
+                        selectedChoiceId === plan.id;
+                      return (
+                        <button
+                          key={plan.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedChoiceType('plan');
+                            setSelectedChoiceId(plan.id);
+                          }}
+                          className={`rounded-xl border p-3 text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'border-[#7E22CE] bg-[#FAF5FF] ring-1 ring-[#7E22CE]'
+                              : 'border-[#E6D9EE] bg-[#FDFBFE] hover:border-[#C084FC]'
+                          }`}
+                        >
+                          <div className="text-xs font-bold text-[#1F122B]">
+                            {plan.label}
+                          </div>
+                          <div className="text-[11px] text-[#6B5B7B] font-mono-num mt-0.5">
+                            {plan.durationDays} Days ·{' '}
+                            <strong className="text-[#7E22CE]">
+                              {formatCurrency(plan.price, currencySymbol)}
+                            </strong>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Admin UPI Payment Box */}
+              {selectedHighlightItem && (
+                <div className="rounded-2xl border border-[#E9D5FF] bg-[#FAF5FF] p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-[11px] font-semibold text-[#6B5B7B]">
+                        Pay {formatCurrency(modalPayAmount, currencySymbol)} to Admin UPI ID:
+                      </div>
+                      <div className="font-mono-num text-sm sm:text-base font-bold text-[#6D28D9] select-all">
+                        {activeHighlightUpi}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleCopyHighlightUpi}
+                        className="inline-flex items-center gap-1 rounded-xl border border-[#D8B4FE] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] cursor-pointer"
+                      >
+                        {upiCopied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-[#15803D]" />
+                            <span className="text-[#15803D]">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                      <a
+                        href={highlightUpiDeepLink}
+                        className="rounded-xl bg-[#7E22CE] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95"
+                      >
+                        Pay App
+                      </a>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Transaction / UTR ID (optional if uploading screenshot)
+                    </label>
+                    <input
+                      type="text"
+                      value={highlightTxRef}
+                      onChange={(e) => setHighlightTxRef(e.target.value)}
+                      placeholder="e.g. 412345678901"
+                      className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-semibold text-[#4A3B59]">
+                      Upload Payment Screenshot (Max 300KB / সর্বোচ্চ 300KB)
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>
+                          {uploadingHighlightShot
+                            ? 'Compressing...'
+                            : highlightScreenshot
+                              ? 'Change Screenshot'
+                              : 'Upload Screenshot'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={uploadingHighlightShot}
+                          onChange={handleUploadHighlightScreenshot}
+                          className="sr-only"
+                        />
+                      </label>
+                      {highlightScreenshot && (
+                        <div className="flex items-center gap-2">
+                          <img
+                            src={highlightScreenshot}
+                            alt="Highlight payment screenshot"
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 rounded-lg object-cover border border-[#D8B4FE]"
+                          />
+                          <span className="text-xs font-semibold text-[#15803D] inline-flex items-center gap-1">
+                            <ImageIcon className="w-3.5 h-3.5" />
+                            Attached
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setHighlightScreenshot('')}
+                            className="text-xs font-semibold text-[#BE123C] cursor-pointer"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#F4ECF8]">
+                <button
+                  type="button"
+                  onClick={() => setHighlightTargetProduct(null)}
+                  className="rounded-xl border border-[#E6D9EE] px-4 py-2 text-xs font-semibold text-[#5B4B6B] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    submittingHighlight ||
+                    uploadingHighlightShot ||
+                    !selectedHighlightItem
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-55"
+                >
+                  <Star className="w-3.5 h-3.5 fill-current" />
+                  <span>
+                    {submittingHighlight
+                      ? 'Submitting...'
+                      : 'Submit Highlight Request'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
     );
   }
 
   // ============================================================================
-  // 2. SELLER HUB PORTAL (APPLY / SELLER LOGIN / APPLICATION STATUS)
+  // 2. SELLER HUB PORTAL (APPLY OR SIGN IN — ZERO PUBLIC STATUS EXPOSURE)
   // ============================================================================
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -610,7 +1446,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                 setHubTab('login');
               }}
               className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
-                hubTab === 'login'
+                hubTab === 'login' && !editingRejected
                   ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
                   : 'text-[#5B4B6B] hover:text-[#1F122B]'
               }`}
@@ -620,30 +1456,18 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setHubTab('apply')}
+              onClick={() => {
+                setEditingRejected(false);
+                setHubTab('apply');
+              }}
               className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
-                hubTab === 'apply'
+                hubTab === 'apply' || editingRejected
                   ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
                   : 'text-[#5B4B6B] hover:text-[#1F122B]'
               }`}
             >
               <Store className="w-3.5 h-3.5" />
               <span>Apply as Seller</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditingRejected(false);
-                setHubTab('status');
-              }}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
-                hubTab === 'status'
-                  ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                  : 'text-[#5B4B6B] hover:text-[#1F122B]'
-              }`}
-            >
-              <Clock className="w-3.5 h-3.5" />
-              <span>Application Status</span>
             </button>
           </div>
 
@@ -660,25 +1484,18 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         </div>
       </div>
 
-      {successMsg && (
-        <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          <span>{successMsg}</span>
-        </div>
-      )}
-
-      {/* TAB A: SELLER LOGIN */}
-      {hubTab === 'login' && (
+      {/* TAB A: FLEXIBLE SELLER LOGIN (ALL STATUSES PRIVATE AFTER AUTH) */}
+      {hubTab === 'login' && !editingRejected && (
         <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-8 max-w-lg mx-auto space-y-5 shadow-sm">
           <div className="space-y-1 text-center">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#DB2777] to-[#7E22CE] text-white flex items-center justify-center mx-auto">
               <KeyRound className="w-6 h-6" />
             </div>
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B] pt-1">
-              Approved Seller Login
+              Seller Hub Sign In
             </h1>
             <p className="text-xs text-[#6B5B7B]">
-              Sign in with your Seller ID, Email, or Phone Number and Password activated by Admin.
+              Sign in with your <strong>Seller ID</strong>, <strong>Email</strong>, or <strong>10-digit Phone Number</strong> (without +91) and Password to access your Seller Dashboard or check your private application status.
             </p>
           </div>
 
@@ -691,7 +1508,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
           <form onSubmit={handleSellerLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Seller ID / Email / Phone Number{' '}
+                Seller ID / Email / Phone (without +91){' '}
                 <span className="text-[#DB2777]">*</span>
               </label>
               <input
@@ -699,7 +1516,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                 required
                 value={loginIdent}
                 onChange={(e) => setLoginIdent(e.target.value)}
-                placeholder="e.g. GGS-432112, seller@email.com, or 9876543210"
+                placeholder="e.g. GGS-54321045, seller@email.com, or 9876543210"
                 className={inputClass}
               />
             </div>
@@ -741,7 +1558,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             >
               <LogIn className="w-4 h-4" />
               <span>
-                {loginBusy ? 'Signing In...' : 'Sign In to Seller Dashboard'}
+                {loginBusy ? 'Signing In...' : 'Sign In to Seller Hub'}
               </span>
             </button>
           </form>
@@ -753,252 +1570,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               onClick={() => setHubTab('apply')}
               className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
             >
-              Submit Seller Application
+              Apply as Seller Now
             </button>
           </div>
         </div>
       )}
 
-      {/* TAB C: APPLICATION STATUS VIEW */}
-      {hubTab === 'status' && (
-        <div className="space-y-4">
-          <form
-            onSubmit={handleCheckPhoneStatus}
-            className="rounded-2xl border border-[#EFE2F5] bg-white/95 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
-          >
-            <div className="text-xs text-[#5B4B6B]">
-              Verify your registered Phone Number &amp; PAN Number to view your private Seller Application status:
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA]">
-                <span className="inline-flex items-center px-2.5 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9]">
-                  +91
-                </span>
-                <input
-                  type="tel"
-                  inputMode="tel"
-                  value={lookupPhone}
-                  onChange={(e) => setLookupPhone(e.target.value)}
-                  placeholder="9876543210"
-                  className="w-32 bg-transparent px-2.5 py-2 text-xs font-mono-num text-[#1F122B] focus:outline-none"
-                />
-              </div>
-              <input
-                type="text"
-                maxLength={10}
-                value={lookupPan}
-                onChange={(e) => setLookupPan(e.target.value.toUpperCase())}
-                placeholder="PAN (ABCDE1234F)"
-                className="w-36 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-2 text-xs font-mono-num uppercase text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
-              />
-              <button
-                type="submit"
-                disabled={statusLoading}
-                className="rounded-xl bg-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer whitespace-nowrap disabled:opacity-60"
-              >
-                {statusLoading ? 'Checking...' : 'Check Status'}
-              </button>
-            </div>
-          </form>
-
-          {statusError && (
-            <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C]">
-              {statusError}
-            </div>
-          )}
-
-          {!trackedApplication ? (
-            <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 p-8 text-center space-y-3">
-              <Store className="w-10 h-10 text-[#D8B4FE] mx-auto" />
-              <h2 className="text-base font-bold text-[#1F122B]">
-                No Seller Application Found Yet
-              </h2>
-              <p className="text-xs text-[#6B5B7B] max-w-md mx-auto">
-                Enter your registered Phone Number and PAN Number above to check an existing application, or apply now to become a seller on Glamour Galleria.
-              </p>
-              <button
-                type="button"
-                onClick={() => setHubTab('apply')}
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-semibold text-white cursor-pointer"
-              >
-                <Store className="w-4 h-4" />
-                <span>Apply as Seller</span>
-              </button>
-            </div>
-          ) : (
-            (() => {
-              const isApproved = trackedApplication.status === 'approved';
-              const isPending = trackedApplication.status === 'pending';
-              const isRejected = trackedApplication.status === 'rejected';
-              const isSuspended = trackedApplication.status === 'suspended';
-
-              return (
-                <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-6 shadow-sm">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#F4ECF8] pb-5">
-                    <div className="flex items-center gap-4">
-                      <div className="w-16 h-16 rounded-2xl border border-[#E6D9EE] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
-                        {trackedApplication.sellerPhotoDataUrl ? (
-                          <img
-                            src={trackedApplication.sellerPhotoDataUrl}
-                            alt={trackedApplication.name}
-                            referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <Store className="w-7 h-7 text-[#9333EA]" />
-                        )}
-                      </div>
-                      <div>
-                        <h2 className="font-display-serif text-2xl font-bold text-[#1F122B]">
-                          {trackedApplication.name}
-                        </h2>
-                        <div className="text-xs text-[#6B5B7B] font-mono-num mt-0.5">
-                          {trackedApplication.phone}
-                          {trackedApplication.email
-                            ? ` · ${trackedApplication.email}`
-                            : ''}
-                          {' · '}Submitted{' '}
-                          {trackedApplication.createdAt.slice(0, 10)}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div
-                      className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-bold shrink-0 ${
-                        isApproved
-                          ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
-                          : isPending
-                            ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
-                            : isRejected
-                              ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
-                              : 'border-[#FED7AA] bg-[#FFF7ED] text-[#C2410C]'
-                      }`}
-                    >
-                      {isApproved && <BadgeCheck className="w-4 h-4" />}
-                      {isPending && <Clock className="w-4 h-4" />}
-                      {isRejected && <AlertTriangle className="w-4 h-4" />}
-                      {isSuspended && <ShieldAlert className="w-4 h-4" />}
-                      <span>
-                        {isApproved
-                          ? 'Approved & Activated'
-                          : isPending
-                            ? 'Pending Admin Approval'
-                            : isRejected
-                              ? 'Application Rejected'
-                              : 'Account Suspended / Disabled'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {isApproved && (
-                    <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="space-y-1 text-xs">
-                        <div className="font-bold text-[#15803D] text-sm">
-                          Your Seller Account is Approved &amp; Active!
-                        </div>
-                        <div className="text-[#166534] font-mono-num">
-                          Seller ID:{' '}
-                          <strong className="select-all">
-                            {trackedApplication.sellerCode || 'Active'}
-                          </strong>{' '}
-                          · Phone: <strong>{trackedApplication.phone}</strong>
-                          {trackedApplication.email
-                            ? ` · Email: ${trackedApplication.email}`
-                            : ''}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLoginIdent(
-                            trackedApplication.sellerCode ||
-                              trackedApplication.email ||
-                              trackedApplication.phone
-                          );
-                          setHubTab('login');
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-[#15803D] px-4 py-2.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer shrink-0"
-                      >
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>Log In to Seller Dashboard</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {trackedApplication.adminRemarks && (
-                    <div className="rounded-2xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs text-[#9F1239]">
-                      <strong>Admin Note:</strong>{' '}
-                      {trackedApplication.adminRemarks}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
-                    <div>
-                      <div className="text-[#6B5B7B]">PAN Number</div>
-                      <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
-                        {trackedApplication.panNumber}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[#6B5B7B]">Aadhaar Number</div>
-                      <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
-                        {trackedApplication.aadhaarNumber}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[#6B5B7B]">GST Number</div>
-                      <div className="font-mono-num font-bold text-[#1F122B] mt-0.5">
-                        {trackedApplication.gstNumber || 'Not provided'}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[#6B5B7B]">Full Address</div>
-                      <div className="font-medium text-[#1F122B] mt-0.5">
-                        {trackedApplication.fullAddress}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[#F4ECF8]">
-                    <p className="text-xs text-[#6B5B7B]">
-                      {isPending
-                        ? 'Your application is saved with status "pending". No seller account is active until Admin approves and activates your credentials.'
-                        : isSuspended
-                          ? 'Your seller account is currently suspended/disabled. Contact our team in Help Center.'
-                          : isApproved
-                            ? 'Use Seller Login with your Seller ID, Email, or Phone + Password to list and manage products.'
-                            : 'You can edit your KYC or bank documents and re-submit for Admin review.'}
-                    </p>
-                    <div className="flex items-center gap-2.5">
-                      {isRejected && (
-                        <button
-                          type="button"
-                          onClick={handleStartReapply}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white cursor-pointer"
-                        >
-                          <UserCheck className="w-3.5 h-3.5" />
-                          <span>Edit &amp; Re-submit</span>
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={onOpenHelpCenter}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-4 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
-                      >
-                        <LifeBuoy className="w-3.5 h-3.5" />
-                        <span>Help Center Support</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()
-          )}
-        </div>
-      )}
-
       {/* TAB B: SELLER APPLICATION FORM */}
-      {hubTab === 'apply' && (
+      {(hubTab === 'apply' || editingRejected) && (
         <>
           <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-2 shadow-sm">
             <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7E22CE]">
@@ -1006,11 +1585,12 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               <span>Seller Hub (সেলার হাব) · Seller Registration</span>
             </div>
             <h1 className="font-display-serif text-2xl sm:text-3xl font-bold text-[#1F122B]">
-              Apply for a Verified Seller Account
+              {editingRejected
+                ? 'Update & Re-submit Seller Application'
+                : 'Apply for a Verified Seller Account'}
             </h1>
             <p className="text-xs sm:text-sm text-[#6B5B7B]">
-              Submit your KYC and payout bank document. Applications remain in{' '}
-              <strong>pending</strong> status until Admin approves and activates your Seller Login credentials.
+              Must be at least 18 years old. Once submitted, you will receive your private <strong>Pending Seller ID</strong> and can sign in to view your status privately.
             </p>
           </div>
 
@@ -1048,7 +1628,8 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Phone Number <span className="text-[#DB2777]">*</span>
+                    Phone Number (type 10 digits without +91){' '}
+                    <span className="text-[#DB2777]">*</span>
                   </label>
                   <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
                     <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
@@ -1068,7 +1649,25 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Email Address (for Seller Login)
+                    Date of Birth (18+ Mandatory){' '}
+                    <span className="text-[#DB2777]">*</span>
+                  </label>
+                  <div className="relative">
+                    <Calendar className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="date"
+                      required
+                      max={maxAdultDob}
+                      value={dateOfBirth}
+                      onChange={(e) => setDateOfBirth(e.target.value)}
+                      className={`${inputClass} pl-10 font-mono-num`}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                    Email Address (optional, for Seller Login)
                   </label>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1082,7 +1681,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   </div>
                 </div>
 
-                <div>
+                <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                     Create Seller Login Password{' '}
                     {!editingRejected && (
@@ -1142,12 +1741,17 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   <input
                     type="text"
                     required
-                    maxLength={10}
+                    maxLength={20}
                     value={panNumber}
                     onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
                     placeholder="ABCDE1234F"
                     className={`${inputClass} font-mono-num uppercase`}
                   />
+                  {panFormatHint && (
+                    <p className="text-[11px] text-[#B45309] mt-1">
+                      {panFormatHint}
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -1156,18 +1760,18 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   </label>
                   <input
                     type="text"
-                    inputMode="numeric"
                     required
-                    maxLength={12}
+                    maxLength={20}
                     value={aadhaarNumber}
-                    onChange={(e) =>
-                      setAadhaarNumber(
-                        e.target.value.replace(/[^\d]/g, '').slice(0, 12)
-                      )
-                    }
+                    onChange={(e) => setAadhaarNumber(e.target.value)}
                     placeholder="12-digit Aadhaar Number"
                     className={`${inputClass} font-mono-num`}
                   />
+                  {aadhaarFormatHint && (
+                    <p className="text-[11px] text-[#B45309] mt-1">
+                      {aadhaarFormatHint}
+                    </p>
+                  )}
                 </div>
 
                 <div className="sm:col-span-2">
@@ -1176,7 +1780,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   </label>
                   <input
                     type="text"
-                    maxLength={15}
+                    maxLength={20}
                     value={gstNumber}
                     onChange={(e) => setGstNumber(e.target.value.toUpperCase())}
                     placeholder="15-character GSTIN (if registered)"
@@ -1190,7 +1794,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B] border-b border-[#F4ECF8] pb-2.5">
                 <FileText className="w-4 h-4 text-[#DB2777]" />
-                <span>2. Photo &amp; KYC Document Uploads</span>
+                <span>2. Photo &amp; KYC Document Uploads (Max 300KB each)</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
@@ -1264,17 +1868,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             <div className="pt-3 border-t border-[#F4ECF8] flex flex-wrap items-center justify-between gap-3">
               <span className="text-xs text-[#6B5B7B] inline-flex items-center gap-1.5">
                 <Phone className="w-3.5 h-3.5 text-[#7E22CE]" />
-                Saved as pending until Admin approves &amp; activates your seller account.
+                Saved privately as Pending until Admin approves &amp; activates your account.
               </span>
 
               <div className="flex items-center gap-2.5">
                 {editingRejected && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setEditingRejected(false);
-                      setHubTab('status');
-                    }}
+                    onClick={() => setEditingRejected(false)}
                     className="rounded-xl border border-[#E6D9EE] bg-white px-4 py-2.5 text-xs font-semibold text-[#4A3B59] cursor-pointer"
                   >
                     Cancel
@@ -1289,7 +1890,9 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   <span>
                     {submitting
                       ? 'Submitting Application...'
-                      : 'Submit Seller Application'}
+                      : editingRejected
+                        ? 'Re-submit Application'
+                        : 'Submit Seller Application'}
                   </span>
                 </button>
               </div>

@@ -15,7 +15,8 @@ import {
   buildForgotPasswordWhatsAppUrl,
   normalizeIndianPhone,
   resizeImageFileToDataUrl,
-  validateImageFileUnder200KB,
+  validateEnglishName,
+  validateImageFileUnder300KB,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
@@ -70,7 +71,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     e.target.value = '';
     if (!file) return;
     setError('');
-    const sizeErr = validateImageFileUnder200KB(file);
+    const sizeErr = validateImageFileUnder300KB(file);
     if (sizeErr) {
       setError(sizeErr);
       return;
@@ -87,7 +88,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not process profile photo. Please pick a JPG/PNG under 200KB.'
+          : 'Could not process profile photo. Please pick a JPG/PNG under 300KB.'
       );
     } finally {
       setUploadingPhoto(false);
@@ -126,8 +127,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     e.preventDefault();
     setError('');
 
-    if (!regName.trim()) {
-      setError('Please enter your full name.');
+    const nameCheck = validateEnglishName(regName, 'Full Name');
+    if (!nameCheck.valid) {
+      setError(nameCheck.error || 'Please enter your full name in English.');
       return;
     }
     const phoneCheck = normalizeIndianPhone(regPhone);
@@ -155,7 +157,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
         // ignore storage errors
       }
       const res = await api.registerCustomerAccount({
-        name: regName.trim(),
+        name: nameCheck.cleaned,
         phone: phoneCheck.formatted,
         address: regAddress.trim(),
         city: regCity.trim(),
@@ -357,7 +359,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-semibold text-[#1F122B]">
-                    Profile Photo (Optional · Max 200KB / সর্বোচ্চ 200KB)
+                    Profile Photo (Optional · Max 300KB / সর্বোচ্চ 300KB)
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
@@ -392,14 +394,14 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
 
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Full Name <span className="text-[#DB2777]">*</span>
+                  Full Name (in English) <span className="text-[#DB2777]">*</span>
                 </label>
                 <input
                   type="text"
                   required
                   value={regName}
                   onChange={(e) => setRegName(e.target.value)}
-                  placeholder="Enter your full name"
+                  placeholder="Enter your full name in English (e.g. Priya Sharma)"
                   className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 />
               </div>

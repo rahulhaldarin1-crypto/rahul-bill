@@ -4,6 +4,7 @@ import { Client } from '../types/business';
 import {
   normalizeIndianPhone,
   stripPlus91Prefix,
+  validateEnglishName,
 } from '../utils/calculations';
 
 interface NewClientViewProps {
@@ -59,8 +60,9 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
   }, [editingClient]);
 
   const validate = (): string | null => {
-    if (name.trim().length < 2) {
-      return 'Customer name is required (at least 2 characters).';
+    const nameCheck = validateEnglishName(name, 'Customer Name');
+    if (!nameCheck.valid) {
+      return nameCheck.error || 'Customer name is required in English.';
     }
     const mobileCheck = normalizeIndianPhone(mobile);
     if (!mobileCheck.valid) {
@@ -85,7 +87,7 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
         ? normalizeIndianPhone(whatsapp).formatted
         : mobileFormatted;
     return {
-      name: name.trim(),
+      name: validateEnglishName(name, 'Customer Name').cleaned,
       mobile: mobileFormatted,
       whatsapp: waFormatted,
       address: address.trim(),
@@ -152,14 +154,14 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
 
         <div>
           <label className={labelClass}>
-            Customer Name <span className="text-[#DB2777]">*</span>
+            Customer Name (in English) <span className="text-[#DB2777]">*</span>
           </label>
           <input
             type="text"
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Priya Sharma"
+            placeholder="e.g. Priya Sharma (English letters only)"
             className={inputClass}
           />
         </div>

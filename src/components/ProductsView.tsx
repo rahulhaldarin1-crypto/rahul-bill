@@ -15,9 +15,10 @@ import { Product } from '../types/business';
 import {
   DEFAULT_PRODUCT_CATEGORY,
   formatCurrency,
+  isProductHighlightActive,
   PRODUCT_CATEGORIES,
   resizeImageFileToDataUrl,
-  validateImageFileUnder200KB,
+  validateImageFileUnder300KB,
 } from '../utils/calculations';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
@@ -34,6 +35,8 @@ interface ProductsViewProps {
   defaultLowStock: number;
   sellerContext?: SellerProductContext;
   hideBackButton?: boolean;
+  pendingHighlightProductIds?: Set<string>;
+  onRequestHighlight?: (prod: Product) => void;
   onBack: () => void;
   onSaveProduct: (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
@@ -51,6 +54,8 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   defaultLowStock,
   sellerContext,
   hideBackButton = false,
+  pendingHighlightProductIds,
+  onRequestHighlight,
   onBack,
   onSaveProduct,
   onDeleteProduct,
@@ -137,7 +142,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
     const filesToProcess = fileList.slice(0, remainingSlots);
     for (const file of filesToProcess) {
-      const sizeErr = validateImageFileUnder200KB(file);
+      const sizeErr = validateImageFileUnder300KB(file);
       if (sizeErr) {
         setError(sizeErr);
         return;
@@ -168,7 +173,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not load selected images. Please choose valid JPG/PNG files under 200KB.'
+          : 'Could not load selected images. Please choose valid JPG/PNG files under 300KB.'
       );
     } finally {
       setCompressingImg(false);
@@ -225,7 +230,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           sellingPrice: Math.max(0, sell),
           originalPrice:
             oldMrp && oldMrp > sell ? Math.max(0, oldMrp) : undefined,
-          highlighted,
+          highlighted: sellerContext ? Boolean(editing?.highlighted) : highlighted,
+          highlightExpiresAt: editing?.highlightExpiresAt,
+          highlightPlacement: editing?.highlightPlacement,
+          highlightPlanTitle: editing?.highlightPlanTitle,
           stockQty: Math.max(0, Math.floor(Number(stockQty) || 0)),
           lowStockAlert: Math.max(1, Math.floor(Number(lowStockAlert) || 5)),
           size: size.trim(),
@@ -290,7 +298,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           p.size.toLowerCase().includes(q)
         );
       })
-      .sort((a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted)));
+      .sort(
+        (a, b) =>
+          Number(isProductHighlightActive(b)) - Number(isProductHighlightActive(a))
+      );
   }, [products, searchQuery, categoryFilter]);
 
   const inputClass =
@@ -381,7 +392,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   Product Photos ({imageDataUrls.length}/{MAX_PRODUCT_IMAGES})
                 </div>
                 <div className="text-[11px] text-[#6B5B7B]">
-                  Upload up to {MAX_PRODUCT_IMAGES} photos (<strong>Max 200KB / সর্বোচ্চ 200KB</strong> per image). First photo is shown as Main Photo on product cards.
+                  Upload up to {MAX_PRODUCT_IMAGES} photos (<strong>Max 300KB / সর্বোচ্চ 300KB</strong> per image). First photo is shown as Main Photo on product cards.
                 </div>
               </div>
 
@@ -600,17 +611,19 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
               />
             </div>
 
-            <div className="flex items-end pb-1">
-              <label className="w-full inline-flex items-center gap-2.5 rounded-xl border border-[#E6D9EE] bg-[#FDF9FE] px-3.5 py-2.5 text-xs font-semibold text-[#1F122B] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={highlighted}
-                  onChange={(e) => setHighlighted(e.target.checked)}
-                  className="w-4 h-4 accent-[#DB2777] rounded cursor-pointer"
-                />
-                <span>Highlight / Pin to Top of Storefront</span>
-              </label>
-            </div>
+            {!sellerContext && (
+              <div className="flex items-end pb-1">
+                <label className="w-full inline-flex items-center gap-2.5 rounded-xl border border-[#E6D9EE] bg-[#FDF9FE] px-3.5 py-2.5 text-xs font-semibold text-[#1F122B] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={highlighted}
+                    onChange={(e) => setHighlighted(e.target.checked)}
+                    className="w-4 h-4 accent-[#DB2777] rounded cursor-pointer"
+                  />
+                  <span>Highlight / Pin to Top of Storefront</span>
+                </label>
+              </div>
+            )}
 
             <div className="sm:col-span-2 lg:col-span-3">
               <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
@@ -716,12 +729,16 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   ? [prod.imageDataUrl]
                   : [];
             const mainImg = gallery[0] || '';
+            const activeHighlight = isProductHighlightActive(prod);
+            const hasPendingHighlight = Boolean(
+              pendingHighlightProductIds?.has(prod.id)
+            );
 
             return (
               <div
                 key={prod.id}
                 className={`rounded-2xl border bg-white overflow-hidden flex flex-col justify-between ${
-                  prod.highlighted
+                  activeHighlight
                     ? 'border-[#DB2777] ring-1 ring-[#DB2777]/25'
                     : 'border-[#EFE2F5]'
                 }`}
@@ -738,10 +755,21 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     ) : (
                       <Package className="w-10 h-10 text-[#C084FC]" />
                     )}
-                    {prod.highlighted && (
+                    {activeHighlight && (
                       <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-[#DB2777] px-2 py-0.5 text-[10px] font-bold text-white">
                         <Star className="w-3 h-3 fill-current" />
-                        <span>Highlighted</span>
+                        <span>
+                          Highlighted
+                          {prod.highlightExpiresAt
+                            ? ` · till ${prod.highlightExpiresAt.slice(0, 10)}`
+                            : ''}
+                        </span>
+                      </span>
+                    )}
+                    {!activeHighlight && hasPendingHighlight && (
+                      <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-[#B45309] px-2 py-0.5 text-[10px] font-bold text-white">
+                        <Star className="w-3 h-3" />
+                        <span>Highlight Pending</span>
                       </span>
                     )}
                     {gallery.length > 1 && (
@@ -830,28 +858,58 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={togglingHighlightId === prod.id}
-                      onClick={() => handleToggleHighlight(prod)}
-                      className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-60 ${
-                        prod.highlighted
-                          ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
-                          : 'border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#DB2777]'
-                      }`}
-                      title={
-                        prod.highlighted
-                          ? 'Remove highlight priority'
-                          : 'Highlight & show first in storefront'
-                      }
-                    >
-                      <Star
-                        className={`w-3.5 h-3.5 ${
-                          prod.highlighted ? 'fill-current' : ''
+                    {sellerContext ? (
+                      onRequestHighlight && (
+                        <button
+                          type="button"
+                          onClick={() => onRequestHighlight(prod)}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors ${
+                            activeHighlight
+                              ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
+                              : hasPendingHighlight
+                                ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                                : 'border-[#D8B4FE] bg-[#FAF5FF] text-[#7E22CE] hover:border-[#DB2777] hover:text-[#DB2777]'
+                          }`}
+                          title="Pay & request Highlight for this product"
+                        >
+                          <Star
+                            className={`w-3.5 h-3.5 ${
+                              activeHighlight ? 'fill-current' : ''
+                            }`}
+                          />
+                          <span>
+                            {activeHighlight
+                              ? 'Highlighted'
+                              : hasPendingHighlight
+                                ? 'Pending'
+                                : 'Highlight'}
+                          </span>
+                        </button>
+                      )
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={togglingHighlightId === prod.id}
+                        onClick={() => handleToggleHighlight(prod)}
+                        className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-60 ${
+                          prod.highlighted
+                            ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
+                            : 'border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#DB2777]'
                         }`}
-                      />
-                      <span>{prod.highlighted ? 'Highlighted' : 'Highlight'}</span>
-                    </button>
+                        title={
+                          prod.highlighted
+                            ? 'Remove highlight priority'
+                            : 'Highlight & show first in storefront'
+                        }
+                      >
+                        <Star
+                          className={`w-3.5 h-3.5 ${
+                            prod.highlighted ? 'fill-current' : ''
+                          }`}
+                        />
+                        <span>{prod.highlighted ? 'Highlighted' : 'Highlight'}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => openEdit(prod)}

@@ -43,7 +43,8 @@ import {
   normalizeIndianPhone,
   resizeImageFileToDataUrl,
   stripPlus91Prefix,
-  validateImageFileUnder200KB,
+  validateEnglishName,
+  validateImageFileUnder300KB,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
@@ -162,7 +163,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setProfileError('');
-    const sizeErr = validateImageFileUnder200KB(file);
+    const sizeErr = validateImageFileUnder300KB(file);
     if (sizeErr) {
       setProfileError(sizeErr);
       return;
@@ -275,7 +276,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setCheckoutError('');
-    const sizeErr = validateImageFileUnder200KB(file);
+    const sizeErr = validateImageFileUnder300KB(file);
     if (sizeErr) {
       setCheckoutError(sizeErr);
       return;
@@ -292,7 +293,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       setCheckoutError(
         err instanceof Error
           ? err.message
-          : 'Invalid screenshot image. Please upload JPG or PNG under 200KB.'
+          : 'Invalid screenshot image. Please upload JPG or PNG under 300KB.'
       );
     } finally {
       setUploadingScreenshot(false);
@@ -305,8 +306,11 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     setCheckoutError('');
     setOrderNotice('');
 
-    if (!checkoutName.trim()) {
-      setCheckoutError('Please enter your full name.');
+    const nameCheck = validateEnglishName(checkoutName, 'Full Name');
+    if (!nameCheck.valid) {
+      setCheckoutError(
+        nameCheck.error || 'Please enter your full name in English.'
+      );
       return;
     }
     const phoneCheck = normalizeIndianPhone(checkoutPhone);
@@ -369,7 +373,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       const res = await api.createCustomerOrder({
         clientId: client.id,
         clearCart: true,
-        customerName: checkoutName.trim(),
+        customerName: nameCheck.cleaned,
         customerPhone: phoneCheck.formatted,
         customerWhatsapp: formattedWhatsapp,
         customerAddress: checkoutAddress.trim(),
@@ -549,7 +553,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   </button>
                 )}
                 <span className="text-[10px] text-[#6B5B7B]">
-                  Max 200KB
+                  Max 300KB
                 </span>
               </div>
             </div>
@@ -807,13 +811,14 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
-                      Full Name <span className="text-[#DB2777]">*</span>
+                      Full Name (in English) <span className="text-[#DB2777]">*</span>
                     </label>
                     <input
                       type="text"
                       required
                       value={checkoutName}
                       onChange={(e) => setCheckoutName(e.target.value)}
+                      placeholder="Full name in English"
                       className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs sm:text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
                     />
                   </div>
@@ -1045,7 +1050,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         </span>
                       )}
                       <span className="text-[10px] text-[#6B5B7B]">
-                        Max 200KB (সর্বোচ্চ 200KB)
+                        Max 300KB (সর্বোচ্চ 300KB)
                       </span>
                     </div>
                   </div>

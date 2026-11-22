@@ -2,6 +2,7 @@ import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 import {
   BusinessSettings,
+  HighlightConfig,
   Invoice,
   InvoiceLineItem,
   ViewPanelConfig,
@@ -9,6 +10,7 @@ import {
 } from '../types/business';
 
 export const CHECKOUT_UPI_ID = '9332578394-4@ibl';
+export const HIGHLIGHT_UPI_ID = 'rahulhaldar189941@axl';
 export const WHATSAPP_SUPPORT_PHONE = '919332578394';
 export const COD_DELIVERY_CHARGE_PER_ITEM = 50;
 
@@ -24,17 +26,123 @@ export const PRODUCT_CATEGORIES = [
 
 export const DEFAULT_PRODUCT_CATEGORY = PRODUCT_CATEGORIES[0];
 
-export const MAX_IMAGE_UPLOAD_BYTES = 200 * 1024; // Strict 200KB (204,800 bytes)
+export const MAX_IMAGE_UPLOAD_BYTES = 300 * 1024; // Strict 300KB (307,200 bytes)
 
-export function validateImageFileUnder200KB(file: File): string | null {
+export function validateImageFileUnder300KB(file: File): string | null {
   if (!file.type || !file.type.startsWith('image/')) {
     return 'Please select a valid JPG/PNG image file. অনুগ্রহ করে সঠিক ছবি (JPG/PNG) নির্বাচন করুন।';
   }
   if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
     const sizeKb = Math.ceil(file.size / 1024);
-    return `File size (${sizeKb}KB) exceeds the 200KB limit. অনুগ্রহ করে 200KB-এর কম সাইজের ফাইল আপলোড করুন। (Please upload an image under 200KB.)`;
+    return `File size (${sizeKb}KB) exceeds the 300KB limit. অনুগ্রহ করে 300KB-এর কম সাইজের ফাইল আপলোড করুন। (Please upload an image under 300KB.)`;
   }
   return null;
+}
+
+export function validateEnglishName(
+  rawName?: string,
+  fieldLabel = 'Customer Name'
+): { valid: boolean; cleaned: string; error?: string } {
+  const cleaned = String(rawName || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (cleaned.length < 2) {
+    return {
+      valid: false,
+      cleaned,
+      error: `${fieldLabel} must be at least 2 characters in English. (নাম কমপক্ষে ২ অক্ষরের ইংরেজিতে লিখুন।)`,
+    };
+  }
+  if (!/^[A-Za-z .'-]+$/.test(cleaned) || !/[A-Za-z]{2,}/.test(cleaned)) {
+    return {
+      valid: false,
+      cleaned,
+      error: `${fieldLabel} must be written in English letters only (A-Z, a-z). (নাম শুধুমাত্র ইংরেজি অক্ষরে লিখুন।)`,
+    };
+  }
+  return { valid: true, cleaned };
+}
+
+export function getMaxAdultDobIso(): string {
+  const now = new Date();
+  const y = now.getFullYear() - 18;
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function validateAdultDateOfBirth(dobRaw?: string): {
+  valid: boolean;
+  dob: string;
+  age: number;
+  error?: string;
+} {
+  const dob = String(dobRaw || '').trim();
+  const match = dob.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return {
+      valid: false,
+      dob: '',
+      age: 0,
+      error: 'Please enter a valid Date of Birth. (সঠিক জন্ম তারিখ দিন।)',
+    };
+  }
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  const birth = new Date(year, month - 1, day);
+  if (
+    Number.isNaN(birth.getTime()) ||
+    birth.getFullYear() !== year ||
+    birth.getMonth() !== month - 1 ||
+    birth.getDate() !== day
+  ) {
+    return {
+      valid: false,
+      dob: '',
+      age: 0,
+      error: 'Please enter a valid Date of Birth.',
+    };
+  }
+
+  const today = new Date();
+  if (birth > today) {
+    return {
+      valid: false,
+      dob,
+      age: 0,
+      error: 'Date of Birth cannot be in the future.',
+    };
+  }
+
+  let age = today.getFullYear() - year;
+  const monthDiff = today.getMonth() + 1 - month;
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < day)) {
+    age -= 1;
+  }
+
+  if (age < 18) {
+    return {
+      valid: false,
+      dob,
+      age,
+      error:
+        'Applicant must be at least 18 years old to register as a Seller. (সেলার হওয়ার জন্য কমপক্ষে ১৮ বছর বয়স হতে হবে।)',
+    };
+  }
+
+  return { valid: true, dob, age };
+}
+
+export function isProductHighlightActive(prod: {
+  highlighted?: boolean;
+  highlightExpiresAt?: string;
+}): boolean {
+  if (!prod.highlighted) return false;
+  if (!prod.highlightExpiresAt) return true;
+  const exp = new Date(prod.highlightExpiresAt).getTime();
+  if (Number.isNaN(exp)) return true;
+  return exp > Date.now();
 }
 
 export function normalizeSupportName(name?: string): string {
@@ -194,6 +302,40 @@ export const DEFAULT_VIEW_PANEL_CONFIG: ViewPanelConfig = {
   updatedAt: '',
 };
 
+export const DEFAULT_HIGHLIGHT_CONFIG: HighlightConfig = {
+  upiId: HIGHLIGHT_UPI_ID,
+  placementRule: 'top_featured',
+  plans: [
+    { id: 'hl-3d', label: '3 Days Spotlight', durationDays: 3, price: 49, enabled: true },
+    { id: 'hl-7d', label: '7 Days Featured Boost', durationDays: 7, price: 99, enabled: true },
+    { id: 'hl-15d', label: '15 Days Top Choice', durationDays: 15, price: 179, enabled: true },
+    { id: 'hl-30d', label: '30 Days Monthly Star', durationDays: 30, price: 299, enabled: true },
+  ],
+  offerSeats: [
+    {
+      id: 'seat-festive-7d',
+      title: 'Special Offer Seat · 7 Days Top Showcase',
+      durationDays: 7,
+      price: 59,
+      originalPrice: 99,
+      totalSeats: 10,
+      badgeText: 'Limited Offer Seat',
+      enabled: true,
+    },
+    {
+      id: 'seat-prime-14d',
+      title: 'VIP Offer Seat · 14 Days Storefront Pin',
+      durationDays: 14,
+      price: 119,
+      originalPrice: 199,
+      totalSeats: 5,
+      badgeText: 'VIP Offer',
+      enabled: true,
+    },
+  ],
+  updatedAt: '',
+};
+
 export const DEFAULT_SETTINGS: BusinessSettings = {
   businessName: 'Glamour Galleria',
   tagline: 'Your Style, Our Priority',
@@ -216,12 +358,14 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   socialTagLine: 'Loved your order? Tag us @glamour.galleria.in and share your look with us!',
   lowStockThreshold: 5,
   viewPanel: DEFAULT_VIEW_PANEL_CONFIG,
+  highlightConfig: DEFAULT_HIGHLIGHT_CONFIG,
 };
 
 export function mergeBusinessSettings(
   raw?: Partial<BusinessSettings> | null
 ): BusinessSettings {
   const rawVp = raw?.viewPanel;
+  const rawHc = raw?.highlightConfig;
   return {
     ...DEFAULT_SETTINGS,
     ...(raw || {}),
@@ -246,6 +390,21 @@ export function mergeBusinessSettings(
       },
       updatedAt: rawVp?.updatedAt || '',
     },
+    highlightConfig: {
+      upiId: String(rawHc?.upiId || DEFAULT_HIGHLIGHT_CONFIG.upiId).trim() || HIGHLIGHT_UPI_ID,
+      placementRule:
+        rawHc?.placementRule === 'priority_category' ||
+        rawHc?.placementRule === 'featured_badge_only'
+          ? rawHc.placementRule
+          : 'top_featured',
+      plans: Array.isArray(rawHc?.plans)
+        ? rawHc.plans
+        : DEFAULT_HIGHLIGHT_CONFIG.plans,
+      offerSeats: Array.isArray(rawHc?.offerSeats)
+        ? rawHc.offerSeats
+        : DEFAULT_HIGHLIGHT_CONFIG.offerSeats,
+      updatedAt: rawHc?.updatedAt || '',
+    },
   };
 }
 
@@ -260,6 +419,7 @@ export function createEmptyWorkspace(): WorkspaceData {
     orders: [],
     sellerApplications: [],
     supportChats: [],
+    highlightRequests: [],
   };
 }
 

@@ -9,7 +9,11 @@ import {
 } from 'lucide-react';
 import { Client, SupportChatThread } from '../types/business';
 import { api, formatApiError } from '../utils/api';
-import { normalizeIndianPhone, stripPlus91Prefix } from '../utils/calculations';
+import {
+  normalizeIndianPhone,
+  stripPlus91Prefix,
+  validateEnglishName,
+} from '../utils/calculations';
 
 const GUEST_SUPPORT_SESSION_KEY = 'gg_support_guest_session_v1';
 
@@ -154,11 +158,14 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
   const handleStartGuestChat = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const cleanName = guestNameInput.trim();
-    if (cleanName.length < 2) {
-      setError('Please enter your full name (at least 2 characters).');
+    const nameCheck = validateEnglishName(guestNameInput, 'Your Name');
+    if (!nameCheck.valid) {
+      setError(
+        nameCheck.error || 'Please enter your full name in English (at least 2 characters).'
+      );
       return;
     }
+    const cleanName = nameCheck.cleaned;
     const phoneCheck = normalizeIndianPhone(guestPhoneInput);
     if (!phoneCheck.valid) {
       setError(
@@ -314,14 +321,14 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Your Name <span className="text-[#DB2777]">*</span>
+                  Your Name (in English) <span className="text-[#DB2777]">*</span>
                 </label>
                 <input
                   type="text"
                   required
                   value={guestNameInput}
                   onChange={(e) => setGuestNameInput(e.target.value)}
-                  placeholder="Enter your full name"
+                  placeholder="Enter your full name in English"
                   className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 />
               </div>

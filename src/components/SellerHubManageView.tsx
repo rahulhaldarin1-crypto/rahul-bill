@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   BadgeCheck,
   Ban,
+  Calendar,
   CheckCircle2,
   Clock,
   Download,
@@ -15,25 +16,37 @@ import {
   Package,
   Pencil,
   Phone,
+  Plus,
   Save,
   Search,
   ShieldCheck,
+  Sparkles,
+  Star,
   Store,
   Trash2,
   X,
   XCircle,
 } from 'lucide-react';
 import {
+  HighlightConfig,
+  HighlightOfferSeat,
+  HighlightPlacementRule,
+  HighlightPlan,
+  HighlightRequest,
+  HighlightRequestStatus,
   Product,
   SellerAccountStatus,
   SellerApplication,
   SellerApprovalStatus,
 } from '../types/business';
 import {
+  DEFAULT_HIGHLIGHT_CONFIG,
   DEFAULT_PRODUCT_CATEGORY,
+  HIGHLIGHT_UPI_ID,
   PRODUCT_CATEGORIES,
   downloadImageAsset,
   formatCurrency,
+  validateAdultDateOfBirth,
 } from '../utils/calculations';
 import { decryptRunningPassword } from '../utils/adminAuth';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
@@ -42,6 +55,8 @@ import { ConfirmModal } from './ConfirmModal';
 interface SellerHubManageViewProps {
   sellerApplications: SellerApplication[];
   products: Product[];
+  highlightRequests: HighlightRequest[];
+  highlightConfig?: HighlightConfig;
   currencySymbol: string;
   defaultLowStock: number;
   onBack: () => void;
@@ -69,6 +84,13 @@ interface SellerHubManageViewProps {
     existingId?: string
   ) => Promise<void>;
   onDeleteProduct: (id: string) => Promise<void>;
+  onSaveHighlightConfig: (config: HighlightConfig) => Promise<void>;
+  onUpdateHighlightRequestStatus: (
+    requestId: string,
+    status: HighlightRequestStatus,
+    adminRemarks?: string
+  ) => Promise<void>;
+  onDeleteHighlightRequest: (requestId: string) => Promise<void>;
 }
 
 const ALLOWED_CATEGORIES_SET = new Set<string>(PRODUCT_CATEGORIES);
@@ -120,6 +142,8 @@ function getProductApprovalBadge(status?: SellerApprovalStatus) {
 export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
   sellerApplications,
   products,
+  highlightRequests,
+  highlightConfig,
   currencySymbol,
   defaultLowStock,
   onBack,
@@ -129,15 +153,21 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
   onUpdateProductApproval,
   onSaveProduct,
   onDeleteProduct,
+  onSaveHighlightConfig,
+  onUpdateHighlightRequestStatus,
+  onDeleteHighlightRequest,
 }) => {
-  const [activeTab, setActiveTab] = useState<'applications' | 'products'>(
-    'applications'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'applications' | 'products' | 'highlights'
+  >('applications');
   const [appStatusFilter, setAppStatusFilter] = useState<
     'ALL' | SellerAccountStatus
   >('ALL');
   const [prodStatusFilter, setProdStatusFilter] = useState<
     'ALL' | SellerApprovalStatus
+  >('ALL');
+  const [highlightFilter, setHighlightFilter] = useState<
+    'ALL' | HighlightRequestStatus
   >('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [remarksMap, setRemarksMap] = useState<Record<string, string>>({});
@@ -186,6 +216,39 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
     useState<SellerApprovalStatus>('pending');
   const [savingProduct, setSavingProduct] = useState(false);
 
+  // Highlight & Offer Seats Admin Draft State
+  const [draftUpiId, setDraftUpiId] = useState(
+    () => highlightConfig?.upiId || HIGHLIGHT_UPI_ID
+  );
+  const [draftPlacementRule, setDraftPlacementRule] =
+    useState<HighlightPlacementRule>(
+      () => highlightConfig?.placementRule || 'top_featured'
+    );
+  const [draftPlans, setDraftPlans] = useState<HighlightPlan[]>(
+    () => highlightConfig?.plans || DEFAULT_HIGHLIGHT_CONFIG.plans
+  );
+  const [draftOfferSeats, setDraftOfferSeats] = useState<HighlightOfferSeat[]>(
+    () => highlightConfig?.offerSeats || DEFAULT_HIGHLIGHT_CONFIG.offerSeats
+  );
+  const [savingHighlightConfig, setSavingHighlightConfig] = useState(false);
+  const [highlightRemarksMap, setHighlightRemarksMap] = useState<
+    Record<string, string>
+  >({});
+  const [busyHighlightId, setBusyHighlightId] = useState<string | null>(null);
+  const [deleteHighlightTarget, setDeleteHighlightTarget] =
+    useState<HighlightRequest | null>(null);
+  const [deletingHighlight, setDeletingHighlight] = useState(false);
+
+  React.useEffect(() => {
+    if (!highlightConfig) return;
+    setDraftUpiId(highlightConfig.upiId || HIGHLIGHT_UPI_ID);
+    setDraftPlacementRule(highlightConfig.placementRule || 'top_featured');
+    setDraftPlans(highlightConfig.plans || DEFAULT_HIGHLIGHT_CONFIG.plans);
+    setDraftOfferSeats(
+      highlightConfig.offerSeats || DEFAULT_HIGHLIGHT_CONFIG.offerSeats
+    );
+  }, [highlightConfig]);
+
   const sellerProducts = useMemo(
     () => products.filter((p) => Boolean(p.sellerId)),
     [products]
@@ -226,6 +289,36 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
     }),
     [sellerProducts]
   );
+
+  const highlightCounts = useMemo(
+    () => ({
+      all: highlightRequests.length,
+      pending_approval: highlightRequests.filter(
+        (r) => r.status === 'pending_approval'
+      ).length,
+      approved: highlightRequests.filter((r) => r.status === 'approved').length,
+      rejected: highlightRequests.filter((r) => r.status === 'rejected').length,
+    }),
+    [highlightRequests]
+  );
+
+  const filteredHighlightRequests = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return highlightRequests.filter((req) => {
+      if (highlightFilter !== 'ALL' && req.status !== highlightFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        req.productName.toLowerCase().includes(q) ||
+        req.sellerName.toLowerCase().includes(q) ||
+        req.sellerPhone.toLowerCase().includes(q) ||
+        (req.sellerCode && req.sellerCode.toLowerCase().includes(q)) ||
+        req.planTitle.toLowerCase().includes(q) ||
+        (req.transactionRef && req.transactionRef.toLowerCase().includes(q))
+      );
+    });
+  }, [highlightRequests, highlightFilter, searchQuery]);
 
   const filteredApps = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -440,6 +533,79 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
     }
   };
 
+  const handleSaveHighlightSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSavingHighlightConfig(true);
+    try {
+      await onSaveHighlightConfig({
+        upiId: draftUpiId.trim() || HIGHLIGHT_UPI_ID,
+        placementRule: draftPlacementRule,
+        plans: draftPlans.map((p) => ({
+          ...p,
+          label: p.label.trim() || `${Math.max(1, Number(p.durationDays) || 1)} Days`,
+          durationDays: Math.max(1, Math.floor(Number(p.durationDays) || 1)),
+          price: Math.max(0, Number(p.price) || 0),
+        })),
+        offerSeats: draftOfferSeats.map((s) => ({
+          ...s,
+          title: s.title.trim() || 'Special Highlight Seat',
+          durationDays: Math.max(1, Math.floor(Number(s.durationDays) || 1)),
+          price: Math.max(0, Number(s.price) || 0),
+          originalPrice:
+            s.originalPrice && s.originalPrice > 0
+              ? Number(s.originalPrice)
+              : undefined,
+          totalSeats: Math.max(1, Math.floor(Number(s.totalSeats) || 1)),
+          badgeText: (s.badgeText || '').trim(),
+        })),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to save highlight settings.'
+      );
+    } finally {
+      setSavingHighlightConfig(false);
+    }
+  };
+
+  const handleHighlightAction = async (
+    req: HighlightRequest,
+    status: HighlightRequestStatus
+  ) => {
+    setError('');
+    setBusyHighlightId(req.id);
+    try {
+      const remark =
+        highlightRemarksMap[req.id] !== undefined
+          ? highlightRemarksMap[req.id]
+          : req.adminRemarks || '';
+      await onUpdateHighlightRequestStatus(req.id, status, remark);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to update highlight request status.'
+      );
+    } finally {
+      setBusyHighlightId(null);
+    }
+  };
+
+  const handleConfirmDeleteHighlight = async () => {
+    if (!deleteHighlightTarget) return;
+    setDeletingHighlight(true);
+    try {
+      await onDeleteHighlightRequest(deleteHighlightTarget.id);
+      setDeleteHighlightTarget(null);
+    } finally {
+      setDeletingHighlight(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 pb-24 md:pb-10">
       {/* Header */}
@@ -465,7 +631,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
         </div>
 
         {/* Main Section Switcher */}
-        <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white border border-[#EFE2F5] shrink-0">
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-white border border-[#EFE2F5] shrink-0">
           <button
             type="button"
             onClick={() => setActiveTab('applications')}
@@ -494,6 +660,21 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
               Seller Products ({prodCounts.pending} pending / {prodCounts.all})
             </span>
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('highlights')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === 'highlights'
+                ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <Star className="w-3.5 h-3.5" />
+            <span>
+              Highlight &amp; Offer Seats ({highlightCounts.pending_approval} pending /{' '}
+              {highlightCounts.all})
+            </span>
+          </button>
         </div>
       </div>
 
@@ -514,7 +695,9 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
             placeholder={
               activeTab === 'applications'
                 ? 'Search sellers by name, phone, PAN, Aadhaar, GST...'
-                : 'Search seller products by product name, category, or seller...'
+                : activeTab === 'products'
+                  ? 'Search seller products by product name, category, or seller...'
+                  : 'Search highlight requests by product, seller, or UTR...'
             }
             className="w-full rounded-xl border border-[#E6D9EE] bg-white pl-10 pr-4 py-2.5 text-sm text-[#1F122B] placeholder:text-[#A493B5] focus:border-[#9333EA] focus:outline-none"
           />
@@ -545,7 +728,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
               </button>
             ))}
           </div>
-        ) : (
+        ) : activeTab === 'products' ? (
           <div className="flex flex-wrap items-center gap-1.5">
             {(
               [
@@ -561,6 +744,33 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                 onClick={() => setProdStatusFilter(f.id)}
                 className={`rounded-lg px-3 py-1.5 text-xs font-bold border transition-colors whitespace-nowrap cursor-pointer ${
                   prodStatusFilter === f.id
+                    ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                    : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#DB2777]'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              [
+                { id: 'ALL', label: `All (${highlightCounts.all})` },
+                {
+                  id: 'pending_approval',
+                  label: `Pending (${highlightCounts.pending_approval})`,
+                },
+                { id: 'approved', label: `Approved (${highlightCounts.approved})` },
+                { id: 'rejected', label: `Rejected (${highlightCounts.rejected})` },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setHighlightFilter(f.id)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-bold border transition-colors whitespace-nowrap cursor-pointer ${
+                  highlightFilter === f.id
                     ? 'border-[#DB2777] bg-[#DB2777] text-white'
                     : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#DB2777]'
                 }`}
@@ -686,6 +896,13 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                             <Clock className="w-3.5 h-3.5 text-[#7E22CE]" />
                             Applied {app.createdAt.slice(0, 10)}
                           </span>
+                          {app.dateOfBirth && (
+                            <span className="inline-flex items-center gap-1 font-mono-num text-[#15803D] font-semibold">
+                              <Calendar className="w-3.5 h-3.5" />
+                              DOB {app.dateOfBirth} (
+                              {validateAdultDateOfBirth(app.dateOfBirth).age} yrs)
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-[#6B5B7B] flex items-start gap-1.5 pt-0.5">
                           <MapPin className="w-3.5 h-3.5 text-[#7E22CE] shrink-0 mt-0.5" />
@@ -1151,6 +1368,532 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
         </div>
       )}
 
+      {/* TAB 3: HIGHLIGHT & OFFER SEATS MANAGEMENT */}
+      {activeTab === 'highlights' && (
+        <div className="space-y-6">
+          {/* Admin Highlight Plans, Offer Seats & Placement Rules Editor */}
+          <form
+            onSubmit={handleSaveHighlightSettings}
+            className="rounded-2xl border border-[#EFE2F5] bg-white p-5 sm:p-6 space-y-5 shadow-xs"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#F4ECF8] pb-3.5">
+              <div>
+                <h2 className="font-display-serif text-lg font-bold text-[#1F122B] flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-[#DB2777]" />
+                  <span>Highlight Settings, UPI &amp; Offer Seats (অফার সিট)</span>
+                </h2>
+                <p className="text-xs text-[#6B5B7B] mt-0.5">
+                  Configure Admin UPI ID for highlight payments, placement rule on Storefront, standard plans, and limited Offer Seats.
+                </p>
+              </div>
+              <button
+                type="submit"
+                disabled={savingHighlightConfig}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60 shrink-0"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>
+                  {savingHighlightConfig
+                    ? 'Saving...'
+                    : 'Save Highlight Config'}
+                </span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                  Admin UPI ID for Highlight Payments
+                </label>
+                <input
+                  type="text"
+                  value={draftUpiId}
+                  onChange={(e) => setDraftUpiId(e.target.value)}
+                  placeholder={HIGHLIGHT_UPI_ID}
+                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                  Storefront Highlight Placement Rule
+                </label>
+                <select
+                  value={draftPlacementRule}
+                  onChange={(e) =>
+                    setDraftPlacementRule(
+                      e.target.value as HighlightPlacementRule
+                    )
+                  }
+                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                >
+                  <option value="top_featured">
+                    Top Featured (Pin highlighted products at top everywhere)
+                  </option>
+                  <option value="priority_category">
+                    Priority in Category (Pin to top inside selected category)
+                  </option>
+                  <option value="featured_badge_only">
+                    Featured Badge Only (Keep regular sort, show Featured badge)
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            {/* Highlight Offer Seats (Custom Days + Price + Total Seats) */}
+            <div className="space-y-3 pt-2 border-t border-[#F4ECF8]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-bold text-[#1F122B]">
+                    Highlight Offer Seats (দিন ও টাকা সেট করা অফার সিট)
+                  </div>
+                  <div className="text-[11px] text-[#6B5B7B]">
+                    Create discounted highlight slots with limited seat counts visible in Seller Hub.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraftOfferSeats((prev) => [
+                      ...prev,
+                      {
+                        id: `seat-${Date.now()}`,
+                        title: 'Festive Offer Seat (7 Days)',
+                        durationDays: 7,
+                        price: 129,
+                        originalPrice: 199,
+                        totalSeats: 10,
+                        badgeText: 'LIMITED OFFER',
+                        enabled: true,
+                      },
+                    ])
+                  }
+                  className="inline-flex items-center gap-1 rounded-lg border border-[#D8B4FE] bg-[#FAF5FF] px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Offer Seat</span>
+                </button>
+              </div>
+
+              <div className="space-y-2.5">
+                {draftOfferSeats.map((seat, idx) => (
+                  <div
+                    key={seat.id}
+                    className="rounded-xl border border-[#EFE2F5] bg-[#FDF9FE] p-3 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end"
+                  >
+                    <div className="sm:col-span-3">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Offer Title
+                      </label>
+                      <input
+                        type="text"
+                        value={seat.title}
+                        onChange={(e) =>
+                          setDraftOfferSeats((prev) =>
+                            prev.map((s, i) =>
+                              i === idx ? { ...s, title: e.target.value } : s
+                            )
+                          )
+                        }
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Days
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={String(seat.durationDays)}
+                        onChange={(e) => {
+                          const val = sanitizeNumericInput(e.target.value, {
+                            allowDecimal: false,
+                          });
+                          setDraftOfferSeats((prev) =>
+                            prev.map((s, i) =>
+                              i === idx
+                                ? { ...s, durationDays: Number(val) || 1 }
+                                : s
+                            )
+                          );
+                        }}
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-mono-num"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Offer Price ({currencySymbol})
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={String(seat.price)}
+                        onChange={(e) => {
+                          const val = sanitizeNumericInput(e.target.value);
+                          setDraftOfferSeats((prev) =>
+                            prev.map((s, i) =>
+                              i === idx ? { ...s, price: Number(val) || 0 } : s
+                            )
+                          );
+                        }}
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-mono-num"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Total Seats
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={String(seat.totalSeats)}
+                        onChange={(e) => {
+                          const val = sanitizeNumericInput(e.target.value, {
+                            allowDecimal: false,
+                          });
+                          setDraftOfferSeats((prev) =>
+                            prev.map((s, i) =>
+                              i === idx
+                                ? { ...s, totalSeats: Number(val) || 1 }
+                                : s
+                            )
+                          );
+                        }}
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-mono-num"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Badge Label
+                      </label>
+                      <input
+                        type="text"
+                        value={seat.badgeText || ''}
+                        onChange={(e) =>
+                          setDraftOfferSeats((prev) =>
+                            prev.map((s, i) =>
+                              i === idx ? { ...s, badgeText: e.target.value } : s
+                            )
+                          )
+                        }
+                        placeholder="OFFER SEAT"
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div className="sm:col-span-1 flex items-center justify-end gap-1.5 pb-1">
+                      <input
+                        type="checkbox"
+                        checked={seat.enabled}
+                        onChange={(e) =>
+                          setDraftOfferSeats((prev) =>
+                            prev.map((s, i) =>
+                              i === idx
+                                ? { ...s, enabled: e.target.checked }
+                                : s
+                            )
+                          )
+                        }
+                        title="Enable offer seat"
+                        className="w-4 h-4 accent-[#DB2777] cursor-pointer"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDraftOfferSeats((prev) =>
+                            prev.filter((_, i) => i !== idx)
+                          )
+                        }
+                        title="Remove offer seat"
+                        className="p-1 rounded text-[#6B5B7B] hover:text-[#BE123C] cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Standard Highlight Plans */}
+            <div className="space-y-3 pt-2 border-t border-[#F4ECF8]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-bold text-[#1F122B]">
+                  Standard Highlight Plans
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraftPlans((prev) => [
+                      ...prev,
+                      {
+                        id: `plan-${Date.now()}`,
+                        label: '10 Days Featured',
+                        durationDays: 10,
+                        price: 249,
+                        enabled: true,
+                      },
+                    ])
+                  }
+                  className="inline-flex items-center gap-1 rounded-lg border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Plan</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {draftPlans.map((plan, idx) => (
+                  <div
+                    key={plan.id}
+                    className="rounded-xl border border-[#EFE2F5] bg-[#FDFBFE] p-3 grid grid-cols-12 gap-2 items-end"
+                  >
+                    <div className="col-span-5">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Plan Label
+                      </label>
+                      <input
+                        type="text"
+                        value={plan.label}
+                        onChange={(e) =>
+                          setDraftPlans((prev) =>
+                            prev.map((p, i) =>
+                              i === idx ? { ...p, label: e.target.value } : p
+                            )
+                          )
+                        }
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Days
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={String(plan.durationDays)}
+                        onChange={(e) => {
+                          const val = sanitizeNumericInput(e.target.value, {
+                            allowDecimal: false,
+                          });
+                          setDraftPlans((prev) =>
+                            prev.map((p, i) =>
+                              i === idx
+                                ? { ...p, durationDays: Number(val) || 1 }
+                                : p
+                            )
+                          );
+                        }}
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-mono-num"
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <label className="block text-[10px] font-semibold text-[#6B5B7B] mb-1">
+                        Price ({currencySymbol})
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={String(plan.price)}
+                        onChange={(e) => {
+                          const val = sanitizeNumericInput(e.target.value);
+                          setDraftPlans((prev) =>
+                            prev.map((p, i) =>
+                              i === idx ? { ...p, price: Number(val) || 0 } : p
+                            )
+                          );
+                        }}
+                        className="w-full rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-mono-num"
+                      />
+                    </div>
+                    <div className="col-span-1 flex items-center justify-end gap-1 pb-1">
+                      <input
+                        type="checkbox"
+                        checked={plan.enabled}
+                        onChange={(e) =>
+                          setDraftPlans((prev) =>
+                            prev.map((p, i) =>
+                              i === idx
+                                ? { ...p, enabled: e.target.checked }
+                                : p
+                            )
+                          )
+                        }
+                        title="Enable plan"
+                        className="w-3.5 h-3.5 accent-[#7E22CE] cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </form>
+
+          {/* Highlight Payment Approval Requests Queue */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-bold text-[#1F122B]">
+              Seller Highlight Payment Requests ({filteredHighlightRequests.length})
+            </h3>
+            {filteredHighlightRequests.length === 0 ? (
+              <div className="rounded-2xl border border-[#EFE2F5] bg-white py-12 px-6 text-center space-y-2">
+                <Star className="w-9 h-9 text-[#D8B4FE] mx-auto" />
+                <div className="text-sm font-bold text-[#1F122B]">
+                  No highlight requests yet
+                </div>
+                <p className="text-xs text-[#6B5B7B]">
+                  Paid product highlight requests submitted by sellers from Seller Hub will appear here for UPI verification and approval.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {filteredHighlightRequests.map((req) => {
+                  const isBusy = busyHighlightId === req.id;
+                  const remarkVal =
+                    highlightRemarksMap[req.id] !== undefined
+                      ? highlightRemarksMap[req.id]
+                      : req.adminRemarks || '';
+                  return (
+                    <div
+                      key={req.id}
+                      className="rounded-2xl border border-[#EFE2F5] bg-white p-4 sm:p-5 space-y-4 shadow-xs"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="w-14 h-14 rounded-xl border border-[#EFE2F5] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
+                            {req.productImageDataUrl ? (
+                              <img
+                                src={req.productImageDataUrl}
+                                alt={req.productName}
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <Package className="w-6 h-6 text-[#9333EA]" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-sm text-[#1F122B] truncate">
+                              {req.productName}
+                            </div>
+                            <div className="text-xs text-[#6B5B7B] mt-0.5">
+                              Seller: <strong>{req.sellerName}</strong>{' '}
+                              {req.sellerCode ? `(${req.sellerCode})` : ''} ·{' '}
+                              <span className="font-mono-num">{req.sellerPhone}</span>
+                            </div>
+                            <div className="text-xs font-mono-num text-[#7E22CE] font-bold mt-1">
+                              {req.planTitle} ({req.durationDays}d) ·{' '}
+                              {formatCurrency(req.amount, currencySymbol)}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span
+                            className={`rounded-lg border px-2 py-0.5 text-[11px] font-bold ${
+                              req.status === 'approved'
+                                ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                                : req.status === 'rejected'
+                                  ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
+                                  : 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                            }`}
+                          >
+                            {req.status === 'approved'
+                              ? 'Approved'
+                              : req.status === 'rejected'
+                                ? 'Rejected'
+                                : 'Pending'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteHighlightTarget(req)}
+                            title="Delete highlight request"
+                            className="p-1.5 rounded-lg border border-[#E6D9EE] text-[#6B5B7B] hover:text-[#BE123C] cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <div className="space-y-0.5 font-mono-num">
+                          <div className="text-[#5B4B6B]">
+                            UPI: <strong>{req.upiIdUsed}</strong>
+                          </div>
+                          {req.transactionRef && (
+                            <div className="text-[#1F122B]">
+                              UTR / Ref: <strong className="select-all">{req.transactionRef}</strong>
+                            </div>
+                          )}
+                          {req.expiresAt && req.status === 'approved' && (
+                            <div className="text-[#15803D] font-semibold">
+                              Active until {req.expiresAt.slice(0, 10)}
+                            </div>
+                          )}
+                        </div>
+
+                        {req.paymentScreenshotDataUrl && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDocPreview({
+                                title: 'Highlight Payment Screenshot',
+                                subtitle: `${req.sellerName} · ${req.productName}`,
+                                src: req.paymentScreenshotDataUrl!,
+                                filename: `${req.productName}_highlight_upi`,
+                              })
+                            }
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>View Payment Screenshot</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t border-[#F4ECF8]">
+                        <input
+                          type="text"
+                          value={remarkVal}
+                          onChange={(e) =>
+                            setHighlightRemarksMap((prev) => ({
+                              ...prev,
+                              [req.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="Optional remark for seller..."
+                          className="flex-1 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-1.5 text-xs focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                        />
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={isBusy || req.status === 'approved'}
+                            onClick={() => handleHighlightAction(req, 'approved')}
+                            className="inline-flex items-center gap-1 rounded-xl bg-[#15803D] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-45"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Approve &amp; Highlight</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy || req.status === 'rejected'}
+                            onClick={() => handleHighlightAction(req, 'rejected')}
+                            className="inline-flex items-center gap-1 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3 py-1.5 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer disabled:opacity-45"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Document Zoom Preview Modal */}
       {docPreview && (
         <div
@@ -1416,6 +2159,16 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
         busy={deletingProd}
         onConfirm={handleConfirmDeleteProd}
         onCancel={() => setDeleteProdTarget(null)}
+      />
+
+      <ConfirmModal
+        open={Boolean(deleteHighlightTarget)}
+        title="Delete Highlight Request"
+        message={`Are you sure you want to delete this highlight request for "${deleteHighlightTarget?.productName}"?`}
+        confirmLabel="Delete Request"
+        busy={deletingHighlight}
+        onConfirm={handleConfirmDeleteHighlight}
+        onCancel={() => setDeleteHighlightTarget(null)}
       />
     </div>
   );

@@ -7,6 +7,8 @@ import {
   CustomerOrderPaymentMethod,
   DeliveryStatus,
   ExpenseRecord,
+  HighlightRequest,
+  HighlightRequestStatus,
   Invoice,
   PaymentMethod,
   Product,
@@ -208,6 +210,7 @@ export const api = {
     clientId?: string;
     name: string;
     email?: string;
+    dateOfBirth: string;
     fullAddress: string;
     phone: string;
     panNumber: string;
@@ -277,6 +280,45 @@ export const api = {
     return firestoreService.markSupportChatRead(chatId, readerRole);
   },
 
+  submitHighlightRequest(payload: {
+    sellerId: string;
+    productId: string;
+    requestType: 'plan' | 'offer_seat';
+    planOrSeatId: string;
+    transactionRef?: string;
+    paymentScreenshotDataUrl?: string;
+  }) {
+    return firestoreService.submitHighlightRequest(payload);
+  },
+
+  updateHighlightRequestStatus(
+    requestId: string,
+    status: HighlightRequestStatus,
+    adminRemarks?: string
+  ) {
+    return firestoreService.updateHighlightRequestStatus(
+      requestId,
+      status,
+      adminRemarks
+    );
+  },
+
+  deleteHighlightRequest(requestId: string) {
+    return firestoreService.deleteHighlightRequest(requestId);
+  },
+
+  subscribeSellerHighlightRequests(
+    sellerId: string,
+    onList: (requests: HighlightRequest[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeSellerHighlightRequests(
+      sellerId,
+      onList,
+      onError
+    );
+  },
+
   fetchCustomerStorefront() {
     return firestoreService.fetchCustomerStorefront();
   },
@@ -285,12 +327,14 @@ export const api = {
     onSettings: (settings: BusinessSettings) => void,
     onProducts: (products: Product[]) => void,
     onApprovedSellerIds: (sellerIds: string[]) => void,
+    onHighlightSeatUsage: (usage: Record<string, number>) => void,
     onError: (err: Error) => void
   ) {
     return firestoreService.subscribeCustomerStorefront(
       onSettings,
       onProducts,
       onApprovedSellerIds,
+      onHighlightSeatUsage,
       onError
     );
   },
@@ -321,15 +365,6 @@ export const api = {
       onSeller,
       onError
     );
-  },
-
-  fetchSellerApplicationStatus(params: {
-    applicationId?: string;
-    clientId?: string;
-    phone?: string;
-    panNumber?: string;
-  }) {
-    return firestoreService.fetchSellerApplicationStatus(params);
   },
 
   fetchSupportThreadForClient(clientId: string, phone?: string) {
