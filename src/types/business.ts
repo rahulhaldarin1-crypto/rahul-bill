@@ -10,7 +10,8 @@ export type AppRoute =
   | 'profit-loss'
   | 'settings'
   | 'view-panel-control'
-  | 'orders';
+  | 'orders'
+  | 'seller-hub-manage';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -126,9 +127,13 @@ export interface Client {
   runningPasswordEnc?: string;
   passwordUpdatedAt?: string;
   cart?: CustomerCartItem[];
+  referralCode?: string;
+  referredBy?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type SellerApprovalStatus = 'pending' | 'approved' | 'rejected';
 
 export interface Product {
   id: string;
@@ -145,6 +150,10 @@ export interface Product {
   size: string;
   color: string;
   description?: string;
+  sellerId?: string;
+  sellerName?: string;
+  sellerPhone?: string;
+  sellerApprovalStatus?: SellerApprovalStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -284,6 +293,56 @@ export interface CustomerOrder {
   updatedAt: string;
 }
 
+export type SellerAccountStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+
+export interface SellerApplication {
+  id: string;
+  clientId?: string;
+  name: string;
+  fullAddress: string;
+  phone: string;
+  normalizedPhone: string;
+  panNumber: string;
+  aadhaarNumber: string;
+  gstNumber?: string;
+  sellerPhotoDataUrl: string;
+  panDocDataUrl: string;
+  aadhaarDocDataUrl: string;
+  gstDocDataUrl?: string;
+  bankDocDataUrl: string;
+  bankAccountDetails?: string;
+  status: SellerAccountStatus;
+  adminRemarks?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SupportSenderRole = 'customer' | 'admin';
+
+export interface SupportChatMessage {
+  id: string;
+  senderRole: SupportSenderRole;
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface SupportChatThread {
+  id: string;
+  clientId?: string;
+  customerName: string;
+  customerPhone: string;
+  normalizedPhone: string;
+  lastMessage: string;
+  lastSenderRole: SupportSenderRole;
+  unreadForAdmin: number;
+  unreadForCustomer: number;
+  messages: SupportChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PublicCustomerLookupResult {
   client: Client | null;
   orders: CustomerOrder[];
@@ -298,4 +357,6 @@ export interface WorkspaceData {
   payments: PaymentRecord[];
   expenses: ExpenseRecord[];
   orders: CustomerOrder[];
+  sellerApplications: SellerApplication[];
+  supportChats: SupportChatThread[];
 }

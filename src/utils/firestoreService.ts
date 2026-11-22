@@ -25,6 +25,12 @@ import {
   PaymentRecord,
   Product,
   PublicCustomerLookupResult,
+  SellerAccountStatus,
+  SellerApplication,
+  SellerApprovalStatus,
+  SupportChatMessage,
+  SupportChatThread,
+  SupportSenderRole,
   WorkspaceData,
 } from '../types/business';
 import {
@@ -39,6 +45,7 @@ import {
   DEFAULT_SETTINGS,
   formatPhoneWithPlus91,
   generateNextInvoiceNumber,
+  getCustomerReferralCode,
   mergeBusinessSettings,
   normalizeIndianPhone,
   normalizePhoneDigits,
@@ -54,6 +61,8 @@ const INVOICES_COL = 'invoices';
 const PAYMENTS_COL = 'payments';
 const EXPENSES_COL = 'expenses';
 const ORDERS_COL = 'orders';
+const SELLER_APPLICATIONS_COL = 'seller_applications';
+const SUPPORT_CHATS_COL = 'support_chats';
 
 function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -79,6 +88,16 @@ function safeNum(v: unknown, fallback = 0): number {
 function sortDescByCreated<T extends { createdAt?: string }>(arr: T[]): T[] {
   return [...arr].sort((a, b) =>
     String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+  );
+}
+
+function sortDescByUpdated<T extends { updatedAt?: string; createdAt?: string }>(
+  arr: T[]
+): T[] {
+  return [...arr].sort((a, b) =>
+    String(b.updatedAt || b.createdAt || '').localeCompare(
+      String(a.updatedAt || a.createdAt || '')
+    )
   );
 }
 
@@ -226,16 +245,37 @@ export const firestoreService = {
       }
     };
 
-    const [clients, products, invoices, payments, expenses, orders] = await Promise.all([
+    const [
+      clients,
+      products,
+      invoices,
+      payments,
+      expenses,
+      orders,
+      sellerApplications,
+      supportChatsRaw,
+    ] = await Promise.all([
       fetchCol<Client>(CLIENTS_COL),
       fetchCol<Product>(PRODUCTS_COL),
       fetchCol<Invoice>(INVOICES_COL),
       fetchCol<PaymentRecord>(PAYMENTS_COL),
       fetchCol<ExpenseRecord>(EXPENSES_COL),
       fetchCol<CustomerOrder>(ORDERS_COL),
+      fetchCol<SellerApplication>(SELLER_APPLICATIONS_COL),
+      fetchCol<SupportChatThread>(SUPPORT_CHATS_COL),
     ]);
 
-    return { settings, clients, products, invoices, payments, expenses, orders };
+    return {
+      settings,
+      clients,
+      products,
+      invoices,
+      payments,
+      expenses,
+      orders,
+      sellerApplications,
+      supportChats: sortDescByUpdated(supportChatsRaw),
+    };
   },
 
   subscribeWorkspace(
@@ -317,6 +357,28 @@ export const firestoreService = {
       (err) => reportError(OperationType.LIST, ORDERS_COL, err)
     );
 
+    const unsubSellerApps = onSnapshot(
+      collection(db, SELLER_APPLICATIONS_COL),
+      (snap) => {
+        const sellerApplications = sortDescByCreated(
+          snap.docs.map((d) => d.data() as SellerApplication)
+        );
+        onUpdate((prev) => ({ ...prev, sellerApplications }));
+      },
+      (err) => reportError(OperationType.LIST, SELLER_APPLICATIONS_COL, err)
+    );
+
+    const unsubSupportChats = onSnapshot(
+      collection(db, SUPPORT_CHATS_COL),
+      (snap) => {
+        const supportChats = sortDescByUpdated(
+          snap.docs.map((d) => d.data() as SupportChatThread)
+        );
+        onUpdate((prev) => ({ ...prev, supportChats }));
+      },
+      (err) => reportError(OperationType.LIST, SUPPORT_CHATS_COL, err)
+    );
+
     return () => {
       unsubSettings();
       unsubClients();
@@ -325,6 +387,8 @@ export const firestoreService = {
       unsubPayments();
       unsubExpenses();
       unsubOrders();
+      unsubSellerApps();
+      unsubSupportChats();
     };
   },
 
@@ -841,6 +905,12 @@ export const firestoreService = {
       orders: Array.isArray(workspace.orders)
         ? workspace.orders.map((o) => stripUndefinedDeep(o))
         : [],
+      sellerApplications: Array.isArray(workspace.sellerApplications)
+        ? workspace.sellerApplications.map((s) => stripUndefinedDeep(s))
+        : [],
+      supportChats: Array.isArray(workspace.supportChats)
+        ? workspace.supportChats.map((c) => stripUndefinedDeep(c))
+        : [],
     };
 
     const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
@@ -993,6 +1063,7 @@ export const firestoreService = {
     pinCode?: string;
     password: string;
     profilePhotoDataUrl?: string;
+    referredBy?: string;
   }): Promise<{ client: Client }> {
     const cleanName = String(payload.name || '').trim();
     const phoneCheck = normalizeIndianPhone(payload.phone);
@@ -1040,6 +1111,12 @@ export const firestoreService = {
     const runningPasswordEnc = encryptRunningPassword(cleanPassword, salt);
     const now = new Date().toISOString();
 
+    const cleanReferredBy = String(payload.referredBy || '').trim();
+    const newClientId = matchedClient ? matchedClient.id : `cli-${crypto.randomUUID()}`;
+    const referralCode =
+      matchedClient?.referralCode ||
+      getCustomerReferralCode({ id: newClientId, mobile: formattedPhone });
+
     const client: Client = matchedClient
       ? stripUndefinedDeep({
           ...matchedClient,
@@ -1056,6 +1133,8 @@ export const firestoreService = {
             payload.profilePhotoDataUrl !== undefined
               ? String(payload.profilePhotoDataUrl || '')
               : matchedClient.profilePhotoDataUrl || '',
+          referralCode,
+          referredBy: matchedClient.referredBy || cleanReferredBy || '',
           passwordSalt: salt,
           passwordHash: hash,
           runningPasswordEnc,
@@ -1064,7 +1143,7 @@ export const firestoreService = {
           updatedAt: now,
         })
       : stripUndefinedDeep({
-          id: `cli-${crypto.randomUUID()}`,
+          id: newClientId,
           name: cleanName,
           mobile: formattedPhone,
           whatsapp: formattedPhone,
@@ -1073,6 +1152,8 @@ export const firestoreService = {
           state: String(payload.state || '').trim(),
           pinCode: String(payload.pinCode || '').trim(),
           profilePhotoDataUrl: String(payload.profilePhotoDataUrl || ''),
+          referralCode,
+          referredBy: cleanReferredBy,
           passwordSalt: salt,
           passwordHash: hash,
           runningPasswordEnc,
@@ -1848,5 +1929,317 @@ export const firestoreService = {
       orders: matchedOrders,
       bills: matchedBills,
     };
+  },
+
+  async submitSellerApplication(payload: {
+    existingId?: string;
+    clientId?: string;
+    name: string;
+    fullAddress: string;
+    phone: string;
+    panNumber: string;
+    aadhaarNumber: string;
+    gstNumber?: string;
+    sellerPhotoDataUrl: string;
+    panDocDataUrl: string;
+    aadhaarDocDataUrl: string;
+    gstDocDataUrl?: string;
+    bankDocDataUrl: string;
+    bankAccountDetails?: string;
+  }): Promise<SellerApplication> {
+    const cleanName = String(payload.name || '').trim();
+    const cleanAddress = String(payload.fullAddress || '').trim();
+    const phoneCheck = normalizeIndianPhone(payload.phone);
+    const cleanPan = String(payload.panNumber || '').trim().toUpperCase();
+    const cleanAadhaar = String(payload.aadhaarNumber || '').replace(/[^\d]/g, '');
+    const cleanGst = String(payload.gstNumber || '').trim().toUpperCase();
+
+    if (cleanName.length < 2) {
+      throw new Error('Please enter your full name.');
+    }
+    if (!cleanAddress) {
+      throw new Error('Please enter your full address.');
+    }
+    if (!phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
+    }
+    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(cleanPan)) {
+      throw new Error('Please enter a valid 10-character PAN number (e.g. ABCDE1234F).');
+    }
+    if (cleanAadhaar.length !== 12) {
+      throw new Error('Please enter a valid 12-digit Aadhaar number.');
+    }
+    if (!payload.sellerPhotoDataUrl) {
+      throw new Error('Please upload your Seller Photo.');
+    }
+    if (!payload.panDocDataUrl) {
+      throw new Error('Please upload your PAN Card document photo.');
+    }
+    if (!payload.aadhaarDocDataUrl) {
+      throw new Error('Please upload your Aadhaar Card document photo.');
+    }
+    if (!payload.bankDocDataUrl) {
+      throw new Error(
+        'Please upload your Bank Document / Cancelled Cheque / Passbook in the Payment Section.'
+      );
+    }
+
+    let existingApps: SellerApplication[] = [];
+    try {
+      const snap = await getDocs(collection(db, SELLER_APPLICATIONS_COL));
+      existingApps = snap.docs.map((d) => d.data() as SellerApplication);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, SELLER_APPLICATIONS_COL);
+    }
+
+    const matchedExisting =
+      (payload.existingId
+        ? existingApps.find((a) => a.id === payload.existingId)
+        : undefined) ||
+      existingApps.find(
+        (a) =>
+          (payload.clientId && a.clientId === payload.clientId) ||
+          phoneNumbersMatch(a.phone, phoneCheck.formatted)
+      );
+
+    if (matchedExisting && matchedExisting.status === 'approved') {
+      throw new Error('Your seller account is already approved.');
+    }
+
+    const now = new Date().toISOString();
+    const record: SellerApplication = stripUndefinedDeep({
+      id: matchedExisting ? matchedExisting.id : `seller-${crypto.randomUUID()}`,
+      clientId: payload.clientId || matchedExisting?.clientId || '',
+      name: cleanName,
+      fullAddress: cleanAddress,
+      phone: phoneCheck.formatted,
+      normalizedPhone: phoneCheck.digits10,
+      panNumber: cleanPan,
+      aadhaarNumber: cleanAadhaar,
+      gstNumber: cleanGst,
+      sellerPhotoDataUrl: payload.sellerPhotoDataUrl,
+      panDocDataUrl: payload.panDocDataUrl,
+      aadhaarDocDataUrl: payload.aadhaarDocDataUrl,
+      gstDocDataUrl: String(payload.gstDocDataUrl || ''),
+      bankDocDataUrl: payload.bankDocDataUrl,
+      bankAccountDetails: String(payload.bankAccountDetails || '').trim(),
+      status: 'pending',
+      adminRemarks: '',
+      reviewedAt: '',
+      createdAt: matchedExisting ? matchedExisting.createdAt : now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, SELLER_APPLICATIONS_COL, record.id), record);
+      return record;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `${SELLER_APPLICATIONS_COL}/${record.id}`
+      );
+    }
+  },
+
+  async updateSellerApplicationStatus(
+    applicationId: string,
+    status: SellerAccountStatus,
+    adminRemarks?: string
+  ): Promise<SellerApplication> {
+    const ref = doc(db, SELLER_APPLICATIONS_COL, applicationId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Seller application not found.');
+      const existing = snap.data() as SellerApplication;
+      const now = new Date().toISOString();
+      const updated: SellerApplication = stripUndefinedDeep({
+        ...existing,
+        status,
+        adminRemarks:
+          adminRemarks !== undefined
+            ? adminRemarks.trim()
+            : existing.adminRemarks || '',
+        reviewedAt: now,
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Seller application not found.') {
+        throw error;
+      }
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${SELLER_APPLICATIONS_COL}/${applicationId}`
+      );
+    }
+  },
+
+  async deleteSellerApplication(applicationId: string): Promise<{ ok: boolean }> {
+    try {
+      await deleteDoc(doc(db, SELLER_APPLICATIONS_COL, applicationId));
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.DELETE,
+        `${SELLER_APPLICATIONS_COL}/${applicationId}`
+      );
+    }
+  },
+
+  async updateProductApproval(
+    productId: string,
+    sellerApprovalStatus: SellerApprovalStatus
+  ): Promise<Product> {
+    const ref = doc(db, PRODUCTS_COL, productId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Product not found.');
+      const existing = snap.data() as Product;
+      const updated: Product = stripUndefinedDeep({
+        ...existing,
+        sellerApprovalStatus,
+        updatedAt: new Date().toISOString(),
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Product not found.') throw error;
+      handleFirestoreError(error, OperationType.UPDATE, `${PRODUCTS_COL}/${productId}`);
+    }
+  },
+
+  async sendSupportMessage(payload: {
+    chatId?: string;
+    clientId?: string;
+    customerName: string;
+    customerPhone: string;
+    senderRole: SupportSenderRole;
+    senderName: string;
+    text: string;
+  }): Promise<SupportChatThread> {
+    const cleanText = String(payload.text || '').trim();
+    if (!cleanText) {
+      throw new Error('Please type a message before sending.');
+    }
+
+    const cleanName = String(payload.customerName || '').trim() || 'Customer';
+    const phoneCheck = normalizeIndianPhone(payload.customerPhone);
+    const formattedPhone = phoneCheck.valid
+      ? phoneCheck.formatted
+      : String(payload.customerPhone || '').trim();
+    const digits10 = phoneCheck.valid
+      ? phoneCheck.digits10
+      : normalizePhoneDigits(payload.customerPhone);
+
+    if (!payload.chatId && payload.senderRole === 'customer' && !phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit mobile number to start chat.'
+      );
+    }
+
+    let existingChats: SupportChatThread[] = [];
+    try {
+      const snap = await getDocs(collection(db, SUPPORT_CHATS_COL));
+      existingChats = snap.docs.map((d) => d.data() as SupportChatThread);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, SUPPORT_CHATS_COL);
+    }
+
+    const matched =
+      (payload.chatId
+        ? existingChats.find((c) => c.id === payload.chatId)
+        : undefined) ||
+      (payload.clientId
+        ? existingChats.find((c) => c.clientId === payload.clientId)
+        : undefined) ||
+      (digits10.length >= 10
+        ? existingChats.find(
+            (c) =>
+              c.normalizedPhone === digits10 ||
+              phoneNumbersMatch(c.customerPhone, formattedPhone)
+          )
+        : undefined);
+
+    const now = new Date().toISOString();
+    const msg: SupportChatMessage = {
+      id: `msg-${crypto.randomUUID()}`,
+      senderRole: payload.senderRole,
+      senderName:
+        String(payload.senderName || '').trim() ||
+        (payload.senderRole === 'admin' ? 'Glamour Galleria Support' : cleanName),
+      text: cleanText.slice(0, 1500),
+      createdAt: now,
+    };
+
+    const nextMessages = [
+      ...(matched && Array.isArray(matched.messages) ? matched.messages : []),
+      msg,
+    ].slice(-150);
+
+    const threadId = matched
+      ? matched.id
+      : payload.chatId ||
+        (payload.clientId ? `chat-${payload.clientId}` : `chat-${crypto.randomUUID()}`);
+
+    const thread: SupportChatThread = stripUndefinedDeep({
+      id: threadId,
+      clientId: payload.clientId || matched?.clientId || '',
+      customerName:
+        payload.senderRole === 'customer'
+          ? cleanName
+          : matched?.customerName || cleanName,
+      customerPhone:
+        payload.senderRole === 'customer'
+          ? formattedPhone || matched?.customerPhone || ''
+          : matched?.customerPhone || formattedPhone,
+      normalizedPhone:
+        digits10 || matched?.normalizedPhone || '',
+      lastMessage: msg.text.slice(0, 180),
+      lastSenderRole: payload.senderRole,
+      unreadForAdmin:
+        payload.senderRole === 'customer'
+          ? (matched?.unreadForAdmin || 0) + 1
+          : 0,
+      unreadForCustomer:
+        payload.senderRole === 'admin'
+          ? (matched?.unreadForCustomer || 0) + 1
+          : 0,
+      messages: nextMessages,
+      createdAt: matched ? matched.createdAt : now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, SUPPORT_CHATS_COL, thread.id), thread);
+      return thread;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `${SUPPORT_CHATS_COL}/${thread.id}`
+      );
+    }
+  },
+
+  async markSupportChatRead(
+    chatId: string,
+    readerRole: SupportSenderRole
+  ): Promise<void> {
+    const ref = doc(db, SUPPORT_CHATS_COL, chatId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return;
+      const patch =
+        readerRole === 'admin' ? { unreadForAdmin: 0 } : { unreadForCustomer: 0 };
+      await updateDoc(ref, patch);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${SUPPORT_CHATS_COL}/${chatId}`);
+    }
   },
 };

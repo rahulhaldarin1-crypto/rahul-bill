@@ -10,6 +10,7 @@ import {
   Search,
   Settings,
   ShoppingBag,
+  Store,
   TrendingUp,
   Truck,
   UserPlus,
@@ -41,9 +42,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigate,
   onOpenViewPanel,
 }) => {
-  const { settings, clients, products, invoices, expenses, orders = [] } = workspace;
+  const {
+    settings,
+    clients,
+    products,
+    invoices,
+    expenses,
+    orders = [],
+    sellerApplications = [],
+    supportChats = [],
+  } = workspace;
   const sym = settings.currencySymbol || '₹';
   const pendingOrdersCount = orders.filter((o) => o.status === 'Pending').length;
+  const pendingSellerAppsCount = sellerApplications.filter(
+    (a) => a.status === 'pending'
+  ).length;
+  const pendingSellerProductsCount = products.filter(
+    (p) =>
+      Boolean(p.sellerId) &&
+      p.sellerApprovalStatus !== 'approved' &&
+      p.sellerApprovalStatus !== 'rejected'
+  ).length;
+  const pendingSellerTotal = pendingSellerAppsCount + pendingSellerProductsCount;
+  const unreadSupportCount = supportChats.reduce(
+    (sum, t) => sum + Math.max(0, Number(t.unreadForAdmin) || 0),
+    0
+  );
 
   const summary = useMemo(() => {
     const today = todayIsoDate();
@@ -86,13 +110,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     },
     {
       route: 'client-list',
-      title: 'Client List',
-      subtitle: 'Search customers, view profiles & order history',
-      metric: `${clients.length} Saved`,
+      title: 'Client List & Support',
+      subtitle: 'Search customers, order history & live Help Center Support Chat Reply',
+      metric:
+        unreadSupportCount > 0
+          ? `${unreadSupportCount} Chat Unread`
+          : `${clients.length} Saved`,
       icon: Users,
       accentBg: 'from-[#9333EA] to-[#7E22CE]',
-      accentText: 'text-[#7E22CE]',
+      accentText: unreadSupportCount > 0 ? 'text-[#DB2777]' : 'text-[#7E22CE]',
       borderHover: 'hover:border-[#C084FC]',
+    },
+    {
+      route: 'seller-hub-manage',
+      title: 'Seller Hub Manage',
+      subtitle: 'Approve/reject/suspend sellers, inspect KYC/bank docs & approve seller products',
+      metric:
+        pendingSellerTotal > 0
+          ? `${pendingSellerTotal} Pending`
+          : `${sellerApplications.length} Sellers`,
+      icon: Store,
+      accentBg: 'from-[#DB2777] to-[#9333EA]',
+      accentText: pendingSellerTotal > 0 ? 'text-[#BE123C]' : 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#F472B6]',
     },
     {
       route: 'client-bill',

@@ -119,6 +119,38 @@ service cloud.firestore {
       allow delete: if isValidId(orderId);
     }
 
+    function isValidSellerApplication(data) {
+      return data.keys().hasAll(['id', 'name', 'fullAddress', 'phone', 'panNumber', 'aadhaarNumber', 'status', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.fullAddress is string && data.fullAddress.size() >= 1 && data.fullAddress.size() <= 500
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 40
+        && data.panNumber is string && data.panNumber.size() >= 10 && data.panNumber.size() <= 20
+        && data.aadhaarNumber is string && data.aadhaarNumber.size() >= 12 && data.aadhaarNumber.size() <= 20
+        && data.status in ['pending', 'approved', 'rejected', 'suspended'];
+    }
+
+    match /seller_applications/{applicationId} {
+      allow list: if true;
+      allow get: if isValidId(applicationId);
+      allow create, update: if isValidId(applicationId) && isValidSellerApplication(request.resource.data);
+      allow delete: if isValidId(applicationId);
+    }
+
+    function isValidSupportChat(data) {
+      return data.keys().hasAll(['id', 'customerName', 'messages', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160
+        && data.messages is list && data.messages.size() <= 200;
+    }
+
+    match /support_chats/{chatId} {
+      allow list: if true;
+      allow get: if isValidId(chatId);
+      allow create, update: if isValidId(chatId) && isValidSupportChat(request.resource.data);
+      allow delete: if isValidId(chatId);
+    }
+
     match /test/connection {
       allow get: if true;
     }

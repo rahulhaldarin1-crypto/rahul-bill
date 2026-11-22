@@ -21,6 +21,7 @@ import { PaymentHistoryView } from './components/PaymentHistoryView';
 import { ProductsView } from './components/ProductsView';
 import { ProfitLossView } from './components/ProfitLossView';
 import { SalesReportView } from './components/SalesReportView';
+import { SellerHubManageView } from './components/SellerHubManageView';
 import { SettingsView } from './components/SettingsView';
 import { StartPortal } from './components/StartPortal';
 import { ViewPanelControlView } from './components/ViewPanelControlView';
@@ -33,6 +34,8 @@ import {
   Invoice,
   PaymentMethod,
   Product,
+  SellerAccountStatus,
+  SellerApprovalStatus,
   ViewPanelConfig,
   WorkspaceData,
 } from './types/business';
@@ -434,6 +437,51 @@ export default function App() {
     showToast('Order deleted.');
   };
 
+  const handleUpdateSellerStatus = async (
+    applicationId: string,
+    status: SellerAccountStatus,
+    adminRemarks?: string
+  ) => {
+    const updated = await api.updateSellerApplicationStatus(
+      applicationId,
+      status,
+      adminRemarks
+    );
+    setWorkspace((prev) => ({
+      ...prev,
+      sellerApplications: (prev.sellerApplications || []).map((a) =>
+        a.id === updated.id ? updated : a
+      ),
+    }));
+    showToast(`Seller status updated to ${status}.`);
+  };
+
+  const handleDeleteSellerApplication = async (applicationId: string) => {
+    await api.deleteSellerApplication(applicationId);
+    setWorkspace((prev) => ({
+      ...prev,
+      sellerApplications: (prev.sellerApplications || []).filter(
+        (a) => a.id !== applicationId
+      ),
+    }));
+    showToast('Seller application deleted.');
+  };
+
+  const handleUpdateProductApproval = async (
+    productId: string,
+    sellerApprovalStatus: SellerApprovalStatus
+  ) => {
+    const updated = await api.updateProductApproval(
+      productId,
+      sellerApprovalStatus
+    );
+    setWorkspace((prev) => ({
+      ...prev,
+      products: prev.products.map((p) => (p.id === updated.id ? updated : p)),
+    }));
+    showToast(`Seller product marked as ${sellerApprovalStatus}.`);
+  };
+
   const handleUnlockAdmin = () => {
     setAdminUnlockedStored(true);
     setAdminUnlocked(true);
@@ -546,12 +594,16 @@ export default function App() {
       <StartPortal
         settings={workspace.settings}
         products={workspace.products}
+        sellerApplications={workspace.sellerApplications || []}
+        supportChats={workspace.supportChats || []}
         loggedInCustomer={sanitizedLoggedInCustomer}
         customerOrders={customerOrders}
         customerBills={customerBills}
         onCustomerLogin={handleCustomerLogin}
         onCustomerLogout={handleCustomerLogout}
         onCustomerUpdated={upsertWorkspaceClient}
+        onSaveProduct={handleSaveProduct}
+        onDeleteProduct={handleDeleteProduct}
       />
     );
   }
@@ -598,13 +650,14 @@ export default function App() {
           </button>
 
           {/* Zone 2: Concise single-line nav links */}
-          <nav className="hidden md:flex items-center gap-5 overflow-x-auto">
+          <nav className="hidden md:flex items-center gap-4 lg:gap-5 overflow-x-auto">
             {(
               [
                 { id: 'dashboard', label: 'Dashboard' },
                 { id: 'orders', label: 'Orders' },
                 { id: 'client-list', label: 'Clients' },
                 { id: 'products', label: 'Product Listing' },
+                { id: 'seller-hub-manage', label: 'Seller Hub Manage' },
                 { id: 'sales-report', label: 'Reports' },
                 { id: 'settings', label: 'Settings' },
               ] as const
@@ -670,6 +723,7 @@ export default function App() {
           <ClientListView
             clients={workspace.clients}
             invoices={workspace.invoices}
+            supportChats={workspace.supportChats || []}
             currencySymbol={currencySymbol}
             selectedClientId={selectedClientId}
             onSelectClient={(id) => navigateTo('client-list', { clientId: id })}
@@ -785,6 +839,21 @@ export default function App() {
             onCancelOrder={handleCancelCustomerOrder}
             onDeleteOrder={handleDeleteCustomerOrder}
             onOpenInvoice={(inv) => navigateTo('client-bill', { editInvoice: inv })}
+          />
+        )}
+
+        {route === 'seller-hub-manage' && (
+          <SellerHubManageView
+            sellerApplications={workspace.sellerApplications || []}
+            products={workspace.products}
+            currencySymbol={currencySymbol}
+            defaultLowStock={workspace.settings.lowStockThreshold || 5}
+            onBack={goBack}
+            onUpdateSellerStatus={handleUpdateSellerStatus}
+            onDeleteSellerApplication={handleDeleteSellerApplication}
+            onUpdateProductApproval={handleUpdateProductApproval}
+            onSaveProduct={handleSaveProduct}
+            onDeleteProduct={handleDeleteProduct}
           />
         )}
       </main>

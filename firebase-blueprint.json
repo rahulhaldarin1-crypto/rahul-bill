@@ -59,6 +59,10 @@
         "lowStockAlert": { "type": "number" },
         "size": { "type": "string", "maxLength": 60 },
         "color": { "type": "string", "maxLength": 60 },
+        "sellerId": { "type": "string", "maxLength": 128 },
+        "sellerName": { "type": "string", "maxLength": 160 },
+        "sellerPhone": { "type": "string", "maxLength": 40 },
+        "sellerApprovalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
         "createdAt": { "type": "string", "maxLength": 40 },
         "updatedAt": { "type": "string", "maxLength": 40 }
       },
@@ -136,6 +140,54 @@
         "createdAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "title", "category", "amount", "expenseDate", "createdAt"]
+    },
+    "SellerApplication": {
+      "title": "SellerApplication",
+      "description": "Seller onboarding KYC application, payout bank document, and review status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "fullAddress": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "phone": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "normalizedPhone": { "type": "string", "maxLength": 20 },
+        "panNumber": { "type": "string", "minLength": 10, "maxLength": 20 },
+        "aadhaarNumber": { "type": "string", "minLength": 12, "maxLength": 20 },
+        "gstNumber": { "type": "string", "maxLength": 30 },
+        "sellerPhotoDataUrl": { "type": "string", "maxLength": 200000 },
+        "panDocDataUrl": { "type": "string", "maxLength": 200000 },
+        "aadhaarDocDataUrl": { "type": "string", "maxLength": 200000 },
+        "gstDocDataUrl": { "type": "string", "maxLength": 200000 },
+        "bankDocDataUrl": { "type": "string", "maxLength": 200000 },
+        "bankAccountDetails": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "suspended"] },
+        "adminRemarks": { "type": "string", "maxLength": 400 },
+        "reviewedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "name", "fullAddress", "phone", "panNumber", "aadhaarNumber", "status", "createdAt", "updatedAt"]
+    },
+    "SupportChatThread": {
+      "title": "SupportChatThread",
+      "description": "Real-time customer support chat conversation thread.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "normalizedPhone": { "type": "string", "maxLength": 20 },
+        "lastMessage": { "type": "string", "maxLength": 200 },
+        "lastSenderRole": { "type": "string", "enum": ["customer", "admin"] },
+        "unreadForAdmin": { "type": "number" },
+        "unreadForCustomer": { "type": "number" },
+        "messages": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "customerName", "messages", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -162,6 +214,14 @@
     "/expenses/{expenseId}": {
       "schema": { "$ref": "#/entities/ExpenseRecord" },
       "description": "Business expenses collection."
+    },
+    "/seller_applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/SellerApplication" },
+      "description": "Seller Hub registration applications and KYC documents."
+    },
+    "/support_chats/{chatId}": {
+      "schema": { "$ref": "#/entities/SupportChatThread" },
+      "description": "Help Center real-time customer support chat threads."
     }
   }
 }

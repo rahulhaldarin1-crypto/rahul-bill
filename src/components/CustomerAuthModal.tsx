@@ -140,6 +140,14 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
 
     setSubmitting(true);
     try {
+      let referredBy = '';
+      try {
+        const urlRef = new URLSearchParams(window.location.search).get('ref') || '';
+        const storedRef = localStorage.getItem('gg_referred_by_v1') || '';
+        referredBy = (urlRef || storedRef).trim();
+      } catch {
+        // ignore storage errors
+      }
       const res = await api.registerCustomerAccount({
         name: regName.trim(),
         phone: phoneCheck.formatted,
@@ -149,6 +157,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
         pinCode: regPinCode.trim(),
         password: regPassword.trim(),
         profilePhotoDataUrl: regPhoto,
+        referredBy,
       });
       onSuccess(res.client);
     } catch (err) {

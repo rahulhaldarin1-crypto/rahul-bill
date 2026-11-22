@@ -9,6 +9,9 @@ import {
   Invoice,
   PaymentMethod,
   Product,
+  SellerAccountStatus,
+  SellerApprovalStatus,
+  SupportSenderRole,
   WorkspaceData,
 } from '../types/business';
 import { firestoreService } from './firestoreService';
@@ -71,6 +74,7 @@ export const api = {
     pinCode?: string;
     password: string;
     profilePhotoDataUrl?: string;
+    referredBy?: string;
   }) {
     return firestoreService.registerCustomerAccount(payload);
   },
@@ -193,5 +197,63 @@ export const api = {
 
   lookupCustomerByPhone(phone: string) {
     return firestoreService.lookupCustomerByPhone(phone);
+  },
+
+  submitSellerApplication(payload: {
+    existingId?: string;
+    clientId?: string;
+    name: string;
+    fullAddress: string;
+    phone: string;
+    panNumber: string;
+    aadhaarNumber: string;
+    gstNumber?: string;
+    sellerPhotoDataUrl: string;
+    panDocDataUrl: string;
+    aadhaarDocDataUrl: string;
+    gstDocDataUrl?: string;
+    bankDocDataUrl: string;
+    bankAccountDetails?: string;
+  }) {
+    return firestoreService.submitSellerApplication(payload);
+  },
+
+  updateSellerApplicationStatus(
+    applicationId: string,
+    status: SellerAccountStatus,
+    adminRemarks?: string
+  ) {
+    return firestoreService.updateSellerApplicationStatus(
+      applicationId,
+      status,
+      adminRemarks
+    );
+  },
+
+  deleteSellerApplication(applicationId: string) {
+    return firestoreService.deleteSellerApplication(applicationId);
+  },
+
+  updateProductApproval(
+    productId: string,
+    sellerApprovalStatus: SellerApprovalStatus
+  ) {
+    return firestoreService.updateProductApproval(productId, sellerApprovalStatus);
+  },
+
+  sendSupportMessage(payload: {
+    chatId?: string;
+    clientId?: string;
+    customerName: string;
+    customerPhone: string;
+    senderRole: SupportSenderRole;
+    senderName: string;
+    text: string;
+  }) {
+    return firestoreService.sendSupportMessage(payload);
+  },
+
+  markSupportChatRead(chatId: string, readerRole: SupportSenderRole) {
+    return firestoreService.markSupportChatRead(chatId, readerRole);
   },
 };

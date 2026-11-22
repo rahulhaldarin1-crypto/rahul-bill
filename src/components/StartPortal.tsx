@@ -9,13 +9,17 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
+  Gift,
   Image as ImageIcon,
+  LifeBuoy,
   MapPin,
   Minus,
+  MoreVertical,
   Plus,
   Share2,
   ShoppingBag,
   ShoppingCart,
+  Store,
   Tag,
   Truck,
   Upload,
@@ -30,6 +34,8 @@ import {
   CustomerOrderPaymentMethod,
   Invoice,
   Product,
+  SellerApplication,
+  SupportChatThread,
   ViewPanelConfig,
 } from '../types/business';
 import { api, formatApiError } from '../utils/api';
@@ -52,16 +58,26 @@ import {
   CustomerDashboardTab,
   CustomerDashboardView,
 } from './CustomerDashboardView';
+import { HelpCenterChatView } from './HelpCenterChatView';
+import { ReferEarnView } from './ReferEarnView';
+import { SellerHubView } from './SellerHubView';
 
 interface StartPortalProps {
   settings?: BusinessSettings;
   products?: Product[];
+  sellerApplications?: SellerApplication[];
+  supportChats?: SupportChatThread[];
   loggedInCustomer?: Client | null;
   customerOrders?: CustomerOrder[];
   customerBills?: Invoice[];
   onCustomerLogin?: (client: Client) => void;
   onCustomerLogout?: () => void;
   onCustomerUpdated?: (client: Client) => void;
+  onSaveProduct?: (
+    payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
+    existingId?: string
+  ) => Promise<void>;
+  onDeleteProduct?: (id: string) => Promise<void>;
 }
 
 interface PublicShopProduct {
@@ -84,6 +100,7 @@ type PendingAuthAction =
   | { type: 'cart'; product: PublicShopProduct; qty: number }
   | { type: 'order'; product: PublicShopProduct; qty: number }
   | { type: 'account'; tab: CustomerDashboardTab }
+  | { type: 'portal'; view: 'seller-hub' | 'help-center' | 'refer-earn' }
   | null;
 
 function isSafeHttpUrl(url?: string): boolean {
@@ -130,16 +147,24 @@ function buildProductWhatsAppUrl(
 export const StartPortal: React.FC<StartPortalProps> = ({
   settings,
   products = [],
+  sellerApplications = [],
+  supportChats = [],
   loggedInCustomer = null,
   customerOrders = [],
   customerBills = [],
   onCustomerLogin,
   onCustomerLogout,
   onCustomerUpdated,
+  onSaveProduct,
+  onDeleteProduct,
 }) => {
-  // Active View inside Storefront ('shop' | 'account')
-  const [portalView, setPortalView] = useState<'shop' | 'account'>('shop');
+  // Active View inside Storefront ('shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn')
+  const [portalView, setPortalView] = useState<
+    'shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn'
+  >('shop');
   const [accountTab, setAccountTab] = useState<CustomerDashboardTab>('cart');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Customer Auth Modal & pending action after login
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -151,6 +176,38 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
   // Store Toast
   const [storeNotice, setStoreNotice] = useState('');
+
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent) => {
+      if (
+        menuContainerRef.current &&
+        !menuContainerRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const refCode = (params.get('ref') || '').trim();
+      if (refCode) {
+        localStorage.setItem('gg_referred_by_v1', refCode);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   // View Panel section filter ('all' | 'discount' | 'shopping')
   const [sectionTab, setSectionTab] = useState<'all' | 'discount' | 'shopping'>(
@@ -223,6 +280,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         viewPanel.advertisement.title.trim()
     );
 
+  const approvedSellerIds = useMemo(
+    () =>
+      new Set(
+        sellerApplications
+          .filter((a) => a.status === 'approved')
+          .map((a) => a.id)
+      ),
+    [sellerApplications]
+  );
+
   const shoppingItems: PublicShopProduct[] = useMemo(() => {
     const customItems: PublicShopProduct[] = viewPanel.shopping.items.map(
       (item) => {
@@ -248,8 +315,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       }
     );
 
+    const eligibleCatalogProducts = products.filter((prod) => {
+      if (!prod.sellerId) return true;
+      return (
+        prod.sellerApprovalStatus === 'approved' &&
+        approvedSellerIds.has(prod.sellerId)
+      );
+    });
+
     const catalogItems: PublicShopProduct[] = viewPanel.shopping.includeCatalogProducts
-      ? products.map((prod) => {
+      ? eligibleCatalogProducts.map((prod) => {
           const gallery =
             Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
               ? prod.imageDataUrls.filter(Boolean)
@@ -281,6 +356,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     viewPanel.shopping.items,
     viewPanel.shopping.includeCatalogProducts,
     products,
+    approvedSellerIds,
   ]);
 
   const filteredShoppingItems = useMemo(() => {
@@ -412,6 +488,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     if (action.type === 'account') {
       setAccountTab(action.tab);
       setPortalView('account');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    if (action.type === 'portal') {
+      setPortalView(action.view);
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
@@ -749,7 +831,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           </button>
 
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            {portalView === 'account' && (
+            {portalView !== 'shop' && (
               <button
                 type="button"
                 onClick={() => setPortalView('shop')}
@@ -776,6 +858,88 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 ({cartItemCount})
               </span>
             </button>
+
+            {/* Three-Dot Menu right next to Cart */}
+            <div ref={menuContainerRef} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((prev) => !prev)}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label="More options"
+                className={`inline-flex items-center justify-center rounded-xl border p-1.5 sm:p-2 transition-colors cursor-pointer ${
+                  menuOpen ||
+                  portalView === 'seller-hub' ||
+                  portalView === 'help-center' ||
+                  portalView === 'refer-earn'
+                    ? 'border-[#9333EA] bg-[#FAF5FF] text-[#6D28D9]'
+                    : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
+                }`}
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+
+              {menuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 mt-2 w-60 rounded-2xl border border-[#EFE2F5] bg-white shadow-xl p-1.5 z-50 space-y-0.5"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setPortalView('seller-hub');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors cursor-pointer ${
+                      portalView === 'seller-hub'
+                        ? 'bg-[#FAF5FF] text-[#6D28D9]'
+                        : 'text-[#1F122B] hover:bg-[#FDF8FC]'
+                    }`}
+                  >
+                    <Store className="w-4 h-4 text-[#DB2777] shrink-0" />
+                    <span>Seller Hub (সেলার হাব)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setPortalView('help-center');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors cursor-pointer ${
+                      portalView === 'help-center'
+                        ? 'bg-[#FAF5FF] text-[#6D28D9]'
+                        : 'text-[#1F122B] hover:bg-[#FDF8FC]'
+                    }`}
+                  >
+                    <LifeBuoy className="w-4 h-4 text-[#7E22CE] shrink-0" />
+                    <span>Help Center (হেল্প সেন্টার)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setPortalView('refer-earn');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors cursor-pointer ${
+                      portalView === 'refer-earn'
+                        ? 'bg-[#FAF5FF] text-[#6D28D9]'
+                        : 'text-[#1F122B] hover:bg-[#FDF8FC]'
+                    }`}
+                  >
+                    <Gift className="w-4 h-4 text-[#15803D] shrink-0" />
+                    <span>Refer &amp; Earn</span>
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Customer Account / Sign In Button */}
             {loggedInCustomer ? (
@@ -832,6 +996,77 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               triggerStoreNotice('Signed out of customer account.');
             }}
             onClientUpdated={(updated) => onCustomerUpdated?.(updated)}
+          />
+        ) : portalView === 'seller-hub' ? (
+          <SellerHubView
+            loggedInCustomer={loggedInCustomer}
+            sellerApplications={sellerApplications}
+            products={products}
+            currencySymbol={sym}
+            defaultLowStock={settings?.lowStockThreshold || 5}
+            onBackToShop={() => setPortalView('shop')}
+            onOpenHelpCenter={() => {
+              setPortalView('help-center');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            onRequestSignIn={() =>
+              openAuthForAction(
+                { type: 'portal', view: 'seller-hub' },
+                'Sign in to link your Seller Hub account.',
+                'login'
+              )
+            }
+            onSaveProduct={async (payload, existingId) => {
+              if (onSaveProduct) {
+                await onSaveProduct(payload, existingId);
+              } else if (existingId) {
+                await api.updateProduct(existingId, payload);
+              } else {
+                await api.createProduct(payload);
+              }
+              triggerStoreNotice(
+                existingId
+                  ? 'Product updated and sent for Admin review.'
+                  : 'Product submitted for Admin approval!'
+              );
+            }}
+            onDeleteProduct={async (id) => {
+              if (onDeleteProduct) {
+                await onDeleteProduct(id);
+              } else {
+                await api.deleteProduct(id);
+              }
+              triggerStoreNotice('Product deleted.');
+            }}
+            onApplicationSubmitted={() =>
+              triggerStoreNotice('Seller application submitted!')
+            }
+          />
+        ) : portalView === 'help-center' ? (
+          <HelpCenterChatView
+            loggedInCustomer={loggedInCustomer}
+            supportChats={supportChats}
+            onBackToShop={() => setPortalView('shop')}
+            onRequestSignIn={() =>
+              openAuthForAction(
+                { type: 'portal', view: 'help-center' },
+                'Sign in to sync your Help Center support chat across devices.',
+                'login'
+              )
+            }
+          />
+        ) : portalView === 'refer-earn' ? (
+          <ReferEarnView
+            loggedInCustomer={loggedInCustomer}
+            settings={settings}
+            onBackToShop={() => setPortalView('shop')}
+            onRequestSignIn={() =>
+              openAuthForAction(
+                { type: 'portal', view: 'refer-earn' },
+                'Sign in or create an account to generate your personal referral link.',
+                'login'
+              )
+            }
           />
         ) : (
           <>

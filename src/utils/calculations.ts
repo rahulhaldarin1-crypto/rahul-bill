@@ -238,7 +238,24 @@ export function createEmptyWorkspace(): WorkspaceData {
     payments: [],
     expenses: [],
     orders: [],
+    sellerApplications: [],
+    supportChats: [],
   };
+}
+
+export function getCustomerReferralCode(client: {
+  id: string;
+  mobile?: string;
+  referralCode?: string;
+}): string {
+  if (client.referralCode && client.referralCode.trim()) {
+    return client.referralCode.trim().toUpperCase();
+  }
+  const phoneDigits = normalizePhoneDigits(client.mobile);
+  const phoneTail = phoneDigits ? phoneDigits.slice(-4) : '0000';
+  const idClean = client.id.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  const idTail = idClean.slice(-4) || 'GLAM';
+  return `GG${phoneTail}${idTail}`;
 }
 
 export function todayIsoDate(): string {

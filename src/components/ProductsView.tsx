@@ -21,10 +21,18 @@ import {
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
+export interface SellerProductContext {
+  sellerId: string;
+  sellerName: string;
+  sellerPhone: string;
+}
+
 interface ProductsViewProps {
   products: Product[];
   currencySymbol: string;
   defaultLowStock: number;
+  sellerContext?: SellerProductContext;
+  hideBackButton?: boolean;
   onBack: () => void;
   onSaveProduct: (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
@@ -40,6 +48,8 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   products,
   currencySymbol,
   defaultLowStock,
+  sellerContext,
+  hideBackButton = false,
   onBack,
   onSaveProduct,
   onDeleteProduct,
@@ -188,6 +198,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
     setBusy(true);
     try {
+      const nextSellerApprovalStatus = sellerContext
+        ? editing?.sellerApprovalStatus === 'approved'
+          ? 'approved'
+          : 'pending'
+        : editing?.sellerId
+          ? editing.sellerApprovalStatus || 'approved'
+          : undefined;
+
       await onSaveProduct(
         {
           name: name.trim(),
@@ -204,6 +222,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           size: size.trim(),
           color: color.trim(),
           description: description.trim(),
+          sellerId: sellerContext ? sellerContext.sellerId : editing?.sellerId,
+          sellerName: sellerContext ? sellerContext.sellerName : editing?.sellerName,
+          sellerPhone: sellerContext ? sellerContext.sellerPhone : editing?.sellerPhone,
+          sellerApprovalStatus: nextSellerApprovalStatus,
         },
         editing?.id
       );
@@ -270,20 +292,24 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Back</span>
-          </button>
+          {!hideBackButton && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back</span>
+            </button>
+          )}
           <div>
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B]">
-              Product Listing ({products.length})
+              {sellerContext ? `My Seller Products (${products.length})` : `Product Listing (${products.length})`}
             </h1>
             <p className="text-xs text-[#6B5B7B] mt-0.5">
-              Add, edit &amp; manage women&apos;s products, perfumes &amp; categories with up to 5 compressed photos synced to Firestore.
+              {sellerContext
+                ? 'Add, edit & manage your seller catalog with up to 5 compressed photos. Approved items appear on the storefront.'
+                : 'Add, edit & manage women\'s products, perfumes & categories with up to 5 compressed photos synced to Firestore.'}
             </p>
           </div>
         </div>
@@ -725,6 +751,30 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     <h3 className="text-base font-bold text-[#1F122B] leading-snug">
                       {prod.name}
                     </h3>
+                    {prod.sellerId && (
+                      <div className="text-[11px] font-medium flex flex-wrap items-center gap-1.5">
+                        {!sellerContext && prod.sellerName && (
+                          <span className="text-[#5B4B6B]">
+                            Seller: <strong>{prod.sellerName}</strong> ·
+                          </span>
+                        )}
+                        <span
+                          className={
+                            prod.sellerApprovalStatus === 'approved'
+                              ? 'text-[#15803D] font-semibold'
+                              : prod.sellerApprovalStatus === 'rejected'
+                                ? 'text-[#BE123C] font-semibold'
+                                : 'text-[#B45309] font-semibold'
+                          }
+                        >
+                          {prod.sellerApprovalStatus === 'approved'
+                            ? 'Approved (Live)'
+                            : prod.sellerApprovalStatus === 'rejected'
+                              ? 'Rejected by Admin'
+                              : 'Pending Admin Approval'}
+                        </span>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#F4ECF8] text-xs">
                       <div>
