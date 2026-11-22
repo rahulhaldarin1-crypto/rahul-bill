@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Calendar,
@@ -17,6 +17,7 @@ import {
   MapPin,
   Minus,
   Plus,
+  Share2,
   ShoppingBag,
   ShoppingCart,
   Tag,
@@ -39,10 +40,13 @@ import { verifyAdminPasscode } from '../utils/adminAuth';
 import { api, formatApiError } from '../utils/api';
 import {
   CHECKOUT_UPI_ID,
+  COD_DELIVERY_CHARGE_PER_ITEM,
   DEFAULT_VIEW_PANEL_CONFIG,
+  PRODUCT_CATEGORIES,
   formatCurrency,
-  normalizePhoneDigits,
+  normalizeIndianPhone,
   resizeImageFileToDataUrl,
+  stripPlus91Prefix,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { AppBackground } from './AppBackground';
@@ -74,6 +78,7 @@ interface PublicShopProduct {
   category: string;
   price: number;
   originalPrice?: number;
+  highlighted?: boolean;
   size?: string;
   color?: string;
   stockQty?: number;
@@ -87,35 +92,6 @@ type PendingAuthAction =
   | { type: 'order'; product: PublicShopProduct; qty: number }
   | { type: 'account'; tab: CustomerDashboardTab }
   | null;
-
-const BEAUTY_CATEGORIES = new Set([
-  'Handbag',
-  'Sling Bag',
-  'Wallet',
-  'Makeup Kit',
-  'Lipstick',
-  'Kajal',
-  'Eyeliner',
-  'Face Cream',
-  'Sunscreen',
-  'Hair Accessories',
-]);
-
-const PERFUME_CATEGORIES = new Set([
-  "Women's Perfume",
-  'Floral Perfume',
-  'Fruity Perfume',
-  'Long Lasting Perfume',
-  'Eau De Parfum (EDP)',
-  'Eau De Toilette (EDT)',
-  'Body Mist',
-  'Pocket Perfume',
-  'Roll-On Perfume',
-  'Perfume Gift Set',
-  'Premium Perfume',
-  'Luxury Perfume',
-  'BELLAVITA Perfume',
-]);
 
 function isSafeHttpUrl(url?: string): boolean {
   const trimmed = (url || '').trim();
@@ -275,9 +251,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         return {
           id: item.id,
           name: item.name,
-          category: item.category || 'Featured',
+          category: item.category || PRODUCT_CATEGORIES[0],
           price: item.price,
           originalPrice: item.originalPrice,
+          highlighted: Boolean(item.highlighted),
           size: item.size,
           color: item.color,
           imageDataUrl: gallery[0] || '',
@@ -287,70 +264,43 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       }
     );
 
-    if (!viewPanel.shopping.includeCatalogProducts) {
-      return customItems;
-    }
+    const catalogItems: PublicShopProduct[] = viewPanel.shopping.includeCatalogProducts
+      ? products.map((prod) => {
+          const gallery =
+            Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
+              ? prod.imageDataUrls.filter(Boolean)
+              : prod.imageDataUrl
+                ? [prod.imageDataUrl]
+                : [];
+          return {
+            id: `cat-${prod.id}`,
+            catalogProductId: prod.id,
+            name: prod.name,
+            category: prod.category || PRODUCT_CATEGORIES[0],
+            price: prod.sellingPrice,
+            originalPrice: prod.originalPrice,
+            highlighted: Boolean(prod.highlighted),
+            size: prod.size,
+            color: prod.color,
+            stockQty: prod.stockQty,
+            imageDataUrl: gallery[0] || '',
+            imageDataUrls: gallery,
+            description: prod.description,
+          };
+        })
+      : [];
 
-    const catalogItems: PublicShopProduct[] = products.map((prod) => {
-      const gallery =
-        Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
-          ? prod.imageDataUrls.filter(Boolean)
-          : prod.imageDataUrl
-            ? [prod.imageDataUrl]
-            : [];
-      return {
-        id: `cat-${prod.id}`,
-        catalogProductId: prod.id,
-        name: prod.name,
-        category: prod.category || 'Collection',
-        price: prod.sellingPrice,
-        size: prod.size,
-        color: prod.color,
-        stockQty: prod.stockQty,
-        imageDataUrl: gallery[0] || '',
-        imageDataUrls: gallery,
-        description: prod.description,
-      };
-    });
-
-    return [...catalogItems, ...customItems];
+    return [...catalogItems, ...customItems].sort(
+      (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
+    );
   }, [
     viewPanel.shopping.items,
     viewPanel.shopping.includeCatalogProducts,
     products,
   ]);
 
-  const shoppingCategories = useMemo(() => {
-    const set = new Set<string>();
-    for (const item of shoppingItems) {
-      const c = (item.category || '').trim();
-      if (c) set.add(c);
-    }
-    return Array.from(set);
-  }, [shoppingItems]);
-
-  const hasBeautyGroup = useMemo(
-    () => shoppingItems.some((item) => BEAUTY_CATEGORIES.has(item.category)),
-    [shoppingItems]
-  );
-
-  const hasPerfumeGroup = useMemo(
-    () => shoppingItems.some((item) => PERFUME_CATEGORIES.has(item.category)),
-    [shoppingItems]
-  );
-
   const filteredShoppingItems = useMemo(() => {
     if (shoppingCategory === 'ALL') return shoppingItems;
-    if (shoppingCategory === 'GROUP:BEAUTY') {
-      return shoppingItems.filter((item) =>
-        BEAUTY_CATEGORIES.has(item.category)
-      );
-    }
-    if (shoppingCategory === 'GROUP:PERFUME') {
-      return shoppingItems.filter((item) =>
-        PERFUME_CATEGORIES.has(item.category)
-      );
-    }
     return shoppingItems.filter((item) => item.category === shoppingCategory);
   }, [shoppingItems, shoppingCategory]);
 
@@ -481,8 +431,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
   const prefillCheckoutFromClient = (client: Client) => {
     setCustomerName(client.name || '');
-    setCustomerPhone(client.mobile || '');
-    setCustomerWhatsapp(client.whatsapp || client.mobile || '');
+    setCustomerPhone(stripPlus91Prefix(client.mobile));
+    setCustomerWhatsapp(stripPlus91Prefix(client.whatsapp || client.mobile));
     setCustomerAddress(client.address || '');
     setCustomerCity(client.city || '');
     setCustomerState(client.state || '');
@@ -552,6 +502,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   };
 
   // --- Product Detail & Checkout Modal ---
+  const handledQueryProductRef = useRef(false);
+
   const openProductDetail = (item: PublicShopProduct) => {
     setSelectedProduct(item);
     setActiveImageIndex(0);
@@ -561,16 +513,73 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setPlacedOrder(null);
   };
 
+  useEffect(() => {
+    if (handledQueryProductRef.current || shoppingItems.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const sharedProductId = params.get('product');
+    if (!sharedProductId) return;
+    const match = shoppingItems.find(
+      (i) => i.id === sharedProductId || i.catalogProductId === sharedProductId
+    );
+    if (match) {
+      handledQueryProductRef.current = true;
+      setPortalView('shop');
+      setSelectedProduct(match);
+      setActiveImageIndex(0);
+      setModalStep('detail');
+      setOrderQty('1');
+      setOrderError('');
+      setPlacedOrder(null);
+    }
+  }, [shoppingItems]);
+
   const closeProductModal = () => {
     setSelectedProduct(null);
     setOrderError('');
     setPlacedOrder(null);
+    if (window.location.search.includes('product=')) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('product');
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    }
+  };
+
+  const handleShareProduct = async (
+    item: PublicShopProduct,
+    e?: React.MouseEvent
+  ) => {
+    e?.stopPropagation();
+    const shareUrl = `${window.location.origin}${window.location.pathname}?product=${encodeURIComponent(item.id)}`;
+    const symPrice = formatCurrency(item.price, sym);
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: item.name,
+          text: `${item.name} (${symPrice}) - ${settings?.businessName || 'Glamour Galleria'}`,
+          url: shareUrl,
+        });
+        return;
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+    }
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      triggerStoreNotice('Product share link copied!');
+    } catch {
+      triggerStoreNotice('Share link ready: ' + shareUrl);
+    }
   };
 
   const parsedQty = Math.max(1, Math.floor(Number(orderQty) || 1));
-  const checkoutTotal = selectedProduct
+  const checkoutSubtotal = selectedProduct
     ? Number((parsedQty * selectedProduct.price).toFixed(2))
     : 0;
+  const codDeliveryCharge =
+    paymentMethod === 'COD' ? COD_DELIVERY_CHARGE_PER_ITEM * parsedQty : 0;
+  const checkoutTotal = Number(
+    (checkoutSubtotal + codDeliveryCharge).toFixed(2)
+  );
 
   const handleAddToCartAction = async (
     product: PublicShopProduct,
@@ -634,10 +643,26 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       setOrderError('Please enter your full name.');
       return;
     }
-    if (normalizePhoneDigits(customerPhone).length < 8) {
-      setOrderError('Please enter a valid 10-digit phone number.');
+    const phoneCheck = normalizeIndianPhone(customerPhone);
+    if (!phoneCheck.valid) {
+      setOrderError(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
       return;
     }
+
+    let formattedWhatsapp = phoneCheck.formatted;
+    if (customerWhatsapp.trim()) {
+      const waCheck = normalizeIndianPhone(customerWhatsapp);
+      if (!waCheck.valid) {
+        setOrderError(
+          `WhatsApp Number: ${waCheck.error || 'Please enter a valid 10-digit Indian mobile number.'}`
+        );
+        return;
+      }
+      formattedWhatsapp = waCheck.formatted;
+    }
+
     if (!customerAddress.trim()) {
       setOrderError('Please enter your full delivery address.');
       return;
@@ -655,8 +680,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         clientId: loggedInCustomer.id,
         clearCart: false,
         customerName: customerName.trim(),
-        customerPhone: customerPhone.trim(),
-        customerWhatsapp: customerWhatsapp.trim() || customerPhone.trim(),
+        customerPhone: phoneCheck.formatted,
+        customerWhatsapp: formattedWhatsapp,
         customerAddress: customerAddress.trim(),
         customerCity: customerCity.trim(),
         customerState: customerState.trim(),
@@ -671,7 +696,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             productColor: selectedProduct.color,
             quantity: parsedQty,
             unitPrice: selectedProduct.price,
-            lineTotal: checkoutTotal,
+            originalPrice: selectedProduct.originalPrice,
+            lineTotal: checkoutSubtotal,
             imageDataUrl:
               selectedProduct.imageDataUrls[0] ||
               selectedProduct.imageDataUrl ||
@@ -748,7 +774,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     CHECKOUT_UPI_ID
   )}&pn=${encodeURIComponent(
     settings?.businessName || 'Glamour Galleria'
-  )}&am=${checkoutTotal.toFixed(2)}&cu=INR`;
+  )}&am=${checkoutSubtotal.toFixed(2)}&cu=INR`;
 
   return (
     <div className="relative min-h-screen text-[#1F122B] flex flex-col">
@@ -898,18 +924,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </section>
             )}
 
-            {/* Quick Account & Admin Access Bar */}
-            <div className="no-print flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#EFE2F5] bg-white/90 backdrop-blur-md px-4 py-2.5">
-              {loggedInCustomer ? (
-                <div className="flex flex-wrap items-center gap-2 text-xs text-[#4A3B59]">
+            {/* Welcome bar shown only when a customer is signed in */}
+            {loggedInCustomer && (
+              <div className="no-print flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#EFE2F5] bg-white/90 backdrop-blur-md px-4 py-2 text-xs text-[#4A3B59]">
+                <div className="flex flex-wrap items-center gap-2">
                   <CustomerAvatar
                     photoDataUrl={loggedInCustomer.profilePhotoDataUrl}
                     name={loggedInCustomer.name}
-                    size={26}
+                    size={24}
                   />
                   <span>
                     Welcome, <strong>{loggedInCustomer.name}</strong>
                   </span>
+                </div>
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => handleOpenAccount('orders')}
@@ -926,48 +954,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     Bills ({customerBills.length})
                   </button>
                 </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2 text-xs text-[#5B4B6B]">
-                  <span>Browse products freely — sign in to save cart &amp; place orders.</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openAuthForAction(
-                        { type: 'account', tab: 'orders' },
-                        '',
-                        'login'
-                      )
-                    }
-                    className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
-                  >
-                    Customer Login
-                  </button>
-                  <span>/</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openAuthForAction(
-                        { type: 'account', tab: 'cart' },
-                        '',
-                        'register'
-                      )
-                    }
-                    className="font-bold text-[#DB2777] hover:underline cursor-pointer"
-                  >
-                    Create Account
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="button"
-                onClick={openPasswordPrompt}
-                className="inline-flex items-center gap-1 rounded-xl border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#7E22CE] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Lock className="w-3 h-3" />
-                <span>Open Admin Panel</span>
-              </button>
-            </div>
+              </div>
+            )}
 
             {/* 2. DISCOUNT & COMPACT E-COMMERCE SHOPPING GRID */}
             {(hasDiscountContent || hasShoppingContent) && (
@@ -1106,93 +1094,36 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   (sectionTab === 'all' || sectionTab === 'shopping') && (
                     <section
                       aria-label="Shopping Collection"
-                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-4 sm:p-6 space-y-4"
+                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-3.5 sm:p-5 space-y-4"
                     >
-                      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#F4ECF8] pb-3">
-                        <div>
-                          <h2 className="font-display-serif text-xl font-bold text-[#1F122B] flex items-center gap-2">
-                            <ShoppingBag className="w-4 h-4 text-[#7E22CE] shrink-0" />
-                            <span>
-                              {viewPanel.shopping.sectionTitle ||
-                                'Shop Our Collection'}
-                            </span>
-                          </h2>
-                          {viewPanel.shopping.subtitle && (
-                            <p className="text-xs sm:text-sm text-[#6B5B7B] mt-0.5">
-                              {viewPanel.shopping.subtitle}
-                            </p>
-                          )}
-                        </div>
-                        <span className="font-mono-num text-xs font-semibold text-[#6B5B7B]">
-                          {filteredShoppingItems.length}{' '}
-                          {filteredShoppingItems.length === 1
-                            ? 'item'
-                            : 'items'}
-                        </span>
-                      </div>
-
-                      {/* Category Filter Bar (Groups + Individual Categories) */}
-                      {(shoppingCategories.length > 1 ||
-                        hasBeautyGroup ||
-                        hasPerfumeGroup) && (
-                        <div className="flex flex-wrap items-center gap-1.5">
+                      {/* Compact Fixed/Sticky Category Chips (All + 7 Exact Categories) */}
+                      <div className="sticky top-16 z-20 -mx-1 px-1.5 py-2 bg-white/95 backdrop-blur-md border-b border-[#F4ECF8] rounded-xl flex items-center gap-1.5 overflow-x-auto sm:flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => setShoppingCategory('ALL')}
+                          className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            shoppingCategory === 'ALL'
+                              ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                              : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                          }`}
+                        >
+                          All ({shoppingItems.length})
+                        </button>
+                        {PRODUCT_CATEGORIES.map((cat) => (
                           <button
+                            key={cat}
                             type="button"
-                            onClick={() => setShoppingCategory('ALL')}
-                            className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                              shoppingCategory === 'ALL'
-                                ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
-                                : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                            onClick={() => setShoppingCategory(cat)}
+                            className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                              shoppingCategory === cat
+                                ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                                : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
                             }`}
                           >
-                            All ({shoppingItems.length})
+                            {cat}
                           </button>
-                          {hasBeautyGroup && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setShoppingCategory('GROUP:BEAUTY')
-                              }
-                              className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                                shoppingCategory === 'GROUP:BEAUTY'
-                                  ? 'border-[#DB2777] bg-[#DB2777] text-white'
-                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
-                              }`}
-                            >
-                              Beauty &amp; Accessories
-                            </button>
-                          )}
-                          {hasPerfumeGroup && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setShoppingCategory('GROUP:PERFUME')
-                              }
-                              className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                                shoppingCategory === 'GROUP:PERFUME'
-                                  ? 'border-[#DB2777] bg-[#DB2777] text-white'
-                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
-                              }`}
-                            >
-                              Perfume Collection
-                            </button>
-                          )}
-                          {shoppingCategories.map((cat) => (
-                            <button
-                              key={cat}
-                              type="button"
-                              onClick={() => setShoppingCategory(cat)}
-                              className={`rounded-xl px-3 py-1.5 text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                                shoppingCategory === cat
-                                  ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
-                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
-                              }`}
-                            >
-                              {cat}
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                        ))}
+                      </div>
 
                       {filteredShoppingItems.length === 0 ? (
                         <div className="py-10 text-center text-xs text-[#6B5B7B]">
@@ -1216,7 +1147,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             return (
                               <div
                                 key={item.id}
-                                className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
+                                className={`group rounded-2xl border bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left ${
+                                  item.highlighted
+                                    ? 'border-[#DB2777]/60 ring-1 ring-[#DB2777]/20'
+                                    : 'border-[#EFE2F5]'
+                                }`}
                               >
                                 <div
                                   role="button"
@@ -1241,11 +1176,27 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     ) : (
                                       <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
                                     )}
-                                    {discountPercent > 0 && (
-                                      <span className="absolute top-2 left-2 rounded-md bg-[#15803D] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num">
-                                        {discountPercent}% OFF
-                                      </span>
-                                    )}
+                                    <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                                      {item.highlighted && (
+                                        <span className="rounded-md bg-[#DB2777] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                                          Featured
+                                        </span>
+                                      )}
+                                      {discountPercent > 0 && (
+                                        <span className="rounded-md bg-[#15803D] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num">
+                                          {discountPercent}% OFF
+                                        </span>
+                                      )}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => handleShareProduct(item, e)}
+                                      title="Share product link"
+                                      aria-label={`Share ${item.name}`}
+                                      className="absolute top-2 right-2 rounded-lg bg-white/90 border border-[#E6D9EE] p-1.5 text-[#6D28D9] hover:text-[#DB2777] hover:bg-white shadow-xs cursor-pointer"
+                                    >
+                                      <Share2 className="w-3.5 h-3.5" />
+                                    </button>
                                     {item.imageDataUrls.length > 1 && (
                                       <span className="absolute bottom-1.5 right-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white font-mono-num">
                                         {item.imageDataUrls.length} photos
@@ -1586,20 +1537,31 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       >
                         <ShoppingBag className="w-4 h-4" />
                         <span>
-                          Order Now · {formatCurrency(checkoutTotal, sym)}
+                          Order Now · {formatCurrency(checkoutSubtotal, sym)}
                         </span>
                       </button>
                     </div>
 
-                    <a
-                      href={buildProductWhatsAppUrl(selectedProduct, settings)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white py-2.5 px-4 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA]"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5 text-[#7E22CE]" />
-                      <span>Ask Question on WhatsApp</span>
-                    </a>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => handleShareProduct(selectedProduct)}
+                        className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] py-2.5 px-4 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>Share Product Link</span>
+                      </button>
+
+                      <a
+                        href={buildProductWhatsAppUrl(selectedProduct, settings)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white py-2.5 px-4 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA]"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-[#7E22CE]" />
+                        <span>Ask on WhatsApp</span>
+                      </a>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1608,33 +1570,61 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             {/* STEP 2: AUTHENTICATED CUSTOMER CHECKOUT & PAYMENT */}
             {modalStep === 'checkout' && (
               <form onSubmit={handlePlaceOrder} className="p-5 sm:p-6 space-y-5">
-                {/* Item & Total Summary */}
-                <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-12 h-12 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
-                      {selectedProduct.imageDataUrl ? (
-                        <img
-                          src={selectedProduct.imageDataUrl}
-                          alt={selectedProduct.name}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
-                      )}
+                {/* Item & Total Summary Breakdown */}
+                <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-12 h-12 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                        {selectedProduct.imageDataUrl ? (
+                          <img
+                            src={selectedProduct.imageDataUrl}
+                            alt={selectedProduct.name}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-[#1F122B] truncate">
+                          {selectedProduct.name}
+                        </div>
+                        <div className="text-xs text-[#6B5B7B] font-mono-num">
+                          Qty: {parsedQty} ×{' '}
+                          {formatCurrency(selectedProduct.price, sym)}
+                        </div>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold text-[#1F122B] truncate">
-                        {selectedProduct.name}
-                      </div>
-                      <div className="text-xs text-[#6B5B7B] font-mono-num">
-                        Qty: {parsedQty} ×{' '}
-                        {formatCurrency(selectedProduct.price, sym)}
-                      </div>
+                    <div className="font-mono-num text-base font-bold text-[#7E22CE] shrink-0">
+                      {formatCurrency(checkoutTotal, sym)}
                     </div>
                   </div>
-                  <div className="font-mono-num text-base font-bold text-[#7E22CE] shrink-0">
-                    {formatCurrency(checkoutTotal, sym)}
+
+                  <div className="border-t border-[#F4ECF8] pt-2 space-y-1 text-xs">
+                    <div className="flex justify-between text-[#5B4B6B]">
+                      <span>Item Subtotal</span>
+                      <span className="font-mono-num font-semibold text-[#1F122B]">
+                        {formatCurrency(checkoutSubtotal, sym)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-[#5B4B6B]">
+                      <span>
+                        Delivery Fee{' '}
+                        {paymentMethod === 'COD'
+                          ? `(COD ₹${COD_DELIVERY_CHARGE_PER_ITEM} × ${parsedQty})`
+                          : '(Online UPI Free)'}
+                      </span>
+                      <span
+                        className={`font-mono-num font-semibold ${
+                          codDeliveryCharge > 0 ? 'text-[#B45309]' : 'text-[#15803D]'
+                        }`}
+                      >
+                        {codDeliveryCharge > 0
+                          ? `+ ${formatCurrency(codDeliveryCharge, sym)}`
+                          : 'FREE'}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1668,15 +1658,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                         Phone Number <span className="text-[#DB2777]">*</span>
                       </label>
-                      <input
-                        type="tel"
-                        inputMode="tel"
-                        required
-                        value={customerPhone}
-                        onChange={(e) => setCustomerPhone(e.target.value)}
-                        placeholder="10-digit mobile number"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
+                      <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
+                        <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                          +91
+                        </span>
+                        <input
+                          type="tel"
+                          inputMode="tel"
+                          required
+                          value={customerPhone}
+                          onChange={(e) => setCustomerPhone(e.target.value)}
+                          placeholder="9876543210"
+                          className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -1746,14 +1741,19 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                         WhatsApp Number (if different)
                       </label>
-                      <input
-                        type="tel"
-                        inputMode="tel"
-                        value={customerWhatsapp}
-                        onChange={(e) => setCustomerWhatsapp(e.target.value)}
-                        placeholder="Optional (defaults to Phone)"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
+                      <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
+                        <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                          +91
+                        </span>
+                        <input
+                          type="tel"
+                          inputMode="tel"
+                          value={customerWhatsapp}
+                          onChange={(e) => setCustomerWhatsapp(e.target.value)}
+                          placeholder="Optional"
+                          className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                        />
+                      </div>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
@@ -1796,7 +1796,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         <Truck className="w-4 h-4 text-[#7E22CE]" />
                       </div>
                       <p className="text-xs text-[#6B5B7B] mt-1">
-                        Pay when your order arrives at your doorstep.
+                        Pay when your order arrives.{' '}
+                        <strong className="text-[#B45309]">
+                          + ₹{COD_DELIVERY_CHARGE_PER_ITEM}/item delivery fee
+                        </strong>
                       </p>
                     </button>
 
@@ -1819,7 +1822,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         <CreditCard className="w-4 h-4 text-[#DB2777]" />
                       </div>
                       <p className="text-xs text-[#6B5B7B] mt-1">
-                        Pay via UPI &amp; upload payment screenshot.
+                        Pay via UPI &amp; upload screenshot.{' '}
+                        <strong className="text-[#15803D]">
+                          ₹0 delivery fee
+                        </strong>
                       </p>
                     </button>
                   </div>
@@ -1829,7 +1835,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <div className="text-[11px] font-semibold text-[#6B5B7B]">
-                            Pay {formatCurrency(checkoutTotal, sym)} to UPI ID:
+                            Pay {formatCurrency(checkoutSubtotal, sym)} to UPI ID:
                           </div>
                           <div className="font-mono-num text-base font-bold text-[#6D28D9] select-all">
                             {CHECKOUT_UPI_ID}
@@ -1985,8 +1991,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       {placedOrder.estimatedDeliveryDate || 'Within 5 days'}
                     </span>
                   </div>
+                  {(placedOrder.deliveryCharge || 0) > 0 && (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-[#6B5B7B]">COD Delivery Fee</span>
+                      <span className="font-mono-num font-semibold text-[#B45309]">
+                        + {formatCurrency(placedOrder.deliveryCharge || 0, sym)}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex justify-between gap-2">
-                    <span className="text-[#6B5B7B]">Amount</span>
+                    <span className="text-[#6B5B7B]">Total Payable</span>
                     <span className="font-mono-num font-bold text-[#7E22CE]">
                       {formatCurrency(placedOrder.totalAmount, sym)}
                     </span>

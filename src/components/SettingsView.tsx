@@ -10,6 +10,7 @@ import {
 import { BusinessSettings, WorkspaceData } from '../types/business';
 import {
   DEFAULT_SETTINGS,
+  normalizeIndianPhone,
   resizeImageFileToDataUrl,
   todayIsoDate,
 } from '../utils/calculations';
@@ -135,11 +136,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setError('');
     setNotice('');
+
+    let normalizedMobile = draft.mobile.trim();
+    if (normalizedMobile) {
+      const mobileCheck = normalizeIndianPhone(normalizedMobile);
+      if (!mobileCheck.valid) {
+        setError(`Mobile Number: ${mobileCheck.error}`);
+        return;
+      }
+      normalizedMobile = mobileCheck.formatted;
+    }
+
+    let normalizedWhatsapp = draft.whatsapp.trim();
+    if (normalizedWhatsapp) {
+      const waCheck = normalizeIndianPhone(normalizedWhatsapp);
+      if (!waCheck.valid) {
+        setError(`WhatsApp Number: ${waCheck.error}`);
+        return;
+      }
+      normalizedWhatsapp = waCheck.formatted;
+    }
+
+    let normalizedUpiNumber = (draft.upiNumber || '').trim();
+    if (normalizedUpiNumber) {
+      const upiCheck = normalizeIndianPhone(normalizedUpiNumber);
+      if (!upiCheck.valid) {
+        setError(`UPI Number: ${upiCheck.error}`);
+        return;
+      }
+      normalizedUpiNumber = upiCheck.formatted;
+    }
+
+    const nextDraft: BusinessSettings = {
+      ...draft,
+      mobile: normalizedMobile,
+      whatsapp: normalizedWhatsapp,
+      upiNumber: normalizedUpiNumber,
+    };
+
+    setSaving(true);
     try {
-      await onSaveSettings(draft);
+      setDraft(nextDraft);
+      await onSaveSettings(nextDraft);
       showTempNotice('Business settings saved.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings.');

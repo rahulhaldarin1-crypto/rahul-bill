@@ -98,13 +98,26 @@ async function computeSaltedSha256(passcode: string): Promise<string> {
   return computeSha256(`${ADMIN_LOCK_SALT}:${passcode}`);
 }
 
-const ADMIN_UNLOCKED_KEY = 'gg_admin_unlocked_session_v1';
+const ADMIN_UNLOCKED_KEY = 'gg_admin_unlocked_persistent_v2';
+const LEGACY_ADMIN_SESSION_KEY = 'gg_admin_unlocked_session_v1';
 const LEGACY_ADMIN_KEY = 'gg_admin_unlocked_v1';
-const CUSTOMER_SESSION_KEY = 'gg_customer_client_id_v1';
+const CUSTOMER_SESSION_KEY = 'gg_customer_client_id_persistent_v2';
+const LEGACY_CUSTOMER_KEY = 'gg_customer_client_id_v1';
 
 export function isAdminUnlockedStored(): boolean {
   try {
-    return sessionStorage.getItem(ADMIN_UNLOCKED_KEY) === 'true';
+    if (localStorage.getItem(ADMIN_UNLOCKED_KEY) === 'true') {
+      return true;
+    }
+    // Migrate one-time from prior session/legacy keys if present
+    if (
+      sessionStorage.getItem(LEGACY_ADMIN_SESSION_KEY) === 'true' ||
+      localStorage.getItem(LEGACY_ADMIN_KEY) === 'true'
+    ) {
+      localStorage.setItem(ADMIN_UNLOCKED_KEY, 'true');
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -113,10 +126,11 @@ export function isAdminUnlockedStored(): boolean {
 export function setAdminUnlockedStored(unlocked: boolean): void {
   try {
     localStorage.removeItem(LEGACY_ADMIN_KEY);
+    sessionStorage.removeItem(LEGACY_ADMIN_SESSION_KEY);
     if (unlocked) {
-      sessionStorage.setItem(ADMIN_UNLOCKED_KEY, 'true');
+      localStorage.setItem(ADMIN_UNLOCKED_KEY, 'true');
     } else {
-      sessionStorage.removeItem(ADMIN_UNLOCKED_KEY);
+      localStorage.removeItem(ADMIN_UNLOCKED_KEY);
     }
   } catch {
     // ignore storage failures
@@ -125,8 +139,17 @@ export function setAdminUnlockedStored(unlocked: boolean): void {
 
 export function getCustomerSessionId(): string | null {
   try {
-    const id = sessionStorage.getItem(CUSTOMER_SESSION_KEY);
-    return id && id.trim() ? id.trim() : null;
+    const id = localStorage.getItem(CUSTOMER_SESSION_KEY);
+    if (id && id.trim()) return id.trim();
+    const legacy =
+      sessionStorage.getItem(LEGACY_CUSTOMER_KEY) ||
+      localStorage.getItem(LEGACY_CUSTOMER_KEY);
+    if (legacy && legacy.trim()) {
+      const clean = legacy.trim();
+      localStorage.setItem(CUSTOMER_SESSION_KEY, clean);
+      return clean;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -134,10 +157,12 @@ export function getCustomerSessionId(): string | null {
 
 export function setCustomerSessionId(clientId: string | null): void {
   try {
+    sessionStorage.removeItem(LEGACY_CUSTOMER_KEY);
+    localStorage.removeItem(LEGACY_CUSTOMER_KEY);
     if (clientId && clientId.trim()) {
-      sessionStorage.setItem(CUSTOMER_SESSION_KEY, clientId.trim());
+      localStorage.setItem(CUSTOMER_SESSION_KEY, clientId.trim());
     } else {
-      sessionStorage.removeItem(CUSTOMER_SESSION_KEY);
+      localStorage.removeItem(CUSTOMER_SESSION_KEY);
     }
   } catch {
     // ignore storage failures

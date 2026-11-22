@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   CreditCard,
+  Download,
   FileText,
   Image as ImageIcon,
   MapPin,
@@ -13,13 +14,19 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { CustomerOrder, CustomerOrderStatus, Invoice } from '../types/business';
-import { formatCurrency } from '../utils/calculations';
+import {
+  CustomerOrder,
+  CustomerOrderStatus,
+  Invoice,
+  Product,
+} from '../types/business';
+import { downloadImageAsset, formatCurrency } from '../utils/calculations';
 import { ConfirmModal } from './ConfirmModal';
 
 interface OrdersViewProps {
   orders: CustomerOrder[];
   invoices: Invoice[];
+  products?: Product[];
   currencySymbol: string;
   onBack: () => void;
   onConfirmOrder: (orderId: string) => Promise<void>;
@@ -31,6 +38,7 @@ interface OrdersViewProps {
 export const OrdersView: React.FC<OrdersViewProps> = ({
   orders,
   invoices,
+  products = [],
   currencySymbol,
   onBack,
   onConfirmOrder,
@@ -94,6 +102,42 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       setError(err instanceof Error ? err.message : 'Failed to cancel order.');
     } finally {
       setCancellingId(null);
+    }
+  };
+
+  const resolveItemThumbnail = (
+    productId?: string,
+    productName?: string,
+    embeddedUrl?: string
+  ): string => {
+    if (embeddedUrl) return embeddedUrl;
+    const matched =
+      (productId ? products.find((p) => p.id === productId) : undefined) ||
+      (productName
+        ? products.find(
+            (p) =>
+              p.name.trim().toLowerCase() === productName.trim().toLowerCase()
+          )
+        : undefined);
+    if (!matched) return '';
+    if (Array.isArray(matched.imageDataUrls) && matched.imageDataUrls.length > 0) {
+      return matched.imageDataUrls[0] || '';
+    }
+    return matched.imageDataUrl || '';
+  };
+
+  const handleDownloadProductImage = async (
+    src: string,
+    orderNum: string,
+    prodName: string
+  ) => {
+    setError('');
+    try {
+      await downloadImageAsset(src, `${orderNum}_${prodName}`);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to download product image.'
+      );
     }
   };
 
@@ -276,65 +320,148 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     )}
                   </div>
 
-                  {/* Product Details (Multi-item Cart or Single Item) */}
-                  <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3.5 space-y-2">
+                  {/* Product Details (Multi-item Cart or Single Item) with Thumbnail & Download */}
+                  <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3.5 space-y-2.5">
                     <div className="font-bold text-[#4A3B59] uppercase tracking-wide text-[10px]">
                       {order.items && order.items.length > 1
                         ? `Ordered Items (${order.items.length})`
                         : 'Ordered Item'}
                     </div>
                     {order.items && order.items.length > 0 ? (
-                      <div className="space-y-1.5">
-                        {order.items.map((it) => (
-                          <div
-                            key={it.id}
-                            className="border-b last:border-b-0 border-[#F4ECF8] pb-1 last:pb-0"
-                          >
-                            <div className="font-bold text-[#1F122B]">
-                              {it.productName}
+                      <div className="space-y-2.5">
+                        {order.items.map((it) => {
+                          const thumb = resolveItemThumbnail(
+                            it.productId,
+                            it.productName,
+                            it.imageDataUrl
+                          );
+                          return (
+                            <div
+                              key={it.id}
+                              className="border-b last:border-b-0 border-[#F4ECF8] pb-2 last:pb-0 flex items-start gap-2.5"
+                            >
+                              <div className="flex flex-col items-center gap-1 shrink-0">
+                                <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-white overflow-hidden flex items-center justify-center">
+                                  {thumb ? (
+                                    <img
+                                      src={thumb}
+                                      alt={it.productName}
+                                      referrerPolicy="no-referrer"
+                                      className="w-full h-full object-cover"
+                                    />
+                                  ) : (
+                                    <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                                  )}
+                                </div>
+                                {thumb && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleDownloadProductImage(
+                                        thumb,
+                                        order.orderNumber,
+                                        it.productName
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-1 rounded-md border border-[#D8B4FE] bg-white px-1.5 py-0.5 text-[10px] font-semibold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer whitespace-nowrap"
+                                    title="Download product image"
+                                  >
+                                    <Download className="w-2.5 h-2.5" />
+                                    <span>Download Image</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="flex-1 min-w-0 space-y-0.5">
+                                <div className="font-bold text-[#1F122B] leading-snug">
+                                  {it.productName}
+                                </div>
+                                <div className="text-[11px] text-[#6B5B7B]">
+                                  {[
+                                    it.productCategory,
+                                    it.productSize ? `Size: ${it.productSize}` : '',
+                                    it.productColor ? `Color: ${it.productColor}` : '',
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ') || 'Standard'}
+                                </div>
+                                <div className="font-mono-num text-[11px] font-semibold text-[#1F122B]">
+                                  {it.quantity} × {formatCurrency(it.unitPrice, currencySymbol)} ={' '}
+                                  <span className="text-[#7E22CE]">
+                                    {formatCurrency(it.lineTotal, currencySymbol)}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                            <div className="text-[11px] text-[#6B5B7B] flex items-center justify-between gap-2">
-                              <span>
-                                {[
-                                  it.productCategory,
-                                  it.productSize ? `Size: ${it.productSize}` : '',
-                                  it.productColor ? `Color: ${it.productColor}` : '',
-                                ]
-                                  .filter(Boolean)
-                                  .join(' · ') || 'Standard'}
-                              </span>
-                              <span className="font-mono-num font-semibold text-[#1F122B] shrink-0">
-                                {it.quantity} × {formatCurrency(it.unitPrice, currencySymbol)} ={' '}
-                                <span className="text-[#7E22CE]">
-                                  {formatCurrency(it.lineTotal, currencySymbol)}
-                                </span>
-                              </span>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
-                      <>
-                        <div className="text-sm font-bold text-[#1F122B]">
-                          {order.productName}
-                        </div>
-                        <div className="text-[#6B5B7B]">
-                          {[
-                            order.productCategory,
-                            order.productSize ? `Size: ${order.productSize}` : '',
-                            order.productColor ? `Color: ${order.productColor}` : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' · ') || 'Standard Variant'}
-                        </div>
-                        <div className="font-mono-num text-[#1F122B] pt-1">
-                          Qty: <strong>{order.quantity}</strong> ×{' '}
-                          {formatCurrency(order.unitPrice, currencySymbol)} ={' '}
-                          <strong className="text-[#7E22CE]">
-                            {formatCurrency(order.totalAmount, currencySymbol)}
-                          </strong>
-                        </div>
-                      </>
+                      (() => {
+                        const thumb = resolveItemThumbnail(
+                          order.productId,
+                          order.productName
+                        );
+                        return (
+                          <div className="flex items-start gap-2.5">
+                            <div className="flex flex-col items-center gap-1 shrink-0">
+                              <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-white overflow-hidden flex items-center justify-center">
+                                {thumb ? (
+                                  <img
+                                    src={thumb}
+                                    alt={order.productName}
+                                    referrerPolicy="no-referrer"
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                                )}
+                              </div>
+                              {thumb && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDownloadProductImage(
+                                      thumb,
+                                      order.orderNumber,
+                                      order.productName
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-md border border-[#D8B4FE] bg-white px-1.5 py-0.5 text-[10px] font-semibold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer whitespace-nowrap"
+                                  title="Download product image"
+                                >
+                                  <Download className="w-2.5 h-2.5" />
+                                  <span>Download Image</span>
+                                </button>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0 space-y-1">
+                              <div className="text-sm font-bold text-[#1F122B]">
+                                {order.productName}
+                              </div>
+                              <div className="text-[#6B5B7B]">
+                                {[
+                                  order.productCategory,
+                                  order.productSize ? `Size: ${order.productSize}` : '',
+                                  order.productColor ? `Color: ${order.productColor}` : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ') || 'Standard Variant'}
+                              </div>
+                              <div className="font-mono-num text-[#1F122B] pt-0.5">
+                                Qty: <strong>{order.quantity}</strong> ×{' '}
+                                {formatCurrency(order.unitPrice, currencySymbol)} ={' '}
+                                <strong className="text-[#7E22CE]">
+                                  {formatCurrency(
+                                    order.subtotal ?? order.totalAmount,
+                                    currencySymbol
+                                  )}
+                                </strong>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()
                     )}
                   </div>
 
@@ -351,6 +478,30 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           : 'Cash on Delivery (COD)'}
                       </span>
                     </div>
+                    {order.deliveryCharge !== undefined && order.deliveryCharge > 0 && (
+                      <div className="rounded-lg border border-[#EFE2F5] bg-white px-2.5 py-1.5 space-y-0.5 text-[11px] font-mono-num">
+                        <div className="flex justify-between text-[#5B4B6B]">
+                          <span>Items Subtotal:</span>
+                          <span>
+                            {formatCurrency(
+                              order.subtotal ??
+                                Math.max(0, order.totalAmount - order.deliveryCharge),
+                              currencySymbol
+                            )}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[#B45309] font-semibold">
+                          <span>COD Delivery Fee:</span>
+                          <span>
+                            + {formatCurrency(order.deliveryCharge, currencySymbol)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between font-bold text-[#1F122B] border-t border-[#F4ECF8] pt-0.5">
+                          <span>Total Payable:</span>
+                          <span>{formatCurrency(order.totalAmount, currencySymbol)}</span>
+                        </div>
+                      </div>
+                    )}
                     {order.paymentMethod === 'UPI' && (
                       <div className="text-[#5B4B6B] font-mono-num">
                         UPI: {order.upiIdUsed || '9332578394-4@ibl'}

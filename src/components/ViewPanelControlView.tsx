@@ -21,8 +21,10 @@ import {
   ViewPanelShoppingItem,
 } from '../types/business';
 import {
+  DEFAULT_PRODUCT_CATEGORY,
   DEFAULT_VIEW_PANEL_CONFIG,
   formatCurrency,
+  PRODUCT_CATEGORIES,
   resizeImageFileToDataUrl,
 } from '../utils/calculations';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
@@ -75,13 +77,14 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
   // Shopping item editor state
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [itemName, setItemName] = useState('');
-  const [itemCategory, setItemCategory] = useState('Featured Collection');
+  const [itemCategory, setItemCategory] = useState<string>(DEFAULT_PRODUCT_CATEGORY);
   const [itemPrice, setItemPrice] = useState('');
   const [itemOriginalPrice, setItemOriginalPrice] = useState('');
   const [itemSize, setItemSize] = useState('');
   const [itemColor, setItemColor] = useState('');
   const [itemImage, setItemImage] = useState('');
   const [itemDescription, setItemDescription] = useState('');
+  const [itemHighlighted, setItemHighlighted] = useState(false);
   const [deleteItemTarget, setDeleteItemTarget] =
     useState<ViewPanelShoppingItem | null>(null);
 
@@ -266,13 +269,14 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
   const resetItemForm = () => {
     setEditingItemId(null);
     setItemName('');
-    setItemCategory('Featured Collection');
+    setItemCategory(DEFAULT_PRODUCT_CATEGORY);
     setItemPrice('');
     setItemOriginalPrice('');
     setItemSize('');
     setItemColor('');
     setItemImage('');
     setItemDescription('');
+    setItemHighlighted(false);
   };
 
   const handleShoppingImageUpload = async (
@@ -312,13 +316,14 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     const item: ViewPanelShoppingItem = {
       id: editingItemId || `shop-${Date.now()}`,
       name: itemName.trim(),
-      category: itemCategory.trim() || 'Featured Collection',
+      category: itemCategory.trim() || DEFAULT_PRODUCT_CATEGORY,
       price,
       originalPrice: original && original > price ? original : undefined,
       size: itemSize.trim(),
       color: itemColor.trim(),
       imageDataUrl: itemImage,
       description: itemDescription.trim(),
+      highlighted: itemHighlighted,
     };
 
     const nextItems = editingItemId
@@ -342,13 +347,19 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
   const startEditItem = (item: ViewPanelShoppingItem) => {
     setEditingItemId(item.id);
     setItemName(item.name);
-    setItemCategory(item.category || 'Featured Collection');
+    const cat = (item.category || '').trim();
+    setItemCategory(
+      (PRODUCT_CATEGORIES as readonly string[]).includes(cat)
+        ? cat
+        : DEFAULT_PRODUCT_CATEGORY
+    );
     setItemPrice(formatNumericFieldValue(item.price));
     setItemOriginalPrice(formatNumericFieldValue(item.originalPrice));
     setItemSize(item.size || '');
     setItemColor(item.color || '');
     setItemImage(item.imageDataUrl || '');
     setItemDescription(item.description || '');
+    setItemHighlighted(Boolean(item.highlighted));
     setError('');
   };
 
@@ -1091,16 +1102,20 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2.5">
-                <div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="sm:col-span-3">
                   <label className={labelClass}>Category</label>
-                  <input
-                    type="text"
+                  <select
                     value={itemCategory}
                     onChange={(e) => setItemCategory(e.target.value)}
-                    placeholder="Ethnic"
                     className={inputClass}
-                  />
+                  >
+                    {PRODUCT_CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className={labelClass}>Size</label>
@@ -1112,7 +1127,7 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                     className={inputClass}
                   />
                 </div>
-                <div>
+                <div className="sm:col-span-2">
                   <label className={labelClass}>Color</label>
                   <input
                     type="text"
@@ -1123,6 +1138,16 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                   />
                 </div>
               </div>
+
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-[#1F122B] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={itemHighlighted}
+                  onChange={(e) => setItemHighlighted(e.target.checked)}
+                  className="w-4 h-4 accent-[#DB2777] rounded cursor-pointer"
+                />
+                <span>Highlight / Pin to Top</span>
+              </label>
 
               <div>
                 <label className={labelClass}>Short Description (optional)</label>

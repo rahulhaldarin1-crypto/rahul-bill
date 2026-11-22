@@ -48,6 +48,7 @@ export interface ViewPanelShoppingItem {
   imageDataUrl?: string;
   imageDataUrls?: string[];
   description?: string;
+  highlighted?: boolean;
 }
 
 export interface ViewPanelConfig {
@@ -137,6 +138,8 @@ export interface Product {
   category: string;
   purchasePrice: number;
   sellingPrice: number;
+  originalPrice?: number;
+  highlighted?: boolean;
   stockQty: number;
   lowStockAlert: number;
   size: string;
@@ -239,6 +242,7 @@ export interface CustomerOrderItem {
   productColor?: string;
   quantity: number;
   unitPrice: number;
+  originalPrice?: number;
   lineTotal: number;
   imageDataUrl?: string;
 }
@@ -265,6 +269,8 @@ export interface CustomerOrder {
   productColor?: string;
   quantity: number;
   unitPrice: number;
+  subtotal?: number;
+  deliveryCharge?: number;
   totalAmount: number;
   paymentMethod: CustomerOrderPaymentMethod;
   upiIdUsed?: string;

@@ -6,12 +6,18 @@ import {
   Pencil,
   Plus,
   Search,
+  Star,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import { Product } from '../types/business';
-import { formatCurrency, resizeImageFileToDataUrl } from '../utils/calculations';
+import {
+  DEFAULT_PRODUCT_CATEGORY,
+  formatCurrency,
+  PRODUCT_CATEGORIES,
+  resizeImageFileToDataUrl,
+} from '../utils/calculations';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
@@ -28,65 +34,7 @@ interface ProductsViewProps {
 }
 
 const MAX_PRODUCT_IMAGES = 5;
-
-interface CategoryGroup {
-  label: string;
-  items: string[];
-}
-
-const CATEGORY_GROUPS: CategoryGroup[] = [
-  {
-    label: 'Beauty & Accessories',
-    items: [
-      'Handbag',
-      'Sling Bag',
-      'Wallet',
-      'Makeup Kit',
-      'Lipstick',
-      'Kajal',
-      'Eyeliner',
-      'Face Cream',
-      'Sunscreen',
-      'Hair Accessories',
-    ],
-  },
-  {
-    label: 'Perfume Collection',
-    items: [
-      "Women's Perfume",
-      'Floral Perfume',
-      'Fruity Perfume',
-      'Long Lasting Perfume',
-      'Eau De Parfum (EDP)',
-      'Eau De Toilette (EDT)',
-      'Body Mist',
-      'Pocket Perfume',
-      'Roll-On Perfume',
-      'Perfume Gift Set',
-      'Premium Perfume',
-      'Luxury Perfume',
-      'BELLAVITA Perfume',
-    ],
-  },
-  {
-    label: "Women's Fashion & Boutique",
-    items: [
-      "Women's Clothing / Sarees & Kurtis",
-      'Winter Wear',
-      'Cosmetics & Beauty',
-      'Perfumes & Fragrances',
-      'Jewellery & Accessories',
-      'Dresses & Western',
-      'Footwear & Bags',
-      'Other',
-    ],
-  },
-];
-
-const ALL_GROUP_CATEGORIES = new Set<string>(
-  CATEGORY_GROUPS.flatMap((g) => g.items)
-);
-const DEFAULT_CATEGORY = CATEGORY_GROUPS[0].items[0];
+const ALLOWED_CATEGORIES_SET = new Set<string>(PRODUCT_CATEGORIES);
 
 export const ProductsView: React.FC<ProductsViewProps> = ({
   products,
@@ -107,38 +55,28 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   // Form fields
   const [name, setName] = useState('');
   const [imageDataUrls, setImageDataUrls] = useState<string[]>([]);
-  const [category, setCategory] = useState(DEFAULT_CATEGORY);
-  const [isCustomCategory, setIsCustomCategory] = useState(false);
-  const [customCategory, setCustomCategory] = useState('');
+  const [category, setCategory] = useState<string>(DEFAULT_PRODUCT_CATEGORY);
   const [purchasePrice, setPurchasePrice] = useState('');
   const [sellingPrice, setSellingPrice] = useState('');
+  const [originalPrice, setOriginalPrice] = useState('');
+  const [highlighted, setHighlighted] = useState(false);
   const [stockQty, setStockQty] = useState('');
   const [lowStockAlert, setLowStockAlert] = useState(String(defaultLowStock || 5));
   const [size, setSize] = useState('');
   const [color, setColor] = useState('');
   const [description, setDescription] = useState('');
   const [compressingImg, setCompressingImg] = useState(false);
-
-  const customCategories = useMemo(() => {
-    const seen = new Set<string>();
-    for (const prod of products) {
-      const cat = (prod.category || '').trim();
-      if (cat && !ALL_GROUP_CATEGORIES.has(cat)) {
-        seen.add(cat);
-      }
-    }
-    return Array.from(seen);
-  }, [products]);
+  const [togglingHighlightId, setTogglingHighlightId] = useState<string | null>(null);
 
   const openCreate = () => {
     setEditing(null);
     setName('');
     setImageDataUrls([]);
-    setCategory(DEFAULT_CATEGORY);
-    setIsCustomCategory(false);
-    setCustomCategory('');
+    setCategory(DEFAULT_PRODUCT_CATEGORY);
     setPurchasePrice('');
     setSellingPrice('');
+    setOriginalPrice('');
+    setHighlighted(false);
     setStockQty('');
     setLowStockAlert(String(defaultLowStock || 5));
     setSize('');
@@ -158,12 +96,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           ? [prod.imageDataUrl]
           : [];
     setImageDataUrls(existingImages);
-    const cat = (prod.category || DEFAULT_CATEGORY).trim();
-    setCategory(cat);
-    setIsCustomCategory(false);
-    setCustomCategory('');
+    const cat = (prod.category || '').trim();
+    setCategory(
+      ALLOWED_CATEGORIES_SET.has(cat) ? cat : DEFAULT_PRODUCT_CATEGORY
+    );
     setPurchasePrice(formatNumericFieldValue(prod.purchasePrice));
     setSellingPrice(formatNumericFieldValue(prod.sellingPrice));
+    setOriginalPrice(formatNumericFieldValue(prod.originalPrice));
+    setHighlighted(Boolean(prod.highlighted));
     setStockQty(formatNumericFieldValue(prod.stockQty));
     setLowStockAlert(formatNumericFieldValue(prod.lowStockAlert || defaultLowStock || 5));
     setSize(prod.size || '');
@@ -235,15 +175,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       setError('Product name is required.');
       return;
     }
-    const finalCategory = isCustomCategory
-      ? customCategory.trim()
-      : category.trim();
-    if (!finalCategory) {
-      setError('Please enter a category name or select one from the list.');
-      return;
-    }
+    const finalCategory = category.trim() || DEFAULT_PRODUCT_CATEGORY;
     const buy = Number(purchasePrice) || 0;
     const sell = Number(sellingPrice) || 0;
+    const oldMrp =
+      originalPrice.trim() !== '' ? Number(originalPrice) || 0 : undefined;
+
     if (sell <= 0) {
       setError('Selling price must be greater than zero.');
       return;
@@ -259,6 +196,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           category: finalCategory,
           purchasePrice: Math.max(0, buy),
           sellingPrice: Math.max(0, sell),
+          originalPrice:
+            oldMrp && oldMrp > sell ? Math.max(0, oldMrp) : undefined,
+          highlighted,
           stockQty: Math.max(0, Math.floor(Number(stockQty) || 0)),
           lowStockAlert: Math.max(1, Math.floor(Number(lowStockAlert) || 5)),
           size: size.trim(),
@@ -275,6 +215,27 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     }
   };
 
+  const handleToggleHighlight = async (prod: Product) => {
+    setError('');
+    setTogglingHighlightId(prod.id);
+    try {
+      const { id, createdAt: _c, updatedAt: _u, ...rest } = prod;
+      await onSaveProduct(
+        {
+          ...rest,
+          highlighted: !prod.highlighted,
+        },
+        id
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Could not update highlight status.'
+      );
+    } finally {
+      setTogglingHighlightId(null);
+    }
+  };
+
   const lowStockItems = useMemo(
     () =>
       products.filter(
@@ -285,33 +246,20 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const activeGroup = categoryFilter.startsWith('GROUP:')
-      ? CATEGORY_GROUPS.find(
-          (g) => g.label === categoryFilter.slice('GROUP:'.length)
-        )
-      : undefined;
-
-    return products.filter((p) => {
-      if (categoryFilter !== 'ALL') {
-        if (activeGroup) {
-          if (
-            !activeGroup.items.includes(p.category) &&
-            p.category !== activeGroup.label
-          ) {
-            return false;
-          }
-        } else if (p.category !== categoryFilter) {
+    return products
+      .filter((p) => {
+        if (categoryFilter !== 'ALL' && p.category !== categoryFilter) {
           return false;
         }
-      }
-      if (!q) return true;
-      return (
-        p.name.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q) ||
-        p.color.toLowerCase().includes(q) ||
-        p.size.toLowerCase().includes(q)
-      );
-    });
+        if (!q) return true;
+        return (
+          p.name.toLowerCase().includes(q) ||
+          p.category.toLowerCase().includes(q) ||
+          p.color.toLowerCase().includes(q) ||
+          p.size.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted)));
   }, [products, searchQuery, categoryFilter]);
 
   const inputClass =
@@ -499,51 +447,19 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Category
+                Category <span className="text-[#DB2777]">*</span>
               </label>
               <select
-                value={isCustomCategory ? '__CUSTOM__' : category}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === '__CUSTOM__') {
-                    setIsCustomCategory(true);
-                  } else {
-                    setIsCustomCategory(false);
-                    setCategory(val);
-                  }
-                }}
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
                 className={inputClass}
               >
-                {CATEGORY_GROUPS.map((grp) => (
-                  <optgroup key={grp.label} label={grp.label}>
-                    {grp.items.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </optgroup>
+                {PRODUCT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
                 ))}
-                {customCategories.length > 0 && (
-                  <optgroup label="Custom Categories">
-                    {customCategories.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                <option value="__CUSTOM__">+ Add Custom Category...</option>
               </select>
-              {isCustomCategory && (
-                <input
-                  type="text"
-                  required
-                  value={customCategory}
-                  onChange={(e) => setCustomCategory(e.target.value)}
-                  placeholder="Enter new category name"
-                  className={`${inputClass} mt-2`}
-                />
-              )}
             </div>
 
             <div>
@@ -562,7 +478,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Selling Price ({currencySymbol}) <span className="text-[#DB2777]">*</span>
+                Selling / Offer Price ({currencySymbol}) <span className="text-[#DB2777]">*</span>
               </label>
               <input
                 type="text"
@@ -571,6 +487,20 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 value={sellingPrice}
                 onChange={(e) => setSellingPrice(sanitizeNumericInput(e.target.value))}
                 placeholder="0"
+                className={`${inputClass} font-mono-num`}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                Old Price / MRP ({currencySymbol}, optional)
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={originalPrice}
+                onChange={(e) => setOriginalPrice(sanitizeNumericInput(e.target.value))}
+                placeholder="Strike-through MRP"
                 className={`${inputClass} font-mono-num`}
               />
             </div>
@@ -633,6 +563,18 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 placeholder="5"
                 className={`${inputClass} font-mono-num`}
               />
+            </div>
+
+            <div className="flex items-end pb-1">
+              <label className="w-full inline-flex items-center gap-2.5 rounded-xl border border-[#E6D9EE] bg-[#FDF9FE] px-3.5 py-2.5 text-xs font-semibold text-[#1F122B] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={highlighted}
+                  onChange={(e) => setHighlighted(e.target.checked)}
+                  className="w-4 h-4 accent-[#DB2777] rounded cursor-pointer"
+                />
+                <span>Highlight / Pin to Top of Storefront</span>
+              </label>
             </div>
 
             <div className="sm:col-span-2 lg:col-span-3">
@@ -699,25 +641,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           className="rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none cursor-pointer"
         >
           <option value="ALL">All Categories</option>
-          {CATEGORY_GROUPS.map((grp) => (
-            <optgroup key={grp.label} label={grp.label}>
-              <option value={`GROUP:${grp.label}`}>All {grp.label}</option>
-              {grp.items.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </optgroup>
+          {PRODUCT_CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
           ))}
-          {customCategories.length > 0 && (
-            <optgroup label="Custom Categories">
-              {customCategories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </optgroup>
-          )}
         </select>
       </div>
 
@@ -757,7 +685,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             return (
               <div
                 key={prod.id}
-                className="rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between"
+                className={`rounded-2xl border bg-white overflow-hidden flex flex-col justify-between ${
+                  prod.highlighted
+                    ? 'border-[#DB2777] ring-1 ring-[#DB2777]/25'
+                    : 'border-[#EFE2F5]'
+                }`}
               >
                 <div>
                   <div className="h-44 bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative flex items-center justify-center overflow-hidden border-b border-[#F4ECF8]">
@@ -770,6 +702,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       />
                     ) : (
                       <Package className="w-10 h-10 text-[#C084FC]" />
+                    )}
+                    {prod.highlighted && (
+                      <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-[#DB2777] px-2 py-0.5 text-[10px] font-bold text-white">
+                        <Star className="w-3 h-3 fill-current" />
+                        <span>Highlighted</span>
+                      </span>
                     )}
                     {gallery.length > 1 && (
                       <span className="absolute bottom-2 right-2 rounded-lg bg-black/65 px-2 py-0.5 text-[10px] font-bold text-white font-mono-num">
@@ -797,8 +735,19 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       </div>
                       <div>
                         <div className="text-[#6B5B7B]">Sell</div>
-                        <div className="font-mono-num font-bold text-[#7E22CE]">
-                          {formatCurrency(prod.sellingPrice, currencySymbol)}
+                        <div className="font-mono-num font-bold text-[#7E22CE] flex flex-wrap items-baseline gap-1">
+                          <span>
+                            {formatCurrency(prod.sellingPrice, currencySymbol)}
+                          </span>
+                          {prod.originalPrice &&
+                            prod.originalPrice > prod.sellingPrice && (
+                              <span className="text-[11px] text-[#8E7C9E] line-through font-normal">
+                                {formatCurrency(
+                                  prod.originalPrice,
+                                  currencySymbol
+                                )}
+                              </span>
+                            )}
                         </div>
                       </div>
                       <div>
@@ -822,6 +771,28 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={togglingHighlightId === prod.id}
+                      onClick={() => handleToggleHighlight(prod)}
+                      className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-60 ${
+                        prod.highlighted
+                          ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
+                          : 'border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#DB2777]'
+                      }`}
+                      title={
+                        prod.highlighted
+                          ? 'Remove highlight priority'
+                          : 'Highlight & show first in storefront'
+                      }
+                    >
+                      <Star
+                        className={`w-3.5 h-3.5 ${
+                          prod.highlighted ? 'fill-current' : ''
+                        }`}
+                      />
+                      <span>{prod.highlighted ? 'Highlighted' : 'Highlight'}</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => openEdit(prod)}

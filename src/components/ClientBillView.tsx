@@ -27,6 +27,7 @@ import {
   exportInvoiceElementToPdf,
   formatCurrency,
   generateNextInvoiceNumber,
+  normalizeIndianPhone,
   suggestTrackingUrl,
   todayIsoDate,
 } from '../utils/calculations';
@@ -319,6 +320,7 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
               size: prod.size || '',
               color: prod.color || '',
               quantity: row.quantity || '1',
+              originalPrice: formatNumericFieldValue(prod.originalPrice),
               purchasePrice: formatNumericFieldValue(prod.purchasePrice),
               sellingPrice: formatNumericFieldValue(prod.sellingPrice),
             }
@@ -353,6 +355,27 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
       setError('Please select a customer or enter customer name.');
       return null;
     }
+
+    let formattedMobile = customerMobile.trim();
+    if (formattedMobile) {
+      const check = normalizeIndianPhone(formattedMobile);
+      if (!check.valid) {
+        setError(`Mobile Number: ${check.error}`);
+        return null;
+      }
+      formattedMobile = check.formatted;
+    }
+
+    let formattedWhatsapp = customerWhatsapp.trim();
+    if (formattedWhatsapp) {
+      const check = normalizeIndianPhone(formattedWhatsapp);
+      if (!check.valid) {
+        setError(`WhatsApp Number: ${check.error}`);
+        return null;
+      }
+      formattedWhatsapp = check.formatted;
+    }
+
     const validItems = computedItems.filter((i) => i.productName.trim() !== '');
     if (validItems.length === 0) {
       setError('Please add at least one product with a name.');
@@ -363,6 +386,8 @@ export const ClientBillView: React.FC<ClientBillViewProps> = ({
       const saved = await onSaveInvoice(
         {
           ...previewInvoice,
+          customerMobile: formattedMobile,
+          customerWhatsapp: formattedWhatsapp || formattedMobile,
           items: validItems,
         },
         activeEditId

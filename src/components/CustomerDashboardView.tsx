@@ -36,11 +36,13 @@ import {
 import { api, formatApiError } from '../utils/api';
 import {
   CHECKOUT_UPI_ID,
+  COD_DELIVERY_CHARGE_PER_ITEM,
   DEFAULT_SETTINGS,
   exportInvoiceElementToPdf,
   formatCurrency,
-  normalizePhoneDigits,
+  normalizeIndianPhone,
   resizeImageFileToDataUrl,
+  stripPlus91Prefix,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
@@ -77,9 +79,11 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const [cartBusy, setCartBusy] = useState(false);
   const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
   const [checkoutName, setCheckoutName] = useState(client.name);
-  const [checkoutPhone, setCheckoutPhone] = useState(client.mobile);
-  const [checkoutWhatsapp, setCheckoutWhatsapp] = useState(
-    client.whatsapp || client.mobile
+  const [checkoutPhone, setCheckoutPhone] = useState(() =>
+    stripPlus91Prefix(client.mobile)
+  );
+  const [checkoutWhatsapp, setCheckoutWhatsapp] = useState(() =>
+    stripPlus91Prefix(client.whatsapp || client.mobile)
   );
   const [checkoutAddress, setCheckoutAddress] = useState(client.address);
   const [checkoutCity, setCheckoutCity] = useState(client.city);
@@ -106,8 +110,10 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
 
   useEffect(() => {
     setCheckoutName((prev) => prev || client.name);
-    setCheckoutPhone((prev) => prev || client.mobile);
-    setCheckoutWhatsapp((prev) => prev || client.whatsapp || client.mobile);
+    setCheckoutPhone((prev) => prev || stripPlus91Prefix(client.mobile));
+    setCheckoutWhatsapp(
+      (prev) => prev || stripPlus91Prefix(client.whatsapp || client.mobile)
+    );
     setCheckoutAddress((prev) => prev || client.address);
     setCheckoutCity((prev) => prev || client.city);
     setCheckoutState((prev) => prev || client.state);
@@ -140,6 +146,12 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const cartItemCount = useMemo(
     () => cart.reduce((sum, item) => sum + Math.max(1, item.quantity || 1), 0),
     [cart]
+  );
+
+  const codDeliveryCharge =
+    paymentMethod === 'COD' ? COD_DELIVERY_CHARGE_PER_ITEM * cartItemCount : 0;
+  const checkoutGrandTotal = Number(
+    (cartSubtotal + codDeliveryCharge).toFixed(2)
   );
 
   const handleProfilePhotoChange = async (
@@ -286,10 +298,26 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       setCheckoutError('Please enter your full name.');
       return;
     }
-    if (normalizePhoneDigits(checkoutPhone).length < 8) {
-      setCheckoutError('Please enter a valid 10-digit phone number.');
+    const phoneCheck = normalizeIndianPhone(checkoutPhone);
+    if (!phoneCheck.valid) {
+      setCheckoutError(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
       return;
     }
+
+    let formattedWhatsapp = phoneCheck.formatted;
+    if (checkoutWhatsapp.trim()) {
+      const waCheck = normalizeIndianPhone(checkoutWhatsapp);
+      if (!waCheck.valid) {
+        setCheckoutError(
+          `WhatsApp Number: ${waCheck.error || 'Please enter a valid 10-digit Indian mobile number.'}`
+        );
+        return;
+      }
+      formattedWhatsapp = waCheck.formatted;
+    }
+
     if (!checkoutAddress.trim()) {
       setCheckoutError('Please enter your full delivery address.');
       return;
@@ -313,6 +341,10 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         productColor: item.color,
         quantity: qty,
         unitPrice,
+        originalPrice:
+          item.originalPrice !== undefined
+            ? Math.max(0, Number(item.originalPrice) || 0)
+            : undefined,
         lineTotal: Number((qty * unitPrice).toFixed(2)),
         imageDataUrl: item.imageDataUrl,
       };
@@ -327,8 +359,8 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         clientId: client.id,
         clearCart: true,
         customerName: checkoutName.trim(),
-        customerPhone: checkoutPhone.trim(),
-        customerWhatsapp: checkoutWhatsapp.trim() || checkoutPhone.trim(),
+        customerPhone: phoneCheck.formatted,
+        customerWhatsapp: formattedWhatsapp,
         customerAddress: checkoutAddress.trim(),
         customerCity: checkoutCity.trim(),
         customerState: checkoutState.trim(),
@@ -701,9 +733,21 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2.5">
-                              <span className="font-mono-num text-sm font-bold text-[#7E22CE]">
-                                {formatCurrency(lineTotal, sym)}
-                              </span>
+                              <div className="text-right font-mono-num">
+                                <span className="text-sm font-bold text-[#7E22CE]">
+                                  {formatCurrency(lineTotal, sym)}
+                                </span>
+                                {item.originalPrice &&
+                                  item.originalPrice > item.price && (
+                                    <span className="ml-1.5 text-[11px] text-[#8E7C9E] line-through">
+                                      {formatCurrency(
+                                        item.originalPrice *
+                                          Math.max(1, item.quantity || 1),
+                                        sym
+                                      )}
+                                    </span>
+                                  )}
+                              </div>
                               <button
                                 type="button"
                                 disabled={cartBusy}
@@ -763,14 +807,20 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
                       Phone Number <span className="text-[#DB2777]">*</span>
                     </label>
-                    <input
-                      type="tel"
-                      inputMode="tel"
-                      required
-                      value={checkoutPhone}
-                      onChange={(e) => setCheckoutPhone(e.target.value)}
-                      className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs sm:text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
-                    />
+                    <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-white overflow-hidden focus-within:border-[#9333EA]">
+                      <span className="inline-flex items-center px-2.5 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                        +91
+                      </span>
+                      <input
+                        type="tel"
+                        inputMode="tel"
+                        required
+                        value={checkoutPhone}
+                        onChange={(e) => setCheckoutPhone(e.target.value)}
+                        placeholder="9876543210"
+                        className="w-full bg-transparent px-2.5 py-2 text-xs sm:text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -819,14 +869,19 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <input
-                    type="tel"
-                    inputMode="tel"
-                    value={checkoutWhatsapp}
-                    onChange={(e) => setCheckoutWhatsapp(e.target.value)}
-                    placeholder="WhatsApp (optional)"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
-                  />
+                  <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-white overflow-hidden focus-within:border-[#9333EA]">
+                    <span className="inline-flex items-center px-2.5 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                      +91
+                    </span>
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      value={checkoutWhatsapp}
+                      onChange={(e) => setCheckoutWhatsapp(e.target.value)}
+                      placeholder="WhatsApp (optional)"
+                      className="w-full bg-transparent px-2.5 py-2 text-xs font-mono-num text-[#1F122B] focus:outline-none"
+                    />
+                  </div>
                   <input
                     type="text"
                     value={checkoutNote}
@@ -854,6 +909,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                       <span>Cash on Delivery</span>
                       <Truck className="w-3.5 h-3.5 text-[#7E22CE]" />
                     </div>
+                    <div className="text-[10px] font-semibold text-[#B45309] mt-1">
+                      + ₹{COD_DELIVERY_CHARGE_PER_ITEM}/item COD delivery fee
+                    </div>
                   </button>
                   <button
                     type="button"
@@ -871,7 +929,43 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                       <span>Online (UPI)</span>
                       <CreditCard className="w-3.5 h-3.5 text-[#DB2777]" />
                     </div>
+                    <div className="text-[10px] font-semibold text-[#15803D] mt-1">
+                      ₹0 Delivery Fee (Free)
+                    </div>
                   </button>
+                </div>
+
+                {/* Order Total Breakdown */}
+                <div className="rounded-xl border border-[#EFE2F5] bg-white p-3 space-y-1 text-xs">
+                  <div className="flex items-center justify-between text-[#5B4B6B]">
+                    <span>Items Subtotal ({cartItemCount} units)</span>
+                    <span className="font-mono-num font-semibold text-[#1F122B]">
+                      {formatCurrency(cartSubtotal, sym)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#5B4B6B]">
+                    <span>
+                      Delivery Charge{' '}
+                      {paymentMethod === 'COD'
+                        ? `(COD ₹${COD_DELIVERY_CHARGE_PER_ITEM} × ${cartItemCount})`
+                        : '(UPI Free)'}
+                    </span>
+                    <span
+                      className={`font-mono-num font-semibold ${
+                        codDeliveryCharge > 0 ? 'text-[#B45309]' : 'text-[#15803D]'
+                      }`}
+                    >
+                      {codDeliveryCharge > 0
+                        ? `+ ${formatCurrency(codDeliveryCharge, sym)}`
+                        : 'FREE'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-[#F4ECF8] font-bold text-[#1F122B]">
+                    <span>Total Payable</span>
+                    <span className="font-mono-num text-sm text-[#7E22CE]">
+                      {formatCurrency(checkoutGrandTotal, sym)}
+                    </span>
+                  </div>
                 </div>
 
                 {paymentMethod === 'UPI' && (
@@ -949,7 +1043,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   <span>
                     {placingOrder
                       ? 'Placing Order...'
-                      : `Checkout & Place Order (${formatCurrency(cartSubtotal, sym)})`}
+                      : `Checkout & Place Order (${formatCurrency(checkoutGrandTotal, sym)})`}
                   </span>
                 </button>
               </form>
@@ -1069,6 +1163,14 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                             </span>
                           </div>
                         ))}
+                        {(ord.deliveryCharge || 0) > 0 && (
+                          <div className="flex items-center justify-between gap-2 text-[#B45309] font-medium pt-0.5">
+                            <span>COD Delivery Charge</span>
+                            <span className="font-mono-num shrink-0">
+                              + {formatCurrency(ord.deliveryCharge || 0, sym)}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
 

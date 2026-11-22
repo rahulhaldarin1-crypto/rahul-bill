@@ -55,6 +55,7 @@ interface HistoryEntry {
 
 export default function App() {
   const [loading, setLoading] = useState(true);
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() => isAdminUnlockedStored());
   const [showViewPanel, setShowViewPanel] = useState<boolean>(() => !isAdminUnlockedStored());
@@ -88,6 +89,7 @@ export default function App() {
       .then((data) => {
         if (!active) return;
         setWorkspace(data);
+        setWorkspaceLoaded(true);
         unsubscribe = api.subscribeWorkspace(
           (updater) => {
             if (active) setWorkspace(updater);
@@ -453,11 +455,11 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!loading && customerSessionId && !loggedInCustomer) {
+    if (!loading && workspaceLoaded && customerSessionId && !loggedInCustomer) {
       setCustomerSessionId(null);
       setCustomerSessionIdState(null);
     }
-  }, [loading, customerSessionId, loggedInCustomer]);
+  }, [loading, workspaceLoaded, customerSessionId, loggedInCustomer]);
 
   const customerOrders = useMemo(() => {
     if (!loggedInCustomer) return [];
@@ -769,6 +771,7 @@ export default function App() {
           <OrdersView
             orders={workspace.orders || []}
             invoices={workspace.invoices}
+            products={workspace.products}
             currencySymbol={currencySymbol}
             onBack={goBack}
             onConfirmOrder={handleConfirmCustomerOrder}

@@ -13,7 +13,7 @@ import { Client } from '../types/business';
 import { api, formatApiError } from '../utils/api';
 import {
   buildForgotPasswordWhatsAppUrl,
-  normalizePhoneDigits,
+  normalizeIndianPhone,
   resizeImageFileToDataUrl,
 } from '../utils/calculations';
 import { sanitizeNumericInput } from '../utils/numberInput';
@@ -92,8 +92,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     e.preventDefault();
     setError('');
 
-    if (normalizePhoneDigits(loginPhone).length < 6) {
-      setError('Please enter your registered phone number.');
+    const phoneCheck = normalizeIndianPhone(loginPhone);
+    if (!phoneCheck.valid) {
+      setError(phoneCheck.error || 'Please enter a valid 10-digit mobile number.');
       return;
     }
     if (!loginPassword.trim()) {
@@ -103,7 +104,10 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
 
     setSubmitting(true);
     try {
-      const res = await api.loginCustomerAccount(loginPhone, loginPassword);
+      const res = await api.loginCustomerAccount(
+        phoneCheck.formatted,
+        loginPassword
+      );
       onSuccess(res.client);
     } catch (err) {
       setError(formatApiError(err, 'Invalid phone number or password.'));
@@ -120,8 +124,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       setError('Please enter your full name.');
       return;
     }
-    if (normalizePhoneDigits(regPhone).length < 8) {
-      setError('Please enter a valid 10-digit phone number.');
+    const phoneCheck = normalizeIndianPhone(regPhone);
+    if (!phoneCheck.valid) {
+      setError(phoneCheck.error || 'Please enter a valid 10-digit mobile number.');
       return;
     }
     if (!regAddress.trim()) {
@@ -137,7 +142,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     try {
       const res = await api.registerCustomerAccount({
         name: regName.trim(),
-        phone: regPhone.trim(),
+        phone: phoneCheck.formatted,
         address: regAddress.trim(),
         city: regCity.trim(),
         state: regState.trim(),
@@ -241,8 +246,11 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                   Phone Number <span className="text-[#DB2777]">*</span>
                 </label>
-                <div className="relative">
-                  <Phone className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
+                  <span className="inline-flex items-center gap-1 px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                    <Phone className="w-3.5 h-3.5 text-[#9333EA]" />
+                    +91
+                  </span>
                   <input
                     type="tel"
                     inputMode="tel"
@@ -250,8 +258,8 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                     required
                     value={loginPhone}
                     onChange={(e) => setLoginPhone(e.target.value)}
-                    placeholder="Enter your 10-digit phone number"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-3.5 py-2.5 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                    placeholder="9876543210"
+                    className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
                   />
                 </div>
               </div>
@@ -385,15 +393,20 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                   Phone Number <span className="text-[#DB2777]">*</span>
                 </label>
-                <input
-                  type="tel"
-                  inputMode="tel"
-                  required
-                  value={regPhone}
-                  onChange={(e) => setRegPhone(e.target.value)}
-                  placeholder="10-digit mobile number"
-                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                />
+                <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
+                  <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                    +91
+                  </span>
+                  <input
+                    type="tel"
+                    inputMode="tel"
+                    required
+                    value={regPhone}
+                    onChange={(e) => setRegPhone(e.target.value)}
+                    placeholder="9876543210"
+                    className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                  />
+                </div>
               </div>
 
               <div>

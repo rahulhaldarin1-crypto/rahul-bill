@@ -35,9 +35,12 @@ import {
 import {
   addDaysIsoDate,
   CHECKOUT_UPI_ID,
+  COD_DELIVERY_CHARGE_PER_ITEM,
   DEFAULT_SETTINGS,
+  formatPhoneWithPlus91,
   generateNextInvoiceNumber,
   mergeBusinessSettings,
+  normalizeIndianPhone,
   normalizePhoneDigits,
   phoneNumbersMatch,
   todayIsoDate,
@@ -339,8 +342,14 @@ export const firestoreService = {
     payload: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>
   ): Promise<Client> {
     const now = new Date().toISOString();
+    const formattedMobile = formatPhoneWithPlus91(payload.mobile);
+    const formattedWhatsapp = formatPhoneWithPlus91(
+      payload.whatsapp || payload.mobile
+    );
     const client: Client = stripUndefinedDeep({
       ...payload,
+      mobile: formattedMobile,
+      whatsapp: formattedWhatsapp || formattedMobile,
       id: `cli-${crypto.randomUUID()}`,
       createdAt: now,
       updatedAt: now,
@@ -362,9 +371,15 @@ export const firestoreService = {
       const snap = await getDoc(ref);
       if (!snap.exists()) throw new Error('Customer not found.');
       const existing = snap.data() as Client;
+      const formattedMobile = formatPhoneWithPlus91(payload.mobile);
+      const formattedWhatsapp = formatPhoneWithPlus91(
+        payload.whatsapp || payload.mobile
+      );
       const updated: Client = stripUndefinedDeep({
         ...existing,
         ...payload,
+        mobile: formattedMobile,
+        whatsapp: formattedWhatsapp || formattedMobile,
         id,
         updatedAt: new Date().toISOString(),
       });
@@ -980,16 +995,17 @@ export const firestoreService = {
     profilePhotoDataUrl?: string;
   }): Promise<{ client: Client }> {
     const cleanName = String(payload.name || '').trim();
-    const cleanPhone = String(payload.phone || '').trim();
+    const phoneCheck = normalizeIndianPhone(payload.phone);
     const cleanAddress = String(payload.address || '').trim();
     const cleanPassword = String(payload.password || '').trim();
-    const normalizedPhone = normalizePhoneDigits(cleanPhone);
 
     if (cleanName.length < 2) {
       throw new Error('Please enter your full name (at least 2 characters).');
     }
-    if (normalizedPhone.length < 8) {
-      throw new Error('Please enter a valid 10-digit phone number.');
+    if (!phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
     }
     if (!cleanAddress) {
       throw new Error('Please enter your full delivery address.');
@@ -997,6 +1013,8 @@ export const firestoreService = {
     if (cleanPassword.length < 4) {
       throw new Error('Password must be at least 4 characters long.');
     }
+
+    const formattedPhone = phoneCheck.formatted;
 
     let existingClients: Client[] = [];
     try {
@@ -1008,8 +1026,8 @@ export const firestoreService = {
 
     const matchedClient = existingClients.find(
       (c) =>
-        phoneNumbersMatch(c.mobile, cleanPhone) ||
-        phoneNumbersMatch(c.whatsapp, cleanPhone)
+        phoneNumbersMatch(c.mobile, formattedPhone) ||
+        phoneNumbersMatch(c.whatsapp, formattedPhone)
     );
 
     if (matchedClient && matchedClient.passwordHash) {
@@ -1026,8 +1044,10 @@ export const firestoreService = {
       ? stripUndefinedDeep({
           ...matchedClient,
           name: cleanName,
-          mobile: cleanPhone,
-          whatsapp: matchedClient.whatsapp || cleanPhone,
+          mobile: formattedPhone,
+          whatsapp: matchedClient.whatsapp
+            ? formatPhoneWithPlus91(matchedClient.whatsapp)
+            : formattedPhone,
           address: cleanAddress,
           city: String(payload.city || matchedClient.city || '').trim(),
           state: String(payload.state || matchedClient.state || '').trim(),
@@ -1046,8 +1066,8 @@ export const firestoreService = {
       : stripUndefinedDeep({
           id: `cli-${crypto.randomUUID()}`,
           name: cleanName,
-          mobile: cleanPhone,
-          whatsapp: cleanPhone,
+          mobile: formattedPhone,
+          whatsapp: formattedPhone,
           address: cleanAddress,
           city: String(payload.city || '').trim(),
           state: String(payload.state || '').trim(),
@@ -1074,10 +1094,12 @@ export const firestoreService = {
     phone: string,
     password: string
   ): Promise<{ client: Client }> {
-    const cleanPhone = String(phone || '').trim();
+    const phoneCheck = normalizeIndianPhone(phone);
     const cleanPassword = String(password || '').trim();
-    if (normalizePhoneDigits(cleanPhone).length < 8) {
-      throw new Error('Please enter a valid phone number.');
+    if (!phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
     }
     if (!cleanPassword) {
       throw new Error('Please enter your password.');
@@ -1093,8 +1115,8 @@ export const firestoreService = {
 
     const matched = existingClients.find(
       (c) =>
-        phoneNumbersMatch(c.mobile, cleanPhone) ||
-        phoneNumbersMatch(c.whatsapp, cleanPhone)
+        phoneNumbersMatch(c.mobile, phoneCheck.formatted) ||
+        phoneNumbersMatch(c.whatsapp, phoneCheck.formatted)
     );
 
     if (!matched) {
@@ -1240,15 +1262,31 @@ export const firestoreService = {
     customerNote?: string;
   }): Promise<{ order: CustomerOrder; client: Client }> {
     const cleanName = String(payload.customerName || '').trim();
-    const cleanPhone = String(payload.customerPhone || '').trim();
-    const normalizedPhone = normalizePhoneDigits(cleanPhone);
+    const phoneCheck = normalizeIndianPhone(payload.customerPhone);
     const cleanAddress = String(payload.customerAddress || '').trim();
 
     if (!cleanName) throw new Error('Please enter your full name.');
-    if (normalizedPhone.length < 8) {
-      throw new Error('Please enter a valid phone number (at least 8 digits).');
+    if (!phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
     }
     if (!cleanAddress) throw new Error('Please enter your delivery address.');
+
+    const cleanPhone = phoneCheck.formatted;
+    const normalizedPhone = phoneCheck.digits10;
+
+    let cleanWhatsapp = cleanPhone;
+    const rawWa = String(payload.customerWhatsapp || '').trim();
+    if (rawWa) {
+      const waCheck = normalizeIndianPhone(rawWa);
+      if (!waCheck.valid) {
+        throw new Error(
+          'Please enter a valid 10-digit WhatsApp number (with or without +91).'
+        );
+      }
+      cleanWhatsapp = waCheck.formatted;
+    }
 
     const normalizedItems: CustomerOrderItem[] =
       Array.isArray(payload.items) && payload.items.length > 0
@@ -1258,6 +1296,10 @@ export const firestoreService = {
               0,
               Number(safeNum(it.unitPrice, 0).toFixed(2))
             );
+            const originalPrice =
+              it.originalPrice !== undefined && it.originalPrice > unitPrice
+                ? Math.max(0, Number(safeNum(it.originalPrice, 0).toFixed(2)))
+                : undefined;
             return stripUndefinedDeep({
               id: String(it.id || `ord-item-${Date.now()}-${idx}`),
               productId: it.productId ? String(it.productId) : '',
@@ -1267,6 +1309,7 @@ export const firestoreService = {
               productColor: String(it.productColor || '').trim(),
               quantity: qty,
               unitPrice,
+              originalPrice,
               lineTotal: Number((qty * unitPrice).toFixed(2)),
               imageDataUrl: it.imageDataUrl ? String(it.imageDataUrl) : '',
             });
@@ -1297,10 +1340,20 @@ export const firestoreService = {
       throw new Error('Product information is missing.');
     }
 
-    const totalQty = normalizedItems.reduce((s, it) => s + it.quantity, 0);
-    const totalAmount = Number(
+    const paymentMethod: CustomerOrderPaymentMethod =
+      payload.paymentMethod === 'UPI' ? 'UPI' : 'COD';
+    const totalQty = Math.max(
+      1,
+      normalizedItems.reduce((s, it) => s + it.quantity, 0)
+    );
+    const subtotal = Number(
       normalizedItems.reduce((s, it) => s + it.lineTotal, 0).toFixed(2)
     );
+    const deliveryCharge =
+      paymentMethod === 'COD'
+        ? Number((COD_DELIVERY_CHARGE_PER_ITEM * totalQty).toFixed(2))
+        : 0;
+    const totalAmount = Number((subtotal + deliveryCharge).toFixed(2));
     const summaryProductName = (
       normalizedItems.length === 1
         ? normalizedItems[0].productName
@@ -1334,7 +1387,6 @@ export const firestoreService = {
           phoneNumbersMatch(c.whatsapp, cleanPhone)
       );
 
-    const cleanWhatsapp = String(payload.customerWhatsapp || '').trim() || cleanPhone;
     const cleanCity = String(payload.customerCity || '').trim();
     const cleanState = String(payload.customerState || '').trim();
     const cleanPin = String(payload.customerPinCode || '').trim();
@@ -1343,8 +1395,12 @@ export const firestoreService = {
       ? stripUndefinedDeep({
           ...matchedClient,
           name: matchedClient.name || cleanName,
-          mobile: matchedClient.mobile || cleanPhone,
-          whatsapp: matchedClient.whatsapp || cleanWhatsapp,
+          mobile: matchedClient.mobile
+            ? formatPhoneWithPlus91(matchedClient.mobile)
+            : cleanPhone,
+          whatsapp: matchedClient.whatsapp
+            ? formatPhoneWithPlus91(matchedClient.whatsapp)
+            : cleanWhatsapp,
           address: cleanAddress || matchedClient.address,
           city: cleanCity || matchedClient.city,
           state: cleanState || matchedClient.state,
@@ -1380,9 +1436,6 @@ export const firestoreService = {
     }
     const orderNumber = `ORD-${String(maxOrdNum + 1).padStart(3, '0')}`;
 
-    const paymentMethod: CustomerOrderPaymentMethod =
-      payload.paymentMethod === 'UPI' ? 'UPI' : 'COD';
-
     const order: CustomerOrder = stripUndefinedDeep({
       id: `ord-${crypto.randomUUID()}`,
       orderNumber,
@@ -1403,9 +1456,11 @@ export const firestoreService = {
       productCategory: normalizedItems[0].productCategory || '',
       productSize: normalizedItems[0].productSize || '',
       productColor: normalizedItems[0].productColor || '',
-      quantity: Math.max(1, totalQty),
+      quantity: totalQty,
       unitPrice:
-        normalizedItems.length === 1 ? normalizedItems[0].unitPrice : totalAmount,
+        normalizedItems.length === 1 ? normalizedItems[0].unitPrice : subtotal,
+      subtotal,
+      deliveryCharge,
       totalAmount,
       paymentMethod,
       upiIdUsed: paymentMethod === 'UPI' ? CHECKOUT_UPI_ID : '',
@@ -1557,6 +1612,10 @@ export const firestoreService = {
         size: it.productSize || '',
         color: it.productColor || '',
         quantity: qty,
+        originalPrice:
+          it.originalPrice !== undefined
+            ? it.originalPrice
+            : catalogProduct?.originalPrice,
         purchasePrice,
         sellingPrice: it.unitPrice,
         lineTotal,
@@ -1578,12 +1637,12 @@ export const firestoreService = {
       .join(', ');
 
     const isPaidUpi = order.paymentMethod === 'UPI';
-    const paidAmount = isPaidUpi ? order.totalAmount : 0;
+    const deliveryCharge = Math.max(0, safeNum(order.deliveryCharge, 0));
     const orderDate = order.orderDate || order.createdAt.slice(0, 10) || todayIsoDate();
     const deliveryDate =
       order.estimatedDeliveryDate || addDaysIsoDate(orderDate, 5);
 
-    const invoice = normalizeInvoice({
+    const baseInvoice = normalizeInvoice({
       id: `inv-${crypto.randomUUID()}`,
       invoiceNumber,
       invoiceDate: orderDate,
@@ -1598,8 +1657,8 @@ export const firestoreService = {
       items: invoiceItems,
       discount: 0,
       gstPercent: 0,
-      deliveryCharge: 0,
-      paidAmount,
+      deliveryCharge,
+      paidAmount: isPaidUpi ? order.totalAmount : 0,
       paymentMethod: isPaidUpi ? 'UPI' : 'Cash',
       courierName: '',
       trackingNumber: '',
@@ -1609,6 +1668,7 @@ export const firestoreService = {
         order.customerNote ? ` (${order.customerNote})` : ''
       }`,
     });
+    const invoice = baseInvoice;
 
     let payment: PaymentRecord | null = null;
     if (invoice.paidAmount > 0) {

@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Check, FilePlus2, Save } from 'lucide-react';
 import { Client } from '../types/business';
+import {
+  normalizeIndianPhone,
+  stripPlus91Prefix,
+} from '../utils/calculations';
 
 interface NewClientViewProps {
   editingClient: Client | null;
@@ -31,9 +35,12 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
   useEffect(() => {
     if (editingClient) {
       setName(editingClient.name);
-      setMobile(editingClient.mobile);
-      setWhatsapp(editingClient.whatsapp);
-      setSameAsMobile(editingClient.whatsapp === editingClient.mobile);
+      setMobile(stripPlus91Prefix(editingClient.mobile));
+      setWhatsapp(stripPlus91Prefix(editingClient.whatsapp));
+      setSameAsMobile(
+        stripPlus91Prefix(editingClient.whatsapp) ===
+          stripPlus91Prefix(editingClient.mobile)
+      );
       setAddress(editingClient.address);
       setStateName(editingClient.state);
       setCity(editingClient.city);
@@ -55,9 +62,15 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
     if (name.trim().length < 2) {
       return 'Customer name is required (at least 2 characters).';
     }
-    const cleanMobile = mobile.replace(/[\s\-+]/g, '');
-    if (cleanMobile.length < 10) {
-      return 'Please enter a valid 10-digit mobile number.';
+    const mobileCheck = normalizeIndianPhone(mobile);
+    if (!mobileCheck.valid) {
+      return mobileCheck.error || 'Please enter a valid 10-digit Indian mobile number.';
+    }
+    if (!sameAsMobile && whatsapp.trim()) {
+      const waCheck = normalizeIndianPhone(whatsapp);
+      if (!waCheck.valid) {
+        return 'Please enter a valid 10-digit WhatsApp number (with or without +91).';
+      }
     }
     if (pinCode.trim() && !/^\d{6}$/.test(pinCode.trim())) {
       return 'PIN code must be 6 digits.';
@@ -65,15 +78,22 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
     return null;
   };
 
-  const buildPayload = (): Omit<Client, 'id' | 'createdAt' | 'updatedAt'> => ({
-    name: name.trim(),
-    mobile: mobile.trim(),
-    whatsapp: sameAsMobile ? mobile.trim() : whatsapp.trim() || mobile.trim(),
-    address: address.trim(),
-    state: stateName.trim(),
-    city: city.trim(),
-    pinCode: pinCode.trim(),
-  });
+  const buildPayload = (): Omit<Client, 'id' | 'createdAt' | 'updatedAt'> => {
+    const mobileFormatted = normalizeIndianPhone(mobile).formatted;
+    const waFormatted =
+      !sameAsMobile && whatsapp.trim()
+        ? normalizeIndianPhone(whatsapp).formatted
+        : mobileFormatted;
+    return {
+      name: name.trim(),
+      mobile: mobileFormatted,
+      whatsapp: waFormatted,
+      address: address.trim(),
+      state: stateName.trim(),
+      city: city.trim(),
+      pinCode: pinCode.trim(),
+    };
+  };
 
   const handleSubmit = async (andCreateBill: boolean) => {
     const errMsg = validate();
@@ -149,17 +169,23 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
             <label className={labelClass}>
               Mobile Number <span className="text-[#DB2777]">*</span>
             </label>
-            <input
-              type="tel"
-              required
-              value={mobile}
-              onChange={(e) => {
-                setMobile(e.target.value);
-                if (sameAsMobile) setWhatsapp(e.target.value);
-              }}
-              placeholder="+91 9876543210"
-              className={`${inputClass} font-mono-num`}
-            />
+            <div className="flex items-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] focus-within:border-[#9333EA] focus-within:bg-white overflow-hidden transition-colors">
+              <span className="px-3 py-2.5 text-xs font-mono-num font-bold text-[#7E22CE] bg-[#FAF5FF] border-r border-[#E6D9EE] select-none shrink-0">
+                +91
+              </span>
+              <input
+                type="tel"
+                inputMode="tel"
+                required
+                value={mobile}
+                onChange={(e) => {
+                  setMobile(e.target.value);
+                  if (sameAsMobile) setWhatsapp(e.target.value);
+                }}
+                placeholder="9876543210"
+                className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] placeholder:text-[#A493B5] focus:outline-none"
+              />
+            </div>
           </div>
 
           <div>
@@ -180,14 +206,20 @@ export const NewClientView: React.FC<NewClientViewProps> = ({
                 <span>Same as mobile</span>
               </button>
             </div>
-            <input
-              type="tel"
-              value={sameAsMobile ? mobile : whatsapp}
-              disabled={sameAsMobile}
-              onChange={(e) => setWhatsapp(e.target.value)}
-              placeholder="+91 9876543210"
-              className={`${inputClass} font-mono-num disabled:opacity-70`}
-            />
+            <div className="flex items-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] focus-within:border-[#9333EA] focus-within:bg-white overflow-hidden transition-colors">
+              <span className="px-3 py-2.5 text-xs font-mono-num font-bold text-[#7E22CE] bg-[#FAF5FF] border-r border-[#E6D9EE] select-none shrink-0">
+                +91
+              </span>
+              <input
+                type="tel"
+                inputMode="tel"
+                value={sameAsMobile ? mobile : whatsapp}
+                disabled={sameAsMobile}
+                onChange={(e) => setWhatsapp(e.target.value)}
+                placeholder="9876543210"
+                className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] placeholder:text-[#A493B5] focus:outline-none disabled:opacity-70"
+              />
+            </div>
           </div>
         </div>
 

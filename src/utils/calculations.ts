@@ -10,12 +10,117 @@ import {
 
 export const CHECKOUT_UPI_ID = '9332578394-4@ibl';
 export const WHATSAPP_SUPPORT_PHONE = '919332578394';
+export const COD_DELIVERY_CHARGE_PER_ITEM = 50;
+
+export const PRODUCT_CATEGORIES = [
+  "Women's Clothing",
+  'Winter Collection',
+  "Women's Jewellery",
+  'Cosmetics & Beauty Products',
+  'Perfumes & Fragrances',
+  "Women's Innerwear",
+  'Fashion Accessories',
+] as const;
+
+export const DEFAULT_PRODUCT_CATEGORY = PRODUCT_CATEGORIES[0];
+
+export function normalizeIndianPhone(raw?: string): {
+  valid: boolean;
+  formatted: string;
+  digits10: string;
+  error?: string;
+} {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      formatted: '',
+      digits10: '',
+      error: 'Please enter a 10-digit Indian mobile number.',
+    };
+  }
+
+  let digits = trimmed.replace(/[^\d]/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    digits = digits.slice(2);
+  } else if (digits.length === 11 && digits.startsWith('0')) {
+    digits = digits.slice(1);
+  }
+
+  if (digits.length !== 10 || !/^[6-9]\d{9}$/.test(digits)) {
+    return {
+      valid: false,
+      formatted: '',
+      digits10: digits,
+      error:
+        'Please enter a valid 10-digit Indian mobile number (with or without +91).',
+    };
+  }
+
+  return {
+    valid: true,
+    formatted: `+91${digits}`,
+    digits10: digits,
+  };
+}
+
+export function formatPhoneWithPlus91(raw?: string): string {
+  const parsed = normalizeIndianPhone(raw);
+  if (parsed.valid) return parsed.formatted;
+  return String(raw || '').trim();
+}
+
+export function stripPlus91Prefix(raw?: string): string {
+  const trimmed = String(raw || '').trim();
+  if (trimmed.startsWith('+91')) {
+    return trimmed.slice(3).trim();
+  }
+  return trimmed;
+}
+
+export async function downloadImageAsset(
+  src: string,
+  filenameBase: string
+): Promise<void> {
+  if (!src) return;
+  const safeBase =
+    filenameBase.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') ||
+    'product_image';
+
+  const triggerDownload = (href: string, ext: string) => {
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = `${safeBase}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  if (src.startsWith('data:')) {
+    const mimeMatch = src.match(/^data:image\/([a-zA-Z0-9+.-]+);/i);
+    const rawExt = (mimeMatch?.[1] || 'jpg').toLowerCase();
+    const ext = rawExt === 'jpeg' ? 'jpg' : rawExt.replace('+xml', '');
+    triggerDownload(src, ext);
+    return;
+  }
+
+  const res = await fetch(src);
+  if (!res.ok) throw new Error('Could not download product image.');
+  const blob = await res.blob();
+  const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    triggerDownload(objectUrl, ext);
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+  }
+}
 
 export function buildForgotPasswordWhatsAppUrl(
   phone?: string,
   name?: string
 ): string {
-  const cleanPhone = String(phone || '').trim();
+  const cleanPhone = formatPhoneWithPlus91(phone);
   const cleanName = String(name || '').trim();
   const message = [
     'Hello Glamour Galleria Support,',
