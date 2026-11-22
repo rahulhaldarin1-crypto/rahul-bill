@@ -9,11 +9,7 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
-  Eye,
-  EyeOff,
   Image as ImageIcon,
-  LayoutDashboard,
-  Lock,
   MapPin,
   Minus,
   Plus,
@@ -36,7 +32,6 @@ import {
   Product,
   ViewPanelConfig,
 } from '../types/business';
-import { verifyAdminPasscode } from '../utils/adminAuth';
 import { api, formatApiError } from '../utils/api';
 import {
   CHECKOUT_UPI_ID,
@@ -61,8 +56,6 @@ import {
 interface StartPortalProps {
   settings?: BusinessSettings;
   products?: Product[];
-  isAdminUnlocked?: boolean;
-  onOpenAdminPanel: () => void;
   loggedInCustomer?: Client | null;
   customerOrders?: CustomerOrder[];
   customerBills?: Invoice[];
@@ -137,8 +130,6 @@ function buildProductWhatsAppUrl(
 export const StartPortal: React.FC<StartPortalProps> = ({
   settings,
   products = [],
-  isAdminUnlocked = false,
-  onOpenAdminPanel,
   loggedInCustomer = null,
   customerOrders = [],
   customerBills = [],
@@ -194,13 +185,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [orderError, setOrderError] = useState('');
   const [placedOrder, setPlacedOrder] = useState<CustomerOrder | null>(null);
-
-  // Admin Panel Password Lock Modal
-  const [showAdminLockModal, setShowAdminLockModal] = useState(false);
-  const [adminPassword, setAdminPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [verifyingPassword, setVerifyingPassword] = useState(false);
-  const [passwordError, setPasswordError] = useState('');
 
   const sym = settings?.currencySymbol || '₹';
 
@@ -318,47 +302,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       0
     );
   }, [loggedInCustomer]);
-
-  // --- Admin Lock Modal ---
-  const openPasswordPrompt = () => {
-    if (isAdminUnlocked) {
-      onOpenAdminPanel();
-      return;
-    }
-    setAdminPassword('');
-    setPasswordError('');
-    setShowPassword(false);
-    setShowAdminLockModal(true);
-  };
-
-  const closePasswordPrompt = () => {
-    setShowAdminLockModal(false);
-    setAdminPassword('');
-    setPasswordError('');
-  };
-
-  const handleUnlockAdmin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!adminPassword.trim()) {
-      setPasswordError('Please enter the admin password.');
-      return;
-    }
-
-    setVerifyingPassword(true);
-    setPasswordError('');
-    try {
-      const valid = await verifyAdminPasscode(adminPassword);
-      if (!valid) {
-        setPasswordError('Incorrect password. Please try again.');
-        return;
-      }
-      setShowAdminLockModal(false);
-      setAdminPassword('');
-      onOpenAdminPanel();
-    } finally {
-      setVerifyingPassword(false);
-    }
-  };
 
   const handleCopyCode = async (id: string, code: string) => {
     try {
@@ -782,7 +725,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         backgroundImageDataUrl={settings?.backgroundImageDataUrl}
       />
 
-      {/* Top Portal Header: Brand, Customer Account & Cart, View Panel / Admin Panel Switcher */}
+      {/* Top Portal Header: Brand, Customer Cart & Account / Sign In */}
       <header className="no-print sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-[#EFE2F5]">
         <div className="max-w-6xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4">
           <button
@@ -806,6 +749,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           </button>
 
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {portalView === 'account' && (
+              <button
+                type="button"
+                onClick={() => setPortalView('shop')}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-2.5 sm:px-3 py-1.5 text-xs font-bold text-[#4A3B59] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShoppingBag className="w-3.5 h-3.5 text-[#7E22CE]" />
+                <span className="hidden sm:inline">Shop</span>
+              </button>
+            )}
+
             {/* Cart Button */}
             <button
               type="button"
@@ -859,31 +813,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 <span>Sign In</span>
               </button>
             )}
-
-            {/* View Panel / Admin Panel Switcher */}
-            <div className="inline-flex rounded-xl bg-[#F8F3FB] p-1 border border-[#EFE2F5]">
-              <button
-                type="button"
-                onClick={() => setPortalView('shop')}
-                className={`inline-flex items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                  portalView === 'shop'
-                    ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white shadow-xs'
-                    : 'text-[#5B4B6B] hover:text-[#1F122B]'
-                }`}
-              >
-                <ShoppingBag className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">View Panel</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={openPasswordPrompt}
-                className="inline-flex items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-bold text-[#5B4B6B] hover:text-[#1F122B] hover:bg-white transition-all whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <LayoutDashboard className="w-3.5 h-3.5 text-[#7E22CE]" />
-                <span>Admin Panel</span>
-              </button>
-            </div>
           </div>
         </div>
       </header>
@@ -2074,106 +2003,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         }}
         onSuccess={handleCustomerAuthSuccess}
       />
-
-      {/* Admin Panel Password Lock Modal */}
-      {showAdminLockModal && (
-        <div
-          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="admin-lock-title"
-        >
-          <div className="w-full max-w-sm rounded-3xl border border-[#EFE2F5] bg-white p-6 shadow-2xl space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#FDF2F8] to-[#F3E8FF] border border-[#FBCFE8] flex items-center justify-center text-[#7E22CE] shrink-0">
-                  <Lock className="w-5 h-5" />
-                </div>
-                <div>
-                  <h2
-                    id="admin-lock-title"
-                    className="text-base font-bold text-[#1F122B]"
-                  >
-                    Admin Panel Locked
-                  </h2>
-                  <p className="text-xs text-[#6B5B7B] mt-0.5">
-                    Enter admin password to access dashboard.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={closePasswordPrompt}
-                aria-label="Close"
-                className="rounded-lg p-1.5 text-[#6B5B7B] hover:bg-[#F8F3FB] hover:text-[#1F122B] cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {passwordError && (
-              <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
-                {passwordError}
-              </div>
-            )}
-
-            <form onSubmit={handleUnlockAdmin} noValidate className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#4A3B59] mb-1.5">
-                  Admin Password
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    autoFocus
-                    autoComplete="current-password"
-                    value={adminPassword}
-                    onChange={(e) => {
-                      setAdminPassword(e.target.value);
-                      if (passwordError) setPasswordError('');
-                    }}
-                    placeholder="Enter admin password"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-10 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((prev) => !prev)}
-                    aria-label={
-                      showPassword ? 'Hide password' : 'Show password'
-                    }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                  >
-                    {showPassword ? (
-                      <EyeOff className="w-4 h-4" />
-                    ) : (
-                      <Eye className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={closePasswordPrompt}
-                  className="rounded-xl border border-[#E6D9EE] px-4 py-2 text-xs font-semibold text-[#4A3B59] hover:bg-[#F8F3FB] cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={verifyingPassword}
-                  className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
-                >
-                  {verifyingPassword ? 'Checking...' : 'Unlock Admin'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Storefront Notification Toast */}
       {storeNotice && (

@@ -35,7 +35,7 @@ interface ViewPanelControlViewProps {
   products: Product[];
   currencySymbol: string;
   onBack: () => void;
-  onOpenViewPanel: () => void;
+  onOpenViewPanel?: () => void;
   onSaveViewPanel: (next: ViewPanelConfig) => Promise<void>;
 }
 
@@ -409,14 +409,16 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenViewPanel}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-4 py-2 text-xs font-semibold text-[#7E22CE] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Eye className="w-3.5 h-3.5" />
-          <span>Preview View Panel</span>
-        </button>
+        {onOpenViewPanel && (
+          <button
+            type="button"
+            onClick={onOpenViewPanel}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-4 py-2 text-xs font-semibold text-[#7E22CE] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            <span>Preview View Panel</span>
+          </button>
+        )}
       </div>
 
       {error && (

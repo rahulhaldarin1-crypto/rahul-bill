@@ -8,6 +8,7 @@ import {
   ShoppingBag,
   Users,
 } from 'lucide-react';
+import { AdminLockView } from './components/AdminLockView';
 import { AppBackground } from './components/AppBackground';
 import { BrandLogo } from './components/BrandLogo';
 import { ClientBillView } from './components/ClientBillView';
@@ -41,6 +42,7 @@ import {
   setAdminUnlockedStored,
   setCustomerSessionId,
 } from './utils/adminAuth';
+import { isAdminOnlyAppMode } from './utils/appMode';
 import { api } from './utils/api';
 import {
   createEmptyWorkspace,
@@ -54,11 +56,13 @@ interface HistoryEntry {
 }
 
 export default function App() {
+  const adminOnlyMode = isAdminOnlyAppMode();
   const [loading, setLoading] = useState(true);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceData>(createEmptyWorkspace);
-  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() => isAdminUnlockedStored());
-  const [showViewPanel, setShowViewPanel] = useState<boolean>(() => !isAdminUnlockedStored());
+  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() =>
+    adminOnlyMode ? isAdminUnlockedStored() : false
+  );
   const [customerSessionId, setCustomerSessionIdState] = useState<string | null>(() =>
     getCustomerSessionId()
   );
@@ -433,7 +437,6 @@ export default function App() {
   const handleUnlockAdmin = () => {
     setAdminUnlockedStored(true);
     setAdminUnlocked(true);
-    setShowViewPanel(false);
     setRoute('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -441,7 +444,6 @@ export default function App() {
   const handleLockAdmin = () => {
     setAdminUnlockedStored(false);
     setAdminUnlocked(false);
-    setShowViewPanel(true);
     setRoute('dashboard');
     showToast('Admin Panel locked.');
   };
@@ -539,13 +541,11 @@ export default function App() {
     );
   }
 
-  if (showViewPanel || !adminUnlocked) {
+  if (!adminOnlyMode) {
     return (
       <StartPortal
         settings={workspace.settings}
         products={workspace.products}
-        isAdminUnlocked={adminUnlocked}
-        onOpenAdminPanel={handleUnlockAdmin}
         loggedInCustomer={sanitizedLoggedInCustomer}
         customerOrders={customerOrders}
         customerBills={customerBills}
@@ -553,6 +553,22 @@ export default function App() {
         onCustomerLogout={handleCustomerLogout}
         onCustomerUpdated={upsertWorkspaceClient}
       />
+    );
+  }
+
+  if (!adminUnlocked) {
+    return (
+      <>
+        <AdminLockView
+          settings={workspace.settings}
+          onUnlock={handleUnlockAdmin}
+        />
+        {toast && (
+          <div className="no-print fixed bottom-5 right-4 z-50 rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
+            {toast}
+          </div>
+        )}
+      </>
     );
   }
 
@@ -615,13 +631,6 @@ export default function App() {
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => setShowViewPanel(true)}
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <span>View Panel</span>
-            </button>
-            <button
-              type="button"
               onClick={handleLockAdmin}
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-2.5 sm:px-3 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
@@ -646,7 +655,6 @@ export default function App() {
           <DashboardView
             workspace={workspace}
             onNavigate={(nextRoute) => navigateTo(nextRoute)}
-            onOpenViewPanel={() => setShowViewPanel(true)}
           />
         )}
 
@@ -763,7 +771,6 @@ export default function App() {
             products={workspace.products}
             currencySymbol={currencySymbol}
             onBack={goBack}
-            onOpenViewPanel={() => setShowViewPanel(true)}
             onSaveViewPanel={handleSaveViewPanel}
           />
         )}

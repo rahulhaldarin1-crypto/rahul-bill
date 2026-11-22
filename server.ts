@@ -807,8 +807,25 @@ async function startServer(): Promise<void> {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(DIST_DIR));
+    app.use(express.static(DIST_DIR, { index: false }));
     app.get('*', (_req: Request, res: Response) => {
+      const runtimeAppMode = (
+        process.env.APP_MODE ||
+        process.env.VITE_APP_MODE ||
+        ''
+      )
+        .trim()
+        .toLowerCase();
+      if (runtimeAppMode === 'admin' || runtimeAppMode === 'customer') {
+        const html = fs.readFileSync(DIST_INDEX, 'utf8');
+        const injected = html.replace(
+          '</head>',
+          `<script>window.__APP_MODE__=${JSON.stringify(runtimeAppMode)};</script></head>`
+        );
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(injected);
+        return;
+      }
       res.sendFile(DIST_INDEX);
     });
   }
