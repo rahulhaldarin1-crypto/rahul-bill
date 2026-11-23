@@ -13,8 +13,10 @@ import {
   Tag,
   Trash2,
   Upload,
+  Video,
 } from 'lucide-react';
 import {
+  CloudinaryMediaRecord,
   Product,
   ViewPanelConfig,
   ViewPanelDiscountOffer,
@@ -25,8 +27,12 @@ import {
   DEFAULT_VIEW_PANEL_CONFIG,
   formatCurrency,
   PRODUCT_CATEGORIES,
-  resizeImageFileToDataUrl,
 } from '../utils/calculations';
+import {
+  getOptimizedMediaUrl,
+  isVideoUrl,
+  uploadMediaToCloudinary,
+} from '../utils/cloudinary';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
 
@@ -60,7 +66,10 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     viewPanel || DEFAULT_VIEW_PANEL_CONFIG
   );
   const [busy, setBusy] = useState(false);
-  const [uploadingImage, setUploadingImage] = useState<'ad' | 'item' | null>(null);
+  const [uploadingImage, setUploadingImage] = useState<
+    'ad' | 'item' | 'item-video' | null
+  >(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -83,6 +92,8 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
   const [itemSize, setItemSize] = useState('');
   const [itemColor, setItemColor] = useState('');
   const [itemImage, setItemImage] = useState('');
+  const [itemVideoUrl, setItemVideoUrl] = useState('');
+  const [itemMediaRecords, setItemMediaRecords] = useState<CloudinaryMediaRecord[]>([]);
   const [itemDescription, setItemDescription] = useState('');
   const [itemHighlighted, setItemHighlighted] = useState(false);
   const [deleteItemTarget, setDeleteItemTarget] =
@@ -124,26 +135,43 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     if (!file) return;
     setError('');
     setUploadingImage('ad');
+    setUploadProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 1200, {
-        quality: 0.78,
-        preserveTransparency: false,
-        maxDataUrlLength: 240_000,
-        maxFileBytes: false,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'admin',
+        appSource: 'ggadminpanel',
+        folder: 'ggadminpanel/admin/advertisements',
+        relatedEntityType: 'advertisement',
+        relatedEntityId: 'top_banner',
+        uploadedByUid: 'admin',
+        allowedTypes: ['image', 'video'],
+        onProgress: (pct) => setUploadProgress(pct),
       });
+      const isVid = record.resourceType === 'video';
       const next: ViewPanelConfig = {
         ...draft,
         advertisement: {
           ...draft.advertisement,
           enabled: true,
-          imageDataUrl: dataUrl,
+          mediaType: record.resourceType,
+          imageDataUrl: isVid ? '' : record.secureUrl,
+          videoUrl: isVid ? record.secureUrl : '',
+          mediaRecord: record,
         },
       };
-      await persistConfig(next, 'Advertisement banner uploaded & synced.');
+      await persistConfig(
+        next,
+        `Advertisement ${isVid ? 'video' : 'banner'} uploaded to Cloudinary & synced.`
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid advertisement image.');
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Invalid advertisement image or video file.'
+      );
     } finally {
       setUploadingImage(null);
+      setUploadProgress(null);
     }
   };
 
@@ -153,9 +181,12 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
       advertisement: {
         ...draft.advertisement,
         imageDataUrl: '',
+        videoUrl: '',
+        mediaType: undefined,
+        mediaRecord: undefined,
       },
     };
-    await persistConfig(next, 'Advertisement image removed.');
+    await persistConfig(next, 'Advertisement media removed.');
   };
 
   const handleToggleAdEnabled = async () => {
@@ -276,6 +307,8 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     setItemSize('');
     setItemColor('');
     setItemImage('');
+    setItemVideoUrl('');
+    setItemMediaRecords([]);
     setItemDescription('');
     setItemHighlighted(false);
   };
@@ -288,17 +321,55 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     if (!file) return;
     setError('');
     setUploadingImage('item');
+    setUploadProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 400, {
-        quality: 0.76,
-        preserveTransparency: false,
-        maxDataUrlLength: 48_000,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'admin',
+        appSource: 'ggadminpanel',
+        folder: 'ggadminpanel/admin/featured-items',
+        relatedEntityType: 'featured_item',
+        relatedEntityId: editingItemId || undefined,
+        uploadedByUid: 'admin',
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadProgress(pct),
       });
-      setItemImage(dataUrl);
+      setItemImage(record.secureUrl);
+      setItemMediaRecords((prev) => [...prev, record]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid product image.');
     } finally {
       setUploadingImage(null);
+      setUploadProgress(null);
+    }
+  };
+
+  const handleShoppingVideoUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+    setUploadingImage('item-video');
+    setUploadProgress(1);
+    try {
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'admin',
+        appSource: 'ggadminpanel',
+        folder: 'ggadminpanel/admin/featured-items',
+        relatedEntityType: 'featured_item',
+        relatedEntityId: editingItemId || undefined,
+        uploadedByUid: 'admin',
+        allowedTypes: ['video'],
+        onProgress: (pct) => setUploadProgress(pct),
+      });
+      setItemVideoUrl(record.secureUrl);
+      setItemMediaRecords((prev) => [...prev, record]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid product video.');
+    } finally {
+      setUploadingImage(null);
+      setUploadProgress(null);
     }
   };
 
@@ -323,6 +394,8 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
       size: itemSize.trim(),
       color: itemColor.trim(),
       imageDataUrl: itemImage,
+      videoUrl: itemVideoUrl.trim(),
+      mediaRecords: itemMediaRecords,
       description: itemDescription.trim(),
       highlighted: itemHighlighted,
     };
@@ -359,6 +432,8 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     setItemSize(item.size || '');
     setItemColor(item.color || '');
     setItemImage(item.imageDataUrl || '');
+    setItemVideoUrl(item.videoUrl || '');
+    setItemMediaRecords(Array.isArray(item.mediaRecords) ? item.mediaRecords : []);
     setItemDescription(item.description || '');
     setItemHighlighted(Boolean(item.highlighted));
     setError('');
@@ -508,28 +583,28 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
             </button>
           </div>
 
-          {/* Banner Upload & Preview */}
+          {/* Banner Upload & Preview (Image or Video via Cloudinary) */}
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2.5">
               <label className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2.5 text-xs font-semibold text-white hover:opacity-95 cursor-pointer whitespace-nowrap">
                 <Upload className="w-3.5 h-3.5" />
                 <span>
                   {uploadingImage === 'ad'
-                    ? 'Compressing & Uploading...'
-                    : draft.advertisement.imageDataUrl
-                      ? 'Replace Banner Image'
-                      : 'Upload Advertisement Image'}
+                    ? `Uploading${uploadProgress !== null ? ` ${uploadProgress}%` : ''}...`
+                    : draft.advertisement.videoUrl || draft.advertisement.imageDataUrl
+                      ? 'Replace Banner Image / Video'
+                      : 'Upload Banner Image or Video'}
                 </span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   disabled={uploadingImage !== null || busy}
                   onChange={handleAdImageUpload}
                   className="sr-only"
                 />
               </label>
 
-              {draft.advertisement.imageDataUrl && (
+              {(draft.advertisement.videoUrl || draft.advertisement.imageDataUrl) && (
                 <button
                   type="button"
                   disabled={busy || uploadingImage !== null}
@@ -537,21 +612,38 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                   className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer whitespace-nowrap disabled:opacity-60"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove Image</span>
+                  <span>Remove Media</span>
                 </button>
               )}
             </div>
 
-            {draft.advertisement.imageDataUrl ? (
+            {draft.advertisement.videoUrl || draft.advertisement.imageDataUrl ? (
               <div className="rounded-2xl overflow-hidden border border-[#E6D9EE] bg-[#FDF8FC] relative">
-                <img
-                  src={draft.advertisement.imageDataUrl}
-                  alt={draft.advertisement.title || 'Advertisement banner preview'}
-                  referrerPolicy="no-referrer"
-                  className="w-full max-h-[280px] object-cover"
-                />
+                {isVideoUrl(
+                  draft.advertisement.videoUrl || draft.advertisement.imageDataUrl,
+                  draft.advertisement.mediaType
+                ) ? (
+                  <video
+                    src={getOptimizedMediaUrl(
+                      draft.advertisement.videoUrl || draft.advertisement.imageDataUrl,
+                      'video'
+                    )}
+                    controls
+                    muted
+                    playsInline
+                    preload="metadata"
+                    className="w-full max-h-[280px] object-cover bg-black"
+                  />
+                ) : (
+                  <img
+                    src={getOptimizedMediaUrl(draft.advertisement.imageDataUrl, 'image')}
+                    alt={draft.advertisement.title || 'Advertisement banner preview'}
+                    referrerPolicy="no-referrer"
+                    className="w-full max-h-[280px] object-cover"
+                  />
+                )}
                 {(draft.advertisement.title || draft.advertisement.subtitle) && (
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/40 to-transparent p-4 text-white">
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/40 to-transparent p-4 text-white">
                     {draft.advertisement.title && (
                       <div className="text-base font-bold">
                         {draft.advertisement.title}
@@ -569,10 +661,10 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
               <div className="rounded-2xl border border-dashed border-[#D8B4FE] bg-[#FDF9FE] py-10 px-4 text-center space-y-2">
                 <ImageIcon className="w-8 h-8 text-[#C084FC] mx-auto" />
                 <div className="text-xs font-semibold text-[#4A3B59]">
-                  No advertisement banner image uploaded yet
+                  No advertisement image or video uploaded yet
                 </div>
                 <p className="text-[11px] text-[#6B5B7B] max-w-md mx-auto">
-                  Upload a wide promotional banner (16:9 or 3:1 works best). Images are automatically compressed so Firestore syncs quickly across all devices.
+                  Upload a wide promotional image or video (16:9 or 3:1 works best). Media is hosted on Cloudinary and synced live across devices.
                 </p>
               </div>
             )}
@@ -1026,43 +1118,86 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                 {editingItemId ? 'Edit Featured Shopping Item' : 'Add Featured Shopping Item'}
               </h3>
 
-              <div className="flex items-center gap-3.5">
-                <div className="w-16 h-16 rounded-xl border border-[#EFE2F5] bg-[#FDF8FC] flex items-center justify-center overflow-hidden shrink-0">
-                  {itemImage ? (
-                    <img
-                      src={itemImage}
-                      alt={itemName || 'Shopping item'}
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <Package className="w-6 h-6 text-[#C084FC]" />
-                  )}
+              <div className="space-y-2.5">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-16 h-16 rounded-xl border border-[#EFE2F5] bg-[#FDF8FC] flex items-center justify-center overflow-hidden shrink-0">
+                    {itemImage ? (
+                      <img
+                        src={getOptimizedMediaUrl(itemImage, 'image')}
+                        alt={itemName || 'Shopping item'}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <Package className="w-6 h-6 text-[#C084FC]" />
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer whitespace-nowrap">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>
+                        {uploadingImage === 'item'
+                          ? `Uploading${uploadProgress !== null ? ` ${uploadProgress}%` : ''}...`
+                          : 'Upload Photo'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={uploadingImage !== null}
+                        onChange={handleShoppingImageUpload}
+                        className="sr-only"
+                      />
+                    </label>
+                    {itemImage && (
+                      <button
+                        type="button"
+                        onClick={() => setItemImage('')}
+                        className="text-xs font-semibold text-[#BE123C] cursor-pointer"
+                      >
+                        Remove
+                      </button>
+                    )}
+
+                    <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer whitespace-nowrap">
+                      <Video className="w-3.5 h-3.5" />
+                      <span>
+                        {uploadingImage === 'item-video'
+                          ? `Uploading Video${uploadProgress !== null ? ` ${uploadProgress}%` : ''}...`
+                          : itemVideoUrl
+                            ? 'Replace Video'
+                            : 'Add Video (Opt.)'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="video/*"
+                        disabled={uploadingImage !== null}
+                        onChange={handleShoppingVideoUpload}
+                        className="sr-only"
+                      />
+                    </label>
+                    {itemVideoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setItemVideoUrl('')}
+                        className="text-xs font-semibold text-[#BE123C] cursor-pointer"
+                      >
+                        Remove Video
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer whitespace-nowrap">
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>
-                      {uploadingImage === 'item' ? 'Loading...' : 'Upload Photo'}
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      disabled={uploadingImage !== null}
-                      onChange={handleShoppingImageUpload}
-                      className="sr-only"
+
+                {itemVideoUrl && (
+                  <div className="rounded-xl border border-[#E6D9EE] bg-black overflow-hidden">
+                    <video
+                      src={getOptimizedMediaUrl(itemVideoUrl, 'video')}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className="w-full max-h-36 object-contain"
                     />
-                  </label>
-                  {itemImage && (
-                    <button
-                      type="button"
-                      onClick={() => setItemImage('')}
-                      className="text-xs font-semibold text-[#BE123C] cursor-pointer"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1209,16 +1344,21 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                       key={item.id}
                       className="rounded-xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 flex items-start gap-3"
                     >
-                      <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-white overflow-hidden flex items-center justify-center shrink-0">
+                      <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-white overflow-hidden flex items-center justify-center shrink-0 relative">
                         {item.imageDataUrl ? (
                           <img
-                            src={item.imageDataUrl}
+                            src={getOptimizedMediaUrl(item.imageDataUrl, 'image')}
                             alt={item.name}
                             referrerPolicy="no-referrer"
                             className="w-full h-full object-cover"
                           />
                         ) : (
                           <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                        )}
+                        {item.videoUrl && (
+                          <span className="absolute bottom-0.5 right-0.5 rounded bg-[#7E22CE] p-0.5 text-white" title="Includes video">
+                            <Video className="w-2.5 h-2.5" />
+                          </span>
                         )}
                       </div>
                       <div className="min-w-0 flex-1 space-y-0.5">

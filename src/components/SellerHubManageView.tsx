@@ -24,6 +24,7 @@ import {
   Star,
   Store,
   Trash2,
+  Video,
   X,
   XCircle,
 } from 'lucide-react';
@@ -48,6 +49,7 @@ import {
   formatCurrency,
   validateAdultDateOfBirth,
 } from '../utils/calculations';
+import { getOptimizedMediaUrl } from '../utils/cloudinary';
 import { decryptRunningPassword } from '../utils/adminAuth';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
@@ -486,11 +488,16 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
           name: editName.trim(),
           imageDataUrl: existingGallery[0] || editingProduct.imageDataUrl || '',
           imageDataUrls: existingGallery,
+          ...(editingProduct.videoUrl ? { videoUrl: editingProduct.videoUrl } : {}),
+          ...(editingProduct.mediaRecords ? { mediaRecords: editingProduct.mediaRecords } : {}),
           category: editCategory,
           purchasePrice: Number(editPurchasePrice) || 0,
           sellingPrice: selling,
           originalPrice: Number(editOriginalPrice) || 0,
           highlighted: Boolean(editingProduct.highlighted),
+          highlightExpiresAt: editingProduct.highlightExpiresAt,
+          highlightPlacement: editingProduct.highlightPlacement,
+          highlightPlanTitle: editingProduct.highlightPlanTitle,
           stockQty: Math.max(0, Math.floor(Number(editStockQty) || 0)),
           lowStockAlert: editingProduct.lowStockAlert || defaultLowStock || 5,
           size: editSize.trim(),
@@ -500,6 +507,13 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
           sellerName: editingProduct.sellerName,
           sellerPhone: editingProduct.sellerPhone,
           sellerApprovalStatus: editApprovalStatus,
+          sellerPaymentUpiId: editingProduct.sellerPaymentUpiId,
+          sellerPaymentBankAccountName:
+            editingProduct.sellerPaymentBankAccountName,
+          sellerPaymentBankName: editingProduct.sellerPaymentBankName,
+          sellerPaymentBankAccountNo: editingProduct.sellerPaymentBankAccountNo,
+          sellerPaymentBankIfscBranch: editingProduct.sellerPaymentBankIfscBranch,
+          sellerPaymentQrDataUrl: editingProduct.sellerPaymentQrDataUrl,
         },
         editingProduct.id
       );
@@ -622,7 +636,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
           <div>
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B] flex items-center gap-2">
               <Store className="w-6 h-6 text-[#DB2777]" />
-              <span>Seller Hub Manage (সেলার হাব ম্যানেজ)</span>
+              <span>Seller Hub Manage</span>
             </h1>
             <p className="text-xs text-[#6B5B7B] mt-0.5">
               Inspect KYC &amp; bank payout documents, approve or suspend seller accounts, and approve seller-listed products.
@@ -855,7 +869,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                       >
                         {app.sellerPhotoDataUrl ? (
                           <img
-                            src={app.sellerPhotoDataUrl}
+                            src={getOptimizedMediaUrl(app.sellerPhotoDataUrl, 'image')}
                             alt={app.name}
                             referrerPolicy="no-referrer"
                             className="w-full h-full object-cover"
@@ -942,10 +956,41 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                       </div>
                     </div>
                     <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3">
-                      <div className="text-[#6B5B7B]">Bank / Payout Details</div>
+                      <div className="text-[#6B5B7B]">Bank / Payout &amp; Store Payment</div>
                       <div className="font-medium text-[#1F122B] mt-0.5 whitespace-pre-wrap break-words">
                         {app.bankAccountDetails || 'See uploaded bank doc'}
                       </div>
+                      {(app.sellerUpiId ||
+                        app.sellerBankAccountNo ||
+                        app.sellerBankName) && (
+                        <div className="mt-1.5 pt-1.5 border-t border-[#EFE2F5] text-[11px] font-mono-num text-[#6D28D9] space-y-0.5">
+                          {app.sellerUpiId && <div>UPI: {app.sellerUpiId}</div>}
+                          {(app.sellerBankName || app.sellerBankAccountNo) && (
+                            <div className="text-[#4A3B59]">
+                              {[app.sellerBankName, app.sellerBankAccountNo]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {app.sellerQrDataUrl && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDocPreview({
+                              title: 'Seller Payment QR Code',
+                              subtitle: `${app.name} (${app.phone})`,
+                              src: app.sellerQrDataUrl!,
+                              filename: `${app.name}_payment_qr`,
+                            })
+                          }
+                          className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-[#D8B4FE] bg-white px-2 py-0.5 text-[10px] font-bold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>View Seller QR</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -974,7 +1019,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                             className="aspect-[4/3] bg-white overflow-hidden relative group cursor-pointer"
                           >
                             <img
-                              src={docItem.src}
+                              src={getOptimizedMediaUrl(docItem.src, 'image')}
                               alt={`${app.name} ${docItem.label}`}
                               referrerPolicy="no-referrer"
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform"
@@ -1058,7 +1103,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                           <div className="rounded-lg border border-[#E6D9EE] bg-white px-3 py-2 flex items-center justify-between gap-2">
                             <div className="min-w-0">
                               <div className="text-[11px] text-[#6B5B7B]">
-                                রানিং পাসওয়ার্ড
+                                Running Password
                               </div>
                               <div className="font-mono-num font-bold text-[#1F122B] mt-0.5 truncate">
                                 {runningPassword
@@ -1225,7 +1270,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                       <div className="aspect-[4/3] bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
                         {mainImg ? (
                           <img
-                            src={mainImg}
+                            src={getOptimizedMediaUrl(mainImg, 'image')}
                             alt={prod.name}
                             referrerPolicy="no-referrer"
                             className="w-full h-full object-cover"
@@ -1238,10 +1283,20 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                         >
                           {prodBadge.label}
                         </span>
-                        {gallery.length > 1 && (
-                          <span className="absolute bottom-2 right-2 rounded-md bg-black/65 px-2 py-0.5 text-[10px] font-semibold text-white font-mono-num">
-                            {gallery.length} photos
-                          </span>
+                        {(gallery.length > 1 || prod.videoUrl) && (
+                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                            {prod.videoUrl && (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-black/70 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                <Video className="w-3 h-3" />
+                                <span>Video</span>
+                              </span>
+                            )}
+                            {gallery.length > 1 && (
+                              <span className="rounded-md bg-black/65 px-2 py-0.5 text-[10px] font-semibold text-white font-mono-num">
+                                {gallery.length} photos
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
 
@@ -1380,10 +1435,10 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
               <div>
                 <h2 className="font-display-serif text-lg font-bold text-[#1F122B] flex items-center gap-2">
                   <Sparkles className="w-5 h-5 text-[#DB2777]" />
-                  <span>Highlight Settings, UPI &amp; Offer Seats (অফার সিট)</span>
+                  <span>Highlight Settings, UPI &amp; Offer Seats</span>
                 </h2>
                 <p className="text-xs text-[#6B5B7B] mt-0.5">
-                  Configure Admin UPI ID for highlight payments, placement rule on Storefront, standard plans, and limited Offer Seats.
+                  Configure Admin UPI ID for highlight payments (syncs live with Settings &rarr; Payment System), placement rule on Storefront, standard plans, and limited Offer Seats.
                 </p>
               </div>
               <button
@@ -1445,7 +1500,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-xs font-bold text-[#1F122B]">
-                    Highlight Offer Seats (দিন ও টাকা সেট করা অফার সিট)
+                    Highlight Offer Seats (Custom Days, Price &amp; Seat Limits)
                   </div>
                   <div className="text-[11px] text-[#6B5B7B]">
                     Create discounted highlight slots with limited seat counts visible in Seller Hub.
@@ -1763,7 +1818,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                           <div className="w-14 h-14 rounded-xl border border-[#EFE2F5] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
                             {req.productImageDataUrl ? (
                               <img
-                                src={req.productImageDataUrl}
+                                src={getOptimizedMediaUrl(req.productImageDataUrl, 'image')}
                                 alt={req.productName}
                                 referrerPolicy="no-referrer"
                                 className="w-full h-full object-cover"
@@ -1933,7 +1988,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
             </div>
             <div className="p-4 bg-[#FDFBFE] flex items-center justify-center max-h-[75vh] overflow-auto">
               <img
-                src={docPreview.src}
+                src={getOptimizedMediaUrl(docPreview.src, 'image')}
                 alt={docPreview.title}
                 referrerPolicy="no-referrer"
                 className="max-w-full max-h-[65vh] rounded-xl border border-[#E6D9EE] object-contain"

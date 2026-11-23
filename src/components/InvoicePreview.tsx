@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { InvoiceData, StoreSettings } from '../types/invoice';
 import { calculateTotals, formatMoney, getItemAmount } from '../utils/invoiceHelpers';
+import { getMediaCrossOrigin, getOptimizedMediaUrl } from '../utils/cloudinary';
 import { GoldCrestLogo } from './GoldCrestLogo';
 
 interface InvoicePreviewProps {
@@ -745,8 +746,9 @@ export const InvoicePreview: React.FC<InvoicePreviewProps> = ({
                 <span style={{ fontWeight: 700, color: '#F5EFE4' }}>QR code: </span>
                 {qrToDisplay ? (
                   <img
-                    src={qrToDisplay}
+                    src={getOptimizedMediaUrl(qrToDisplay, 'image')}
                     alt="UPI Payment QR"
+                    crossOrigin={getMediaCrossOrigin(qrToDisplay)}
                     referrerPolicy="no-referrer"
                     style={{
                       width: '44px',

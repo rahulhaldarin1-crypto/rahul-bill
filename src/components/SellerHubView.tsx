@@ -5,6 +5,7 @@ import {
   BadgeCheck,
   Building2,
   Calendar,
+  Camera,
   Check,
   CheckCircle2,
   Clock,
@@ -19,48 +20,64 @@ import {
   LogIn,
   LogOut,
   Mail,
+  MessageSquare,
   Package,
   Phone,
+  QrCode,
+  Save,
   ShieldAlert,
   Sparkles,
   Star,
   Store,
+  Trash2,
   Upload,
   UserCheck,
+  Users,
   X,
 } from 'lucide-react';
 import {
+  AdminPaymentSettings,
   BusinessSettings,
   Client,
   HighlightRequest,
   Product,
+  ProductReview,
   SellerApplication,
+  SellerFollowRecord,
 } from '../types/business';
 import { getSellerSessionId, setSellerSessionId } from '../utils/adminAuth';
 import { api, formatApiError } from '../utils/api';
 import {
+  buildUpiDeepLink,
   DEFAULT_HIGHLIGHT_CONFIG,
   HIGHLIGHT_UPI_ID,
   formatCurrency,
   getMaxAdultDobIso,
   isProductHighlightActive,
-  resizeImageFileToDataUrl,
+  mergeAdminPaymentSettings,
   stripPlus91Prefix,
   validateAdultDateOfBirth,
-  validateImageFileUnder300KB,
+  validateGmailAddress,
 } from '../utils/calculations';
+import {
+  getOptimizedMediaUrl,
+  uploadMediaToCloudinary,
+} from '../utils/cloudinary';
+import { EmailOtpBox } from './EmailOtpBox';
 import { ProductsView } from './ProductsView';
 
 interface SellerHubViewProps {
   loggedInCustomer: Client | null;
   products: Product[];
   settings?: BusinessSettings;
+  paymentSettings?: AdminPaymentSettings;
   highlightSeatUsage?: Record<string, number>;
+  sellerFollows?: SellerFollowRecord[];
+  productReviews?: ProductReview[];
   currencySymbol: string;
   defaultLowStock: number;
   onBackToShop: () => void;
   onOpenHelpCenter: () => void;
-  onRequestSignIn: () => void;
   onSaveProduct: (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
     existingId?: string,
@@ -72,6 +89,7 @@ interface SellerHubViewProps {
 
 type DocFieldKey =
   | 'sellerPhoto'
+  | 'sellerCoverPhoto'
   | 'panDoc'
   | 'aadhaarDoc'
   | 'gstDoc'
@@ -81,12 +99,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   loggedInCustomer,
   products,
   settings,
+  paymentSettings,
   highlightSeatUsage = {},
+  sellerFollows = [],
+  productReviews = [],
   currencySymbol,
   defaultLowStock,
   onBackToShop,
   onOpenHelpCenter,
-  onRequestSignIn,
   onSaveProduct,
   onDeleteProduct,
   onApplicationSubmitted,
@@ -103,6 +123,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [loginForgotMode, setLoginForgotMode] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotOtpId, setForgotOtpId] = useState('');
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotSuccessMsg, setForgotSuccessMsg] = useState('');
 
   // Authenticated Seller (supports pending, rejected, suspended, approved privately)
   const [loggedInSeller, setLoggedInSeller] =
@@ -111,6 +139,31 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     Boolean(getSellerSessionId())
   );
   const [editingRejected, setEditingRejected] = useState(false);
+
+  // Editable Seller Store Profile (Name, Profile Photo, Cover Photo)
+  const [storeProfileOpen, setStoreProfileOpen] = useState(false);
+  const [editSellerName, setEditSellerName] = useState('');
+  const [editSellerPhoto, setEditSellerPhoto] = useState('');
+  const [editSellerCover, setEditSellerCover] = useState('');
+  const [uploadingStoreImg, setUploadingStoreImg] = useState<'photo' | 'cover' | null>(null);
+  const [uploadStoreImgProgress, setUploadStoreImgProgress] = useState<number | null>(null);
+  const [savingStoreProfile, setSavingStoreProfile] = useState(false);
+  const [storeProfileError, setStoreProfileError] = useState('');
+  const [storeProfileNotice, setStoreProfileNotice] = useState('');
+
+  // Seller Account-Level Payment System (for approved seller payouts / direct customer orders)
+  const [sellerPaymentOpen, setSellerPaymentOpen] = useState(false);
+  const [sellerUpiId, setSellerUpiId] = useState('');
+  const [sellerBankAccountName, setSellerBankAccountName] = useState('');
+  const [sellerBankName, setSellerBankName] = useState('');
+  const [sellerBankAccountNo, setSellerBankAccountNo] = useState('');
+  const [sellerBankIfscBranch, setSellerBankIfscBranch] = useState('');
+  const [sellerQrDataUrl, setSellerQrDataUrl] = useState('');
+  const [uploadingSellerQr, setUploadingSellerQr] = useState(false);
+  const [uploadSellerQrProgress, setUploadSellerQrProgress] = useState<number | null>(null);
+  const [savingSellerPayment, setSavingSellerPayment] = useState(false);
+  const [sellerPaymentError, setSellerPaymentError] = useState('');
+  const [sellerPaymentNotice, setSellerPaymentNotice] = useState('');
 
   // Paid Highlight Requests (for logged-in approved seller)
   const [highlightRequests, setHighlightRequests] = useState<HighlightRequest[]>(
@@ -125,6 +178,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [highlightTxRef, setHighlightTxRef] = useState('');
   const [highlightScreenshot, setHighlightScreenshot] = useState('');
   const [uploadingHighlightShot, setUploadingHighlightShot] = useState(false);
+  const [uploadHighlightShotProgress, setUploadHighlightShotProgress] = useState<number | null>(null);
   const [submittingHighlight, setSubmittingHighlight] = useState(false);
   const [highlightError, setHighlightError] = useState('');
   const [highlightNotice, setHighlightNotice] = useState('');
@@ -133,6 +187,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   // Registration Form State
   const [name, setName] = useState(() => loggedInCustomer?.name || '');
   const [email, setEmail] = useState('');
+  const [sellerRegOtpId, setSellerRegOtpId] = useState('');
   const [dateOfBirth, setDateOfBirth] = useState('');
   const [fullAddress, setFullAddress] = useState(() => {
     if (!loggedInCustomer) return '';
@@ -156,6 +211,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [bankAccountDetails, setBankAccountDetails] = useState('');
 
   const [sellerPhotoDataUrl, setSellerPhotoDataUrl] = useState('');
+  const [sellerCoverPhotoDataUrl, setSellerCoverPhotoDataUrl] = useState('');
   const [panDocDataUrl, setPanDocDataUrl] = useState('');
   const [aadhaarDocDataUrl, setAadhaarDocDataUrl] = useState('');
   const [gstDocDataUrl, setGstDocDataUrl] = useState('');
@@ -164,6 +220,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [uploadingField, setUploadingField] = useState<DocFieldKey | null>(
     null
   );
+  const [uploadDocProgress, setUploadDocProgress] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -228,10 +285,53 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     return () => unsub();
   }, [loggedInSeller?.id, loggedInSeller?.status]);
 
+  // Sync Seller Account Payment System & Store Profile fields when seller record updates
+  useEffect(() => {
+    if (!loggedInSeller) return;
+    setEditSellerName(loggedInSeller.name || '');
+    setEditSellerPhoto(loggedInSeller.sellerPhotoDataUrl || '');
+    setEditSellerCover(loggedInSeller.sellerCoverPhotoDataUrl || '');
+    setSellerUpiId(loggedInSeller.sellerUpiId || '');
+    setSellerBankAccountName(loggedInSeller.sellerBankAccountName || '');
+    setSellerBankName(loggedInSeller.sellerBankName || '');
+    setSellerBankAccountNo(loggedInSeller.sellerBankAccountNo || '');
+    setSellerBankIfscBranch(loggedInSeller.sellerBankIfscBranch || '');
+    setSellerQrDataUrl(loggedInSeller.sellerQrDataUrl || '');
+  }, [
+    loggedInSeller?.id,
+    loggedInSeller?.name,
+    loggedInSeller?.sellerPhotoDataUrl,
+    loggedInSeller?.sellerCoverPhotoDataUrl,
+    loggedInSeller?.sellerUpiId,
+    loggedInSeller?.sellerBankAccountName,
+    loggedInSeller?.sellerBankName,
+    loggedInSeller?.sellerBankAccountNo,
+    loggedInSeller?.sellerBankIfscBranch,
+    loggedInSeller?.sellerQrDataUrl,
+  ]);
+
   const sellerProducts = useMemo(() => {
     if (!loggedInSeller) return [];
     return products.filter((p) => p.sellerId === loggedInSeller.id);
   }, [products, loggedInSeller]);
+
+  const liveFollowersCount = useMemo(() => {
+    if (!loggedInSeller) return 0;
+    const fromFollows = sellerFollows.filter(
+      (f) => f.sellerId === loggedInSeller.id
+    ).length;
+    return Math.max(Number(loggedInSeller.followersCount) || 0, fromFollows);
+  }, [loggedInSeller, sellerFollows]);
+
+  const sellerProductReviews = useMemo(() => {
+    if (!loggedInSeller) return [];
+    const prodIdSet = new Set(sellerProducts.map((p) => p.id));
+    return productReviews.filter(
+      (r) =>
+        (r.sellerId && r.sellerId === loggedInSeller.id) ||
+        prodIdSet.has(r.productId)
+    );
+  }, [loggedInSeller, sellerProducts, productReviews]);
 
   const pendingHighlightProductIds = useMemo(() => {
     const set = new Set<string>();
@@ -258,8 +358,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     [highlightConfig.plans]
   );
 
+  const adminLivePayment = useMemo(
+    () => mergeAdminPaymentSettings(paymentSettings, settings),
+    [paymentSettings, settings]
+  );
+
   const activeHighlightUpi =
-    (highlightConfig.upiId || '').trim() || HIGHLIGHT_UPI_ID;
+    (paymentSettings?.upiId || highlightConfig.upiId || adminLivePayment.upiId || '').trim() ||
+    HIGHLIGHT_UPI_ID;
 
   const selectedHighlightItem = useMemo(() => {
     if (selectedChoiceType === 'offer_seat') {
@@ -290,6 +396,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const handleSellerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    setForgotSuccessMsg('');
     setSuccessMsg('');
     setLoginBusy(true);
     try {
@@ -305,6 +412,54 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       );
     } finally {
       setLoginBusy(false);
+    }
+  };
+
+  const handleSellerForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    setForgotSuccessMsg('');
+
+    const gmailCheck = validateGmailAddress(forgotEmail);
+    if (!gmailCheck.valid) {
+      setLoginError(
+        gmailCheck.error || 'Please enter your registered @gmail.com address.'
+      );
+      return;
+    }
+    if (!forgotOtpId) {
+      setLoginError('Please send and verify the 6-digit Email OTP first.');
+      return;
+    }
+    if (forgotNewPassword.trim().length < 4) {
+      setLoginError('New seller password must be at least 4 characters.');
+      return;
+    }
+    if (forgotNewPassword.trim() !== forgotConfirmPassword.trim()) {
+      setLoginError('New password and Confirm password do not match.');
+      return;
+    }
+
+    setForgotBusy(true);
+    try {
+      await api.resetSellerPasswordWithOtp({
+        email: gmailCheck.email,
+        otpId: forgotOtpId,
+        newPassword: forgotNewPassword.trim(),
+      });
+      setForgotNewPassword('');
+      setForgotConfirmPassword('');
+      setForgotOtpId('');
+      setLoginForgotMode(false);
+      setForgotSuccessMsg(
+        'Seller password updated! Sign in with your Seller ID, Gmail, or Phone and new password.'
+      );
+    } catch (err) {
+      setLoginError(
+        formatApiError(err, 'Could not reset seller password. Please try again.')
+      );
+    } finally {
+      setForgotBusy(false);
     }
   };
 
@@ -326,31 +481,37 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setError('');
-    const sizeErr = validateImageFileUnder300KB(file);
-    if (sizeErr) {
-      setError(sizeErr);
-      return;
-    }
     setUploadingField(field);
+    setUploadDocProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 420, {
-        quality: 0.72,
-        preserveTransparency: false,
-        maxDataUrlLength: 65_000,
+      const isProfile = field === 'sellerPhoto' || field === 'sellerCoverPhoto';
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'seller',
+        appSource: 'glamour-galleria',
+        folder: isProfile
+          ? 'glamour-galleria/seller/profile'
+          : 'glamour-galleria/seller/kyc',
+        relatedEntityType: isProfile ? 'seller_profile' : 'seller_kyc',
+        relatedEntityId: loggedInSeller?.id || loggedInCustomer?.id,
+        uploadedByUid: loggedInSeller?.id || loggedInCustomer?.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadDocProgress(pct),
       });
-      if (field === 'sellerPhoto') setSellerPhotoDataUrl(dataUrl);
-      if (field === 'panDoc') setPanDocDataUrl(dataUrl);
-      if (field === 'aadhaarDoc') setAadhaarDocDataUrl(dataUrl);
-      if (field === 'gstDoc') setGstDocDataUrl(dataUrl);
-      if (field === 'bankDoc') setBankDocDataUrl(dataUrl);
+      if (field === 'sellerPhoto') setSellerPhotoDataUrl(record.secureUrl);
+      if (field === 'sellerCoverPhoto') setSellerCoverPhotoDataUrl(record.secureUrl);
+      if (field === 'panDoc') setPanDocDataUrl(record.secureUrl);
+      if (field === 'aadhaarDoc') setAadhaarDocDataUrl(record.secureUrl);
+      if (field === 'gstDoc') setGstDocDataUrl(record.secureUrl);
+      if (field === 'bankDoc') setBankDocDataUrl(record.secureUrl);
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not process selected document image. Please upload an image under 300KB.'
+          : 'Could not upload document image to Cloudinary. Please choose a valid image file.'
       );
     } finally {
       setUploadingField(null);
+      setUploadDocProgress(null);
     }
   };
 
@@ -366,6 +527,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     setGstNumber(loggedInSeller.gstNumber || '');
     setBankAccountDetails(loggedInSeller.bankAccountDetails || '');
     setSellerPhotoDataUrl(loggedInSeller.sellerPhotoDataUrl);
+    setSellerCoverPhotoDataUrl(loggedInSeller.sellerCoverPhotoDataUrl || '');
     setPanDocDataUrl(loggedInSeller.panDocDataUrl);
     setAadhaarDocDataUrl(loggedInSeller.aadhaarDocDataUrl);
     setGstDocDataUrl(loggedInSeller.gstDocDataUrl || '');
@@ -389,6 +551,23 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       return;
     }
 
+    if (!editingRejected) {
+      const gmailCheck = validateGmailAddress(email);
+      if (!gmailCheck.valid) {
+        setError(
+          gmailCheck.error ||
+            'Please enter a valid @gmail.com address for Seller OTP verification.'
+        );
+        return;
+      }
+      if (!sellerRegOtpId) {
+        setError(
+          'Please send and verify the 6-digit Email OTP on your Gmail address first.'
+        );
+        return;
+      }
+    }
+
     if (!editingRejected && regPassword.trim().length < 4) {
       setError(
         'Please create a Seller Login Password (minimum 4 characters).'
@@ -403,6 +582,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         clientId: loggedInCustomer?.id,
         name,
         email,
+        otpId: editingRejected ? undefined : sellerRegOtpId,
         dateOfBirth: dobCheck.dob,
         fullAddress,
         phone,
@@ -411,6 +591,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         gstNumber,
         password: regPassword,
         sellerPhotoDataUrl,
+        sellerCoverPhotoDataUrl,
         panDocDataUrl,
         aadhaarDocDataUrl,
         gstDocDataUrl,
@@ -483,6 +664,148 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     }
   };
 
+  const handleUploadStoreProfileImage = async (
+    target: 'photo' | 'cover',
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setStoreProfileError('');
+    setStoreProfileNotice('');
+    setUploadingStoreImg(target);
+    setUploadStoreImgProgress(1);
+    try {
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'seller',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/seller/profile',
+        relatedEntityType: 'seller_profile',
+        relatedEntityId: loggedInSeller?.id,
+        uploadedByUid: loggedInSeller?.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadStoreImgProgress(pct),
+      });
+      if (target === 'photo') {
+        setEditSellerPhoto(record.secureUrl);
+      } else {
+        setEditSellerCover(record.secureUrl);
+      }
+    } catch (err) {
+      setStoreProfileError(
+        err instanceof Error
+          ? err.message
+          : 'Could not upload selected image. Please try a different image file.'
+      );
+    } finally {
+      setUploadingStoreImg(null);
+      setUploadStoreImgProgress(null);
+    }
+  };
+
+  const handleSaveStoreProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loggedInSeller) return;
+    setStoreProfileError('');
+    setStoreProfileNotice('');
+    setSavingStoreProfile(true);
+    try {
+      const updated = await api.updateSellerStoreProfile(loggedInSeller.id, {
+        name: editSellerName,
+        sellerPhotoDataUrl: editSellerPhoto,
+        sellerCoverPhotoDataUrl: editSellerCover,
+      });
+      setLoggedInSeller((prev) => (prev ? { ...prev, ...updated } : updated));
+      setStoreProfileNotice(
+        'Store profile (Seller Name, Profile Photo & Cover Photo) updated!'
+      );
+    } catch (err) {
+      setStoreProfileError(
+        formatApiError(err, 'Could not update your Seller Store Profile.')
+      );
+    } finally {
+      setSavingStoreProfile(false);
+    }
+  };
+
+  const handleSellerQrUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setSellerPaymentError('');
+    setSellerPaymentNotice('');
+    setUploadingSellerQr(true);
+    setUploadSellerQrProgress(1);
+    try {
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'seller',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/seller/payment-qr',
+        relatedEntityType: 'payment_qr',
+        relatedEntityId: loggedInSeller?.id,
+        uploadedByUid: loggedInSeller?.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadSellerQrProgress(pct),
+      });
+      setSellerQrDataUrl(record.secureUrl);
+    } catch (err) {
+      setSellerPaymentError(
+        err instanceof Error
+          ? err.message
+          : 'Invalid QR code image. Please choose a valid JPG or PNG file.'
+      );
+    } finally {
+      setUploadingSellerQr(false);
+      setUploadSellerQrProgress(null);
+    }
+  };
+
+  const handleSaveSellerPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loggedInSeller) return;
+    setSellerPaymentError('');
+    setSellerPaymentNotice('');
+
+    const cleanUpi = sellerUpiId.trim();
+    if (cleanUpi && !cleanUpi.includes('@')) {
+      setSellerPaymentError(
+        'Please enter a valid Seller UPI ID (e.g. sellername@axl).'
+      );
+      return;
+    }
+
+    setSavingSellerPayment(true);
+    try {
+      const updated = await api.updateSellerPaymentDetails(loggedInSeller.id, {
+        sellerUpiId: cleanUpi,
+        sellerBankAccountName: sellerBankAccountName.trim(),
+        sellerBankName: sellerBankName.trim(),
+        sellerBankAccountNo: sellerBankAccountNo.trim(),
+        sellerBankIfscBranch: sellerBankIfscBranch.trim(),
+        sellerQrDataUrl: sellerQrDataUrl.trim(),
+      });
+      setLoggedInSeller((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...updated,
+            }
+          : updated
+      );
+      setSellerPaymentNotice(
+        'Seller Payment System saved! Customers ordering your products (without product-level overrides) will see these payment details.'
+      );
+    } catch (err) {
+      setSellerPaymentError(
+        formatApiError(err, 'Could not save Seller Payment System.')
+      );
+    } finally {
+      setSavingSellerPayment(false);
+    }
+  };
+
   const handleUploadHighlightScreenshot = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -490,27 +813,29 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setHighlightError('');
-    const sizeErr = validateImageFileUnder300KB(file);
-    if (sizeErr) {
-      setHighlightError(sizeErr);
-      return;
-    }
     setUploadingHighlightShot(true);
+    setUploadHighlightShotProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 640, {
-        quality: 0.72,
-        preserveTransparency: false,
-        maxDataUrlLength: 140_000,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'seller',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/seller/highlight-payments',
+        relatedEntityType: 'highlight_payment',
+        relatedEntityId: highlightTargetProduct?.id || loggedInSeller?.id,
+        uploadedByUid: loggedInSeller?.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadHighlightShotProgress(pct),
       });
-      setHighlightScreenshot(dataUrl);
+      setHighlightScreenshot(record.secureUrl);
     } catch (err) {
       setHighlightError(
         err instanceof Error
           ? err.message
-          : 'Invalid screenshot image. Please choose JPG/PNG under 300KB.'
+          : 'Invalid screenshot image. Please choose a valid JPG or PNG file.'
       );
     } finally {
       setUploadingHighlightShot(false);
+      setUploadHighlightShotProgress(null);
     }
   };
 
@@ -588,7 +913,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       {value ? (
         <div className="relative rounded-xl border border-[#E6D9EE] bg-white overflow-hidden h-32 flex items-center justify-center">
           <img
-            src={value}
+            src={getOptimizedMediaUrl(value, 'image')}
             alt={label}
             referrerPolicy="no-referrer"
             className="w-full h-full object-cover"
@@ -606,10 +931,12 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         <label className="rounded-xl border border-dashed border-[#D8B4FE] bg-white py-5 px-3 text-center flex flex-col items-center gap-1.5 hover:border-[#9333EA] transition-colors cursor-pointer">
           <Upload className="w-5 h-5 text-[#9333EA]" />
           <span className="text-xs font-semibold text-[#6D28D9]">
-            {uploadingField === field ? 'Compressing...' : 'Upload Image'}
+            {uploadingField === field
+              ? `Uploading${uploadDocProgress !== null ? ` ${uploadDocProgress}%` : ''}...`
+              : 'Upload Image'}
           </span>
           <span className="text-[10px] font-medium text-[#6B5B7B]">
-            JPG / PNG · Max 300KB (সর্বোচ্চ 300KB)
+            JPG / PNG / WEBP · Saved to Cloudinary
           </span>
           <input
             type="file"
@@ -729,7 +1056,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             <div className="rounded-2xl border border-[#E9D5FF] bg-[#FAF5FF] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <div className="text-[11px] font-semibold text-[#6D28D9]">
-                  Your Private Seller ID (সেভ করে রাখুন / Save for Sign-In)
+                  Your Private Seller ID (Save for Sign-In)
                 </div>
                 <div className="font-mono-num text-lg font-bold text-[#1F122B] select-all mt-0.5">
                   {loggedInSeller.sellerCode || 'Pending Assignment'}
@@ -831,11 +1158,16 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     ).length;
 
     const modalPayAmount = selectedHighlightItem?.price || 0;
-    const highlightUpiDeepLink = `upi://pay?pa=${encodeURIComponent(
-      activeHighlightUpi
-    )}&pn=${encodeURIComponent(
-      settings?.businessName || 'Glamour Galleria'
-    )}&am=${modalPayAmount.toFixed(2)}&cu=INR`;
+    const highlightUpiDeepLink = buildUpiDeepLink(
+      activeHighlightUpi,
+      settings?.businessName || 'Glamour Galleria',
+      modalPayAmount
+    );
+    const hasSellerCustomPaymentConfigured = Boolean(
+      loggedInSeller.sellerUpiId ||
+        loggedInSeller.sellerBankAccountNo ||
+        loggedInSeller.sellerQrDataUrl
+    );
 
     return (
       <div className="space-y-6">
@@ -860,66 +1192,461 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         </div>
 
         {/* Approved Seller Profile Banner */}
-        <div className="rounded-3xl border border-[#DCFCE7] bg-white/95 backdrop-blur-md p-5 sm:p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-5">
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="w-16 h-16 rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] overflow-hidden shrink-0 flex items-center justify-center">
-              {loggedInSeller.sellerPhotoDataUrl ? (
-                <img
-                  src={loggedInSeller.sellerPhotoDataUrl}
-                  alt={loggedInSeller.name}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <Store className="w-7 h-7 text-[#15803D]" />
-              )}
+        <div className="rounded-3xl border border-[#DCFCE7] bg-white/95 backdrop-blur-md overflow-hidden shadow-sm">
+          {loggedInSeller.sellerCoverPhotoDataUrl && (
+            <div className="h-28 sm:h-36 w-full overflow-hidden border-b border-[#EFE2F5] bg-gradient-to-r from-[#FDF2F8] to-[#F3E8FF]">
+              <img
+                src={loggedInSeller.sellerCoverPhotoDataUrl}
+                alt={`${loggedInSeller.name} cover`}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
             </div>
-            <div className="min-w-0">
-              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#15803D]">
-                <BadgeCheck className="w-4 h-4 shrink-0" />
-                <span>Approved Seller Account · Seller Hub (সেলার হাব)</span>
-              </div>
-              <h1 className="font-display-serif text-xl sm:text-2xl font-bold text-[#1F122B] truncate mt-0.5">
-                {loggedInSeller.name}
-              </h1>
-              <div className="text-xs text-[#5B4B6B] font-mono-num mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                {loggedInSeller.sellerCode && (
-                  <span className="font-bold text-[#6D28D9]">
-                    ID: {loggedInSeller.sellerCode}
-                  </span>
+          )}
+          <div className="p-5 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-5">
+            <div className="flex items-center gap-4 min-w-0">
+              <div className="w-16 h-16 rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] overflow-hidden shrink-0 flex items-center justify-center">
+                {loggedInSeller.sellerPhotoDataUrl ? (
+                  <img
+                    src={loggedInSeller.sellerPhotoDataUrl}
+                    alt={loggedInSeller.name}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <Store className="w-7 h-7 text-[#15803D]" />
                 )}
-                <span>{loggedInSeller.phone}</span>
-                {loggedInSeller.email && <span>{loggedInSeller.email}</span>}
+              </div>
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#15803D]">
+                  <BadgeCheck className="w-4 h-4 shrink-0" />
+                  <span>Approved Seller Account · Seller Hub</span>
+                </div>
+                <h1 className="font-display-serif text-xl sm:text-2xl font-bold text-[#1F122B] truncate mt-0.5">
+                  {loggedInSeller.name}
+                </h1>
+                <div className="text-xs text-[#5B4B6B] font-mono-num mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                  {loggedInSeller.sellerCode && (
+                    <span className="font-bold text-[#6D28D9]">
+                      ID: {loggedInSeller.sellerCode}
+                    </span>
+                  )}
+                  <span>{loggedInSeller.phone}</span>
+                  {loggedInSeller.email && <span>{loggedInSeller.email}</span>}
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="grid grid-cols-3 gap-3 sm:gap-5 border-t md:border-t-0 md:border-l border-[#EFE2F5] pt-3 md:pt-0 md:pl-5 shrink-0">
-            <div>
-              <div className="text-[11px] text-[#6B5B7B]">My Products</div>
-              <div className="font-mono-num text-lg font-bold text-[#1F122B]">
-                {sellerProducts.length}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-5 border-t md:border-t-0 md:border-l border-[#EFE2F5] pt-3 md:pt-0 md:pl-5 shrink-0">
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Followers</div>
+                <div className="font-mono-num text-lg font-bold text-[#7E22CE]">
+                  {liveFollowersCount}
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="text-[11px] text-[#6B5B7B]">Live Approved</div>
-              <div className="font-mono-num text-lg font-bold text-[#15803D]">
-                {approvedLiveCount}
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">My Products</div>
+                <div className="font-mono-num text-lg font-bold text-[#1F122B]">
+                  {sellerProducts.length}
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="text-[11px] text-[#6B5B7B]">Highlighted</div>
-              <div className="font-mono-num text-lg font-bold text-[#DB2777]">
-                {activeHighlightedCount}
-                {pendingReviewCount > 0 ? (
-                  <span className="text-[10px] text-[#B45309] ml-1">
-                    ({pendingReviewCount} rev.)
-                  </span>
-                ) : null}
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Live Approved</div>
+                <div className="font-mono-num text-lg font-bold text-[#15803D]">
+                  {approvedLiveCount}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Highlighted</div>
+                <div className="font-mono-num text-lg font-bold text-[#DB2777]">
+                  {activeHighlightedCount}
+                  {pendingReviewCount > 0 ? (
+                    <span className="text-[10px] text-[#B45309] ml-1">
+                      ({pendingReviewCount} rev.)
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Editable Store Profile (Seller Name, Profile Photo & Cover Photo) */}
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4 shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7E22CE]">
+                <Camera className="w-4 h-4 text-[#DB2777]" />
+                <span>Store Profile (Name, Avatar &amp; Cover Photo)</span>
+              </div>
+              <p className="text-xs text-[#5B4B6B] mt-0.5">
+                Customize how customers see your store page, profile picture, and cover banner. All uploads auto-compress to ~80–100KB.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStoreProfileOpen((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-3.5 py-2 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+            >
+              <Store className="w-3.5 h-3.5" />
+              <span>
+                {storeProfileOpen ? 'Hide Store Profile' : 'Edit Store Profile'}
+              </span>
+            </button>
+          </div>
+
+          {storeProfileOpen && (
+            <form
+              onSubmit={handleSaveStoreProfile}
+              className="pt-4 border-t border-[#F4ECF8] space-y-4"
+            >
+              {storeProfileError && (
+                <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
+                  {storeProfileError}
+                </div>
+              )}
+              {storeProfileNotice && (
+                <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2.5 text-xs font-semibold text-[#15803D] flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{storeProfileNotice}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                  Seller / Store Name (English) <span className="text-[#DB2777]">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editSellerName}
+                  onChange={(e) => setEditSellerName(e.target.value)}
+                  placeholder="Enter your Seller / Store Name in English"
+                  className={inputClass}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-4 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-bold text-[#1F122B]">
+                    <span>Profile Photo</span>
+                    <span className="text-[10px] font-medium text-[#6B5B7B]">
+                      Saved to Cloudinary
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-16 h-16 rounded-2xl border border-[#D8B4FE] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                      {editSellerPhoto ? (
+                        <img
+                          src={getOptimizedMediaUrl(editSellerPhoto, 'image')}
+                          alt="Store profile"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <Store className="w-6 h-6 text-[#9333EA]" />
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-1.5 text-xs font-semibold text-[#6D28D9] cursor-pointer hover:border-[#9333EA]">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>
+                          {uploadingStoreImg === 'photo'
+                            ? `Uploading${uploadStoreImgProgress !== null ? ` ${uploadStoreImgProgress}%` : ''}...`
+                            : 'Upload Photo'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={uploadingStoreImg !== null}
+                          onChange={(e) => handleUploadStoreProfileImage('photo', e)}
+                          className="sr-only"
+                        />
+                      </label>
+                      {editSellerPhoto && (
+                        <button
+                          type="button"
+                          onClick={() => setEditSellerPhoto('')}
+                          className="text-xs font-semibold text-[#BE123C] cursor-pointer hover:underline"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-4 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-bold text-[#1F122B]">
+                    <span>Cover Photo</span>
+                    <span className="text-[10px] font-medium text-[#6B5B7B]">
+                      Cloudinary CDN
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-28 h-16 rounded-xl border border-[#D8B4FE] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                      {editSellerCover ? (
+                        <img
+                          src={getOptimizedMediaUrl(editSellerCover, 'image')}
+                          alt="Store cover"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <ImageIcon className="w-6 h-6 text-[#C084FC]" />
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-1.5 text-xs font-semibold text-[#6D28D9] cursor-pointer hover:border-[#9333EA]">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>
+                          {uploadingStoreImg === 'cover'
+                            ? `Uploading${uploadStoreImgProgress !== null ? ` ${uploadStoreImgProgress}%` : ''}...`
+                            : 'Upload Cover'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={uploadingStoreImg !== null}
+                          onChange={(e) => handleUploadStoreProfileImage('cover', e)}
+                          className="sr-only"
+                        />
+                      </label>
+                      {editSellerCover && (
+                        <button
+                          type="button"
+                          onClick={() => setEditSellerCover('')}
+                          className="text-xs font-semibold text-[#BE123C] cursor-pointer hover:underline"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end pt-2 border-t border-[#F4ECF8]">
+                <button
+                  type="submit"
+                  disabled={savingStoreProfile || uploadingStoreImg !== null}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>
+                    {savingStoreProfile
+                      ? 'Saving Store Profile...'
+                      : 'Save Store Profile'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+
+        {/* Approved Seller Payment System Card */}
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4 shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7E22CE]">
+                <CreditCard className="w-4 h-4 text-[#DB2777]" />
+                <span>My Seller Payment System (UPI / Bank / QR)</span>
+                {hasSellerCustomPaymentConfigured && (
+                  <span className="rounded-md border border-[#BBF7D0] bg-[#F0FDF4] px-2 py-0.5 text-[10px] font-bold text-[#15803D]">
+                    Active
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-[#5B4B6B] mt-0.5">
+                Configure your seller-wide UPI ID, Bank Details &amp; QR Code (saved to Cloudinary). Checkout priority:{' '}
+                <strong>Product Custom Payment</strong> &rarr; <strong>Seller Payment System</strong> &rarr; Store Admin Payment.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSellerPaymentOpen((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-3.5 py-2 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>
+                {sellerPaymentOpen
+                  ? 'Hide Payment Settings'
+                  : hasSellerCustomPaymentConfigured
+                    ? 'Edit My Payment Settings'
+                    : 'Configure My Payment Details'}
+              </span>
+            </button>
+          </div>
+
+          {sellerPaymentOpen && (
+            <form
+              onSubmit={handleSaveSellerPayment}
+              className="pt-4 border-t border-[#F4ECF8] space-y-4"
+            >
+              {sellerPaymentError && (
+                <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
+                  {sellerPaymentError}
+                </div>
+              )}
+              {sellerPaymentNotice && (
+                <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2.5 text-xs font-semibold text-[#15803D] flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{sellerPaymentNotice}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-[1.45fr_1fr] gap-4 items-start">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Seller UPI ID
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerUpiId}
+                      onChange={(e) => setSellerUpiId(e.target.value)}
+                      placeholder="e.g. yourname@axl"
+                      className={`${inputClass} font-mono-num`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Account Holder Name
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerBankAccountName}
+                      onChange={(e) => setSellerBankAccountName(e.target.value)}
+                      placeholder="Bank Account Holder"
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Bank Name
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerBankName}
+                      onChange={(e) => setSellerBankName(e.target.value)}
+                      placeholder="e.g. SBI / HDFC Bank"
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Bank Account Number
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerBankAccountNo}
+                      onChange={(e) => setSellerBankAccountNo(e.target.value)}
+                      placeholder="Account Number"
+                      className={`${inputClass} font-mono-num`}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      IFSC Code / Branch
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerBankIfscBranch}
+                      onChange={(e) => setSellerBankIfscBranch(e.target.value)}
+                      placeholder="e.g. SBIN0001234, Branch Name"
+                      className={inputClass}
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-4 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2 text-xs font-bold text-[#1F122B]">
+                    <span className="inline-flex items-center gap-1.5">
+                      <QrCode className="w-4 h-4 text-[#7E22CE]" />
+                      Seller Payment QR
+                    </span>
+                    <span className="text-[10px] font-medium text-[#6B5B7B]">
+                      Cloudinary
+                    </span>
+                  </div>
+
+                  {sellerQrDataUrl ? (
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={getOptimizedMediaUrl(sellerQrDataUrl, 'image')}
+                        alt="Seller payment QR"
+                        referrerPolicy="no-referrer"
+                        className="w-20 h-20 rounded-xl border border-[#D8B4FE] bg-white p-1 object-contain"
+                      />
+                      <div className="space-y-1.5">
+                        <label className="inline-flex items-center gap-1 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-xs font-semibold text-[#6D28D9] cursor-pointer">
+                          <Upload className="w-3 h-3" />
+                          <span>
+                            {uploadingSellerQr
+                              ? `Uploading${uploadSellerQrProgress !== null ? ` ${uploadSellerQrProgress}%` : ''}...`
+                              : 'Change QR'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            disabled={uploadingSellerQr}
+                            onChange={handleSellerQrUpload}
+                            className="sr-only"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setSellerQrDataUrl('')}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-[#BE123C] hover:underline cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Remove QR</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="rounded-xl border border-dashed border-[#D8B4FE] bg-white py-4 px-3 text-center flex flex-col items-center gap-1 hover:border-[#9333EA] cursor-pointer">
+                      <QrCode className="w-5 h-5 text-[#9333EA]" />
+                      <span className="text-xs font-semibold text-[#6D28D9]">
+                        {uploadingSellerQr
+                          ? `Uploading QR${uploadSellerQrProgress !== null ? ` ${uploadSellerQrProgress}%` : ''}...`
+                          : 'Upload Seller Payment QR'}
+                      </span>
+                      <span className="text-[10px] text-[#6B5B7B]">
+                        JPG / PNG · Saved to Cloudinary
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={uploadingSellerQr}
+                        onChange={handleSellerQrUpload}
+                        className="sr-only"
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#F4ECF8]">
+                <span className="text-[11px] text-[#6B5B7B]">
+                  Leave fields empty to fall back to Store Admin Payment System automatically.
+                </span>
+                <button
+                  type="submit"
+                  disabled={savingSellerPayment || uploadingSellerQr}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>
+                    {savingSellerPayment
+                      ? 'Saving Payment Details...'
+                      : 'Save My Payment Settings'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
 
         {highlightNotice && (
           <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center justify-between gap-2">
@@ -1115,6 +1842,75 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
           </section>
         )}
 
+        {/* Customer Ratings & Reviews on Seller's Products */}
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B]">
+              <MessageSquare className="w-4 h-4 text-[#7E22CE]" />
+              <span>
+                Customer Ratings &amp; Reviews ({sellerProductReviews.length})
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-1.5 text-xs text-[#5B4B6B] font-mono-num">
+              <Users className="w-3.5 h-3.5 text-[#7E22CE]" />
+              <span>{liveFollowersCount} Followers</span>
+              {sellerProductReviews.length > 0 && (
+                <span>
+                  · ★{' '}
+                  {(
+                    sellerProductReviews.reduce((s, r) => s + r.rating, 0) /
+                    sellerProductReviews.length
+                  ).toFixed(1)}{' '}
+                  Avg Rating
+                </span>
+              )}
+            </div>
+          </div>
+
+          {sellerProductReviews.length === 0 ? (
+            <p className="text-xs text-[#6B5B7B]">
+              No customer ratings or reviews on your products yet.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {sellerProductReviews.slice(0, 12).map((rev) => {
+                const revProduct = sellerProducts.find(
+                  (p) => p.id === rev.productId
+                );
+                return (
+                  <div
+                    key={rev.id}
+                    className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-3.5 space-y-1.5 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-[#1F122B] truncate">
+                        {rev.customerName}
+                      </span>
+                      <span className="text-[#D97706] font-mono-num font-bold shrink-0">
+                        {'★'.repeat(rev.rating)}
+                        <span className="text-[#D6C9E0]">
+                          {'★'.repeat(Math.max(0, 5 - rev.rating))}
+                        </span>
+                      </span>
+                    </div>
+                    {revProduct && (
+                      <div className="text-[11px] font-semibold text-[#7E22CE] truncate">
+                        {revProduct.name}
+                      </div>
+                    )}
+                    <p className="text-[#4A3B59] leading-relaxed">
+                      {rev.comment}
+                    </p>
+                    <div className="text-[10px] text-[#8E7C9E] font-mono-num">
+                      {rev.createdAt.slice(0, 10)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
         {/* Paid Product Highlight Request Modal */}
         {highlightTargetProduct && (
           <div
@@ -1180,7 +1976,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               {enabledOfferSeats.length > 0 && (
                 <div className="space-y-2">
                   <div className="text-xs font-bold text-[#1F122B]">
-                    Special Highlight Offer Seats (সীমিত অফার সিট)
+                    Special Highlight Offer Seats
                   </div>
                   <div className="grid grid-cols-1 gap-2">
                     {enabledOfferSeats.map((seat) => {
@@ -1329,6 +2125,54 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                     </div>
                   </div>
 
+                  {(adminLivePayment.upiNumber ||
+                    adminLivePayment.bankAccountNo ||
+                    adminLivePayment.bankName ||
+                    adminLivePayment.qrDataUrl) && (
+                    <div className="rounded-xl border border-[#EFE2F5] bg-white p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="text-[11px] text-[#4A3B59] space-y-0.5">
+                        {adminLivePayment.upiNumber && (
+                          <div className="font-mono-num">
+                            UPI Number: <strong>{adminLivePayment.upiNumber}</strong>
+                          </div>
+                        )}
+                        {adminLivePayment.bankAccountName && (
+                          <div>
+                            Account Holder: <strong>{adminLivePayment.bankAccountName}</strong>
+                          </div>
+                        )}
+                        {adminLivePayment.bankName && (
+                          <div>
+                            Bank: <strong>{adminLivePayment.bankName}</strong>
+                          </div>
+                        )}
+                        {adminLivePayment.bankAccountNo && (
+                          <div className="font-mono-num">
+                            A/C No: <strong>{adminLivePayment.bankAccountNo}</strong>
+                          </div>
+                        )}
+                        {adminLivePayment.bankIfscBranch && (
+                          <div>
+                            IFSC / Branch: <strong>{adminLivePayment.bankIfscBranch}</strong>
+                          </div>
+                        )}
+                      </div>
+                      {adminLivePayment.qrDataUrl && (
+                        <div className="flex flex-col items-center shrink-0">
+                          <img
+                            src={adminLivePayment.qrDataUrl}
+                            alt="Admin Highlight Payment QR"
+                            referrerPolicy="no-referrer"
+                            className="w-24 h-24 rounded-lg border border-[#D8B4FE] object-contain bg-white p-1"
+                          />
+                          <span className="text-[10px] font-semibold text-[#6D28D9] mt-0.5">
+                            Scan QR to Pay
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div>
                     <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                       Transaction / UTR ID (optional if uploading screenshot)
@@ -1344,14 +2188,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
 
                   <div className="space-y-1.5">
                     <div className="text-xs font-semibold text-[#4A3B59]">
-                      Upload Payment Screenshot (Max 300KB / সর্বোচ্চ 300KB)
+                      Upload Payment Screenshot (Saved to Cloudinary)
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5">
                       <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
                         <Upload className="w-3.5 h-3.5" />
                         <span>
                           {uploadingHighlightShot
-                            ? 'Compressing...'
+                            ? `Uploading${uploadHighlightShotProgress !== null ? ` ${uploadHighlightShotProgress}%` : ''}...`
                             : highlightScreenshot
                               ? 'Change Screenshot'
                               : 'Upload Screenshot'}
@@ -1367,7 +2211,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                       {highlightScreenshot && (
                         <div className="flex items-center gap-2">
                           <img
-                            src={highlightScreenshot}
+                            src={getOptimizedMediaUrl(highlightScreenshot, 'image')}
                             alt="Highlight payment screenshot"
                             referrerPolicy="no-referrer"
                             className="w-10 h-10 rounded-lg object-cover border border-[#D8B4FE]"
@@ -1470,17 +2314,6 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               <span>Apply as Seller</span>
             </button>
           </div>
-
-          {!loggedInCustomer && (
-            <button
-              type="button"
-              onClick={onRequestSignIn}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
-            >
-              <UserCheck className="w-3.5 h-3.5" />
-              <span>Customer Sign In</span>
-            </button>
-          )}
         </div>
       </div>
 
@@ -1492,12 +2325,25 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               <KeyRound className="w-6 h-6" />
             </div>
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B] pt-1">
-              Seller Hub Sign In
+              {loginForgotMode ? 'Reset Seller Password' : 'Seller Hub Sign In'}
             </h1>
             <p className="text-xs text-[#6B5B7B]">
-              Sign in with your <strong>Seller ID</strong>, <strong>Email</strong>, or <strong>10-digit Phone Number</strong> (without +91) and Password to access your Seller Dashboard or check your private application status.
+              {loginForgotMode
+                ? 'Verify your registered Gmail with a 6-digit OTP to set a new Seller password.'
+                : (
+                  <>
+                    Sign in with your <strong>Seller ID</strong>, <strong>Email</strong>, or <strong>10-digit Phone Number</strong> (without +91) and Password to access your Seller Dashboard or check your private application status.
+                  </>
+                )}
             </p>
           </div>
+
+          {forgotSuccessMsg && (
+            <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{forgotSuccessMsg}</span>
+            </div>
+          )}
 
           {loginError && (
             <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C]">
@@ -1505,69 +2351,178 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             </div>
           )}
 
-          <form onSubmit={handleSellerLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Seller ID / Email / Phone (without +91){' '}
-                <span className="text-[#DB2777]">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                value={loginIdent}
-                onChange={(e) => setLoginIdent(e.target.value)}
-                placeholder="e.g. GGS-54321045, seller@email.com, or 9876543210"
-                className={inputClass}
+          {loginForgotMode ? (
+            <form onSubmit={handleSellerForgotSubmit} className="space-y-4">
+              <EmailOtpBox
+                purpose="seller_forgot_password"
+                email={forgotEmail}
+                onEmailChange={setForgotEmail}
+                label="Registered Seller Gmail (@gmail.com)"
+                helperText="Enter the @gmail.com address linked to your Seller account."
+                verifiedOtpId={forgotOtpId}
+                onVerified={({ otpId, email: verifiedEmail }) => {
+                  setForgotOtpId(otpId);
+                  setForgotEmail(verifiedEmail);
+                  setLoginError('');
+                }}
+                onResetVerification={() => setForgotOtpId('')}
+                disabled={forgotBusy}
               />
-            </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Seller Password <span className="text-[#DB2777]">*</span>
-              </label>
-              <div className="relative">
+              {forgotOtpId && (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      New Seller Password <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showForgotPassword ? 'text' : 'password'}
+                        required
+                        minLength={4}
+                        value={forgotNewPassword}
+                        onChange={(e) => setForgotNewPassword(e.target.value)}
+                        placeholder="Minimum 4 characters"
+                        className={`${inputClass} pr-10`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotPassword((prev) => !prev)}
+                        aria-label={
+                          showForgotPassword ? 'Hide password' : 'Show password'
+                        }
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                      >
+                        {showForgotPassword ? (
+                          <EyeOff className="w-4 h-4" />
+                        ) : (
+                          <Eye className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Confirm New Password <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type={showForgotPassword ? 'text' : 'password'}
+                      required
+                      minLength={4}
+                      value={forgotConfirmPassword}
+                      onChange={(e) => setForgotConfirmPassword(e.target.value)}
+                      placeholder="Re-enter new seller password"
+                      className={inputClass}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={forgotBusy}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-sm font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                  >
+                    <KeyRound className="w-4 h-4" />
+                    <span>
+                      {forgotBusy ? 'Updating Password...' : 'Reset Seller Password'}
+                    </span>
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginForgotMode(false);
+                  setLoginError('');
+                }}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Seller Login</span>
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleSellerLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                  Seller ID / Email / Phone (without +91){' '}
+                  <span className="text-[#DB2777]">*</span>
+                </label>
                 <input
-                  type={showLoginPassword ? 'text' : 'password'}
+                  type="text"
                   required
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder="Enter your seller password"
-                  className={`${inputClass} pr-10`}
+                  value={loginIdent}
+                  onChange={(e) => setLoginIdent(e.target.value)}
+                  placeholder="e.g. GGS-54321045, seller@gmail.com, or 9876543210"
+                  className={inputClass}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowLoginPassword((prev) => !prev)}
-                  aria-label={
-                    showLoginPassword ? 'Hide password' : 'Show password'
-                  }
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                >
-                  {showLoginPassword ? (
-                    <EyeOff className="w-4 h-4" />
-                  ) : (
-                    <Eye className="w-4 h-4" />
-                  )}
-                </button>
               </div>
-            </div>
 
-            <button
-              type="submit"
-              disabled={loginBusy}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-sm font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
-            >
-              <LogIn className="w-4 h-4" />
-              <span>
-                {loginBusy ? 'Signing In...' : 'Sign In to Seller Hub'}
-              </span>
-            </button>
-          </form>
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-xs font-semibold text-[#4A3B59]">
+                    Seller Password <span className="text-[#DB2777]">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginForgotMode(true);
+                      setLoginError('');
+                      setForgotSuccessMsg('');
+                    }}
+                    className="text-[11px] font-semibold text-[#7E22CE] hover:text-[#DB2777] hover:underline cursor-pointer"
+                  >
+                    Forgot Password?
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showLoginPassword ? 'text' : 'password'}
+                    required
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="Enter your seller password"
+                    className={`${inputClass} pr-10`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword((prev) => !prev)}
+                    aria-label={
+                      showLoginPassword ? 'Hide password' : 'Show password'
+                    }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                  >
+                    {showLoginPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loginBusy}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-sm font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>
+                  {loginBusy ? 'Signing In...' : 'Sign In to Seller Hub'}
+                </span>
+              </button>
+            </form>
+          )}
 
           <div className="pt-3 border-t border-[#F4ECF8] flex flex-wrap items-center justify-between gap-2 text-xs text-[#6B5B7B]">
             <span>New to Seller Hub?</span>
             <button
               type="button"
-              onClick={() => setHubTab('apply')}
+              onClick={() => {
+                setLoginForgotMode(false);
+                setHubTab('apply');
+              }}
               className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
             >
               Apply as Seller Now
@@ -1582,7 +2537,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
           <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-2 shadow-sm">
             <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7E22CE]">
               <Store className="w-4 h-4 text-[#DB2777]" />
-              <span>Seller Hub (সেলার হাব) · Seller Registration</span>
+              <span>Seller Hub · Seller Registration</span>
             </div>
             <h1 className="font-display-serif text-2xl sm:text-3xl font-bold text-[#1F122B]">
               {editingRejected
@@ -1665,21 +2620,41 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Email Address (optional, for Seller Login)
-                  </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="seller@example.com"
-                      className={`${inputClass} pl-10`}
+                {editingRejected ? (
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Email Address (for Seller Login)
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="seller@gmail.com"
+                        className={`${inputClass} pl-10`}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="sm:col-span-2">
+                    <EmailOtpBox
+                      purpose="seller_register"
+                      email={email}
+                      onEmailChange={setEmail}
+                      label="Gmail Address (@gmail.com · OTP Required)"
+                      helperText="First-time Seller registration requires a 6-digit OTP sent to your Gmail. Future sign-ins use password only."
+                      verifiedOtpId={sellerRegOtpId}
+                      onVerified={({ otpId, email: verifiedEmail }) => {
+                        setSellerRegOtpId(otpId);
+                        setEmail(verifiedEmail);
+                        setError('');
+                      }}
+                      onResetVerification={() => setSellerRegOtpId('')}
+                      disabled={submitting}
                     />
                   </div>
-                </div>
+                )}
 
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
@@ -1794,10 +2769,10 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B] border-b border-[#F4ECF8] pb-2.5">
                 <FileText className="w-4 h-4 text-[#DB2777]" />
-                <span>2. Photo &amp; KYC Document Uploads (Max 300KB each)</span>
+                <span>2. Photo &amp; KYC Document Uploads (Cloudinary Secure Media)</span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
                 {renderDocUploader(
                   'sellerPhoto',
                   'Seller Photo',
@@ -1805,6 +2780,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   sellerPhotoDataUrl,
                   () => setSellerPhotoDataUrl(''),
                   true
+                )}
+                {renderDocUploader(
+                  'sellerCoverPhoto',
+                  'Seller Cover Photo',
+                  'Store banner photo (optional)',
+                  sellerCoverPhotoDataUrl,
+                  () => setSellerCoverPhotoDataUrl(''),
+                  false
                 )}
                 {renderDocUploader(
                   'panDoc',

@@ -17,6 +17,7 @@ import {
   Phone,
   Plus,
   Printer,
+  QrCode,
   ShoppingBag,
   ShoppingCart,
   Trash2,
@@ -25,6 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  AdminPaymentSettings,
   BusinessSettings,
   Client,
   CustomerCartItem,
@@ -32,20 +34,24 @@ import {
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
   Invoice,
+  Product,
+  SellerPublicPaymentProfile,
 } from '../types/business';
 import { api, formatApiError } from '../utils/api';
 import {
-  CHECKOUT_UPI_ID,
+  buildUpiDeepLink,
   COD_DELIVERY_CHARGE_PER_ITEM,
+  DEFAULT_ADMIN_UPI_ID,
   DEFAULT_SETTINGS,
+  EffectivePaymentDetails,
   exportInvoiceElementToPdf,
   formatCurrency,
   normalizeIndianPhone,
-  resizeImageFileToDataUrl,
+  resolveEffectivePaymentDetails,
   stripPlus91Prefix,
   validateEnglishName,
-  validateImageFileUnder300KB,
 } from '../utils/calculations';
+import { getOptimizedMediaUrl, uploadMediaToCloudinary } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
 import { ScaledInvoicePreview } from './ScaledInvoicePreview';
@@ -57,6 +63,9 @@ interface CustomerDashboardViewProps {
   orders: CustomerOrder[];
   bills: Invoice[];
   settings?: BusinessSettings;
+  products?: Product[];
+  paymentSettings?: AdminPaymentSettings;
+  sellerPaymentProfiles?: Record<string, SellerPublicPaymentProfile>;
   initialTab?: CustomerDashboardTab;
   onBackToShop: () => void;
   onLogout: () => void;
@@ -68,6 +77,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   orders,
   bills,
   settings,
+  products = [],
+  paymentSettings,
+  sellerPaymentProfiles,
   initialTab = 'cart',
   onBackToShop,
   onLogout,
@@ -96,7 +108,8 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     useState<CustomerOrderPaymentMethod>('COD');
   const [upiScreenshotDataUrl, setUpiScreenshotDataUrl] = useState('');
   const [uploadingScreenshot, setUploadingScreenshot] = useState(false);
-  const [upiCopied, setUpiCopied] = useState(false);
+  const [screenshotProgress, setScreenshotProgress] = useState<number | null>(null);
+  const [copiedUpiValue, setCopiedUpiValue] = useState<string | null>(null);
   const [placingOrder, setPlacingOrder] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
   const [orderNotice, setOrderNotice] = useState('');
@@ -156,6 +169,83 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     (cartSubtotal + codDeliveryCharge).toFixed(2)
   );
 
+  // Resolve Product -> Seller -> Admin payment details per cart item & group by payee
+  const payeeGroups = useMemo(() => {
+    const groupsMap = new Map<
+      string,
+      {
+        key: string;
+        details: EffectivePaymentDetails;
+        amount: number;
+        itemNames: string[];
+      }
+    >();
+
+    for (const item of cart) {
+      const matchedProduct = item.productId
+        ? products.find((p) => p.id === item.productId)
+        : products.find(
+            (p) =>
+              p.name.trim().toLowerCase() === item.name.trim().toLowerCase()
+          );
+      const sellerId = matchedProduct?.sellerId || item.sellerId;
+      const sellerProfile = sellerId
+        ? sellerPaymentProfiles?.[sellerId]
+        : undefined;
+      const details = resolveEffectivePaymentDetails({
+        product:
+          matchedProduct ||
+          (item.sellerId
+            ? { sellerId: item.sellerId, sellerName: item.sellerName }
+            : undefined),
+        sellerProfile,
+        adminPaymentSettings: paymentSettings,
+        settings,
+      });
+
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const lineTotal = Number(
+        (qty * Math.max(0, Number(item.price) || 0)).toFixed(2)
+      );
+      const sig = [
+        details.recipientType,
+        details.sellerId || '',
+        details.upiId,
+        details.bankAccountNo,
+        details.bankIfscBranch,
+        details.qrDataUrl ? 'qr' : 'noqr',
+      ].join('|');
+
+      const existing = groupsMap.get(sig);
+      if (existing) {
+        existing.amount = Number((existing.amount + lineTotal).toFixed(2));
+        existing.itemNames.push(item.name);
+      } else {
+        groupsMap.set(sig, {
+          key: sig,
+          details,
+          amount: lineTotal,
+          itemNames: [item.name],
+        });
+      }
+    }
+
+    if (groupsMap.size === 0) {
+      const fallbackDetails = resolveEffectivePaymentDetails({
+        adminPaymentSettings: paymentSettings,
+        settings,
+      });
+      groupsMap.set('default-admin', {
+        key: 'default-admin',
+        details: fallbackDetails,
+        amount: cartSubtotal,
+        itemNames: [],
+      });
+    }
+
+    return Array.from(groupsMap.values());
+  }, [cart, products, sellerPaymentProfiles, paymentSettings, settings, cartSubtotal]);
+
   const handleProfilePhotoChange = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -163,19 +253,18 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setProfileError('');
-    const sizeErr = validateImageFileUnder300KB(file);
-    if (sizeErr) {
-      setProfileError(sizeErr);
-      return;
-    }
     setPhotoUploading(true);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 240, {
-        quality: 0.78,
-        preserveTransparency: false,
-        maxDataUrlLength: 48_000,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'customer',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/customer/avatars',
+        relatedEntityType: 'customer_avatar',
+        relatedEntityId: client.id,
+        uploadedByUid: client.id,
+        allowedTypes: ['image'],
       });
-      const updated = await api.updateCustomerProfilePhoto(client.id, dataUrl);
+      const updated = await api.updateCustomerProfilePhoto(client.id, record.secureUrl);
       onClientUpdated(updated);
     } catch (err) {
       setProfileError(
@@ -259,11 +348,13 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     await syncCart([]);
   };
 
-  const handleCopyUpi = async () => {
+  const handleCopyUpi = async (upiValue: string) => {
     try {
-      await navigator.clipboard.writeText(CHECKOUT_UPI_ID);
-      setUpiCopied(true);
-      setTimeout(() => setUpiCopied(false), 2200);
+      await navigator.clipboard.writeText(upiValue);
+      setCopiedUpiValue(upiValue);
+      setTimeout(() => {
+        setCopiedUpiValue((curr) => (curr === upiValue ? null : curr));
+      }, 2200);
     } catch {
       // ignore clipboard restrictions
     }
@@ -276,27 +367,29 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setCheckoutError('');
-    const sizeErr = validateImageFileUnder300KB(file);
-    if (sizeErr) {
-      setCheckoutError(sizeErr);
-      return;
-    }
     setUploadingScreenshot(true);
+    setScreenshotProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 640, {
-        quality: 0.72,
-        preserveTransparency: false,
-        maxDataUrlLength: 140_000,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'customer',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/customer/order-payments',
+        relatedEntityType: 'order_payment',
+        relatedEntityId: client.id,
+        uploadedByUid: client.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setScreenshotProgress(pct),
       });
-      setUpiScreenshotDataUrl(dataUrl);
+      setUpiScreenshotDataUrl(record.secureUrl);
     } catch (err) {
       setCheckoutError(
         err instanceof Error
           ? err.message
-          : 'Invalid screenshot image. Please upload JPG or PNG under 300KB.'
+          : 'Invalid screenshot image. Please upload a valid JPG, PNG, or WEBP file.'
       );
     } finally {
       setUploadingScreenshot(false);
+      setScreenshotProgress(null);
     }
   };
 
@@ -338,8 +431,12 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       return;
     }
     if (paymentMethod === 'UPI' && !upiScreenshotDataUrl) {
+      const upiList = payeeGroups
+        .map((g) => g.details.upiId)
+        .filter(Boolean)
+        .join(', ');
       setCheckoutError(
-        `Please upload your UPI payment screenshot after paying to ${CHECKOUT_UPI_ID}.`
+        `Please upload your UPI payment screenshot after paying${upiList ? ` to ${upiList}` : ' using the displayed Bank / QR details'}.`
       );
       return;
     }
@@ -347,6 +444,12 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     const orderItems: CustomerOrderItem[] = cart.map((item) => {
       const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
       const unitPrice = Math.max(0, Number(item.price) || 0);
+      const matchedProduct = item.productId
+        ? products.find((p) => p.id === item.productId)
+        : products.find(
+            (p) =>
+              p.name.trim().toLowerCase() === item.name.trim().toLowerCase()
+          );
       return {
         id: item.id,
         productId: item.productId,
@@ -362,11 +465,30 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
             : undefined,
         lineTotal: Number((qty * unitPrice).toFixed(2)),
         imageDataUrl: item.imageDataUrl,
+        sellerId: matchedProduct?.sellerId || item.sellerId,
+        sellerName: matchedProduct?.sellerName || item.sellerName,
       };
     });
 
     const totalUnits = orderItems.reduce((s, i) => s + i.quantity, 0);
     const first = orderItems[0];
+    const singleGroup = payeeGroups.length === 1 ? payeeGroups[0].details : null;
+    const upiIdUsed = singleGroup
+      ? singleGroup.upiId || (singleGroup.bankAccountNo || singleGroup.qrDataUrl ? 'Bank/QR' : DEFAULT_ADMIN_UPI_ID)
+      : payeeGroups
+          .map((g) => g.details.upiId)
+          .filter(Boolean)
+          .join(', ') || 'Multiple';
+    const paymentRecipientType: 'admin' | 'seller' | 'mixed' = singleGroup
+      ? singleGroup.recipientType
+      : 'mixed';
+    const paymentRecipientName = singleGroup
+      ? singleGroup.recipientName
+      : payeeGroups
+          .map((g) => g.details.recipientName)
+          .filter(Boolean)
+          .join(' + ')
+          .slice(0, 140);
 
     setPlacingOrder(true);
     try {
@@ -392,6 +514,10 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         quantity: totalUnits,
         unitPrice: first?.unitPrice || 0,
         paymentMethod,
+        upiIdUsed,
+        sellerId: singleGroup?.sellerId,
+        paymentRecipientType,
+        paymentRecipientName,
         paymentScreenshotDataUrl:
           paymentMethod === 'UPI' ? upiScreenshotDataUrl : '',
         customerNote: checkoutNote.trim(),
@@ -428,12 +554,6 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       setExportingPdf(false);
     }
   };
-
-  const upiDeepLink = `upi://pay?pa=${encodeURIComponent(
-    CHECKOUT_UPI_ID
-  )}&pn=${encodeURIComponent(
-    mergedSettings.businessName || 'Glamour Galleria'
-  )}&am=${cartSubtotal.toFixed(2)}&cu=INR`;
 
   // Full Bill Preview Modal/View
   if (viewingBill) {
@@ -553,7 +673,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   </button>
                 )}
                 <span className="text-[10px] text-[#6B5B7B]">
-                  Max 300KB
+                  Saved to Cloudinary
                 </span>
               </div>
             </div>
@@ -697,7 +817,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         <div className="w-16 h-16 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
                           {item.imageDataUrl ? (
                             <img
-                              src={item.imageDataUrl}
+                              src={getOptimizedMediaUrl(item.imageDataUrl, 'image')}
                               alt={item.name}
                               referrerPolicy="no-referrer"
                               className="w-full h-full object-cover"
@@ -988,49 +1108,137 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                 </div>
 
                 {paymentMethod === 'UPI' && (
-                  <div className="rounded-xl border border-[#E9D5FF] bg-white p-3.5 space-y-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="text-[11px] text-[#6B5B7B]">
-                          Pay {formatCurrency(cartSubtotal, sym)} to UPI:
-                        </div>
-                        <div className="font-mono-num text-sm font-bold text-[#6D28D9] select-all">
-                          {CHECKOUT_UPI_ID}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={handleCopyUpi}
-                          className="inline-flex items-center gap-1 rounded-lg border border-[#D8B4FE] px-2.5 py-1 text-[11px] font-semibold text-[#7E22CE] cursor-pointer"
+                  <div className="rounded-xl border border-[#E9D5FF] bg-white p-3.5 space-y-3">
+                    {payeeGroups.map((group) => {
+                      const d = group.details;
+                      const groupUpiLink = d.upiId
+                        ? buildUpiDeepLink(d.upiId, d.recipientName, group.amount)
+                        : '';
+                      const isCopied = copiedUpiValue === d.upiId;
+                      return (
+                        <div
+                          key={group.key}
+                          className="rounded-xl border border-[#F2E6F7] bg-[#FDF9FE] p-3 space-y-2.5"
                         >
-                          {upiCopied ? (
-                            <>
-                              <Check className="w-3 h-3 text-[#15803D]" />
-                              <span className="text-[#15803D]">Copied</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" />
-                              <span>Copy</span>
-                            </>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="inline-flex items-center gap-1 rounded-md border border-[#D8B4FE] bg-white px-2 py-0.5 text-[10px] font-bold text-[#6D28D9]">
+                              <QrCode className="w-3 h-3" />
+                              <span>
+                                {d.source === 'product'
+                                  ? `Product Payment · ${d.recipientName}`
+                                  : d.source === 'seller'
+                                    ? `Seller Payment · ${d.recipientName}`
+                                    : `Store Payment · ${d.recipientName}`}
+                              </span>
+                            </span>
+                            <span className="font-mono-num text-xs font-bold text-[#1F122B]">
+                              Pay {formatCurrency(group.amount, sym)}
+                            </span>
+                          </div>
+
+                          {payeeGroups.length > 1 && group.itemNames.length > 0 && (
+                            <div className="text-[11px] text-[#6B5B7B] truncate">
+                              Items: {group.itemNames.join(', ')}
+                            </div>
                           )}
-                        </button>
-                        <a
-                          href={upiDeepLink}
-                          className="rounded-lg bg-[#7E22CE] px-2.5 py-1 text-[11px] font-semibold text-white"
-                        >
-                          Pay App
-                        </a>
-                      </div>
-                    </div>
+
+                          {d.upiId && (
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div className="text-[11px] text-[#6B5B7B]">
+                                  UPI ID:
+                                </div>
+                                <div className="font-mono-num text-sm font-bold text-[#6D28D9] select-all">
+                                  {d.upiId}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyUpi(d.upiId)}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#7E22CE] cursor-pointer"
+                                >
+                                  {isCopied ? (
+                                    <>
+                                      <Check className="w-3 h-3 text-[#15803D]" />
+                                      <span className="text-[#15803D]">Copied</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3 h-3" />
+                                      <span>Copy</span>
+                                    </>
+                                  )}
+                                </button>
+                                <a
+                                  href={groupUpiLink}
+                                  className="rounded-lg bg-[#7E22CE] px-2.5 py-1 text-[11px] font-semibold text-white"
+                                >
+                                  Pay App
+                                </a>
+                              </div>
+                            </div>
+                          )}
+
+                          {(d.upiNumber ||
+                            d.bankAccountName ||
+                            d.bankName ||
+                            d.bankAccountNo ||
+                            d.bankIfscBranch ||
+                            d.qrDataUrl) && (
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-[#EFE2F5]">
+                              <div className="text-[11px] text-[#4A3B59] space-y-0.5">
+                                {d.upiNumber && (
+                                  <div className="font-mono-num">
+                                    UPI Number: <strong>{d.upiNumber}</strong>
+                                  </div>
+                                )}
+                                {d.bankAccountName && (
+                                  <div>
+                                    A/C Holder: <strong>{d.bankAccountName}</strong>
+                                  </div>
+                                )}
+                                {d.bankName && (
+                                  <div>
+                                    Bank: <strong>{d.bankName}</strong>
+                                  </div>
+                                )}
+                                {d.bankAccountNo && (
+                                  <div className="font-mono-num">
+                                    Account No: <strong>{d.bankAccountNo}</strong>
+                                  </div>
+                                )}
+                                {d.bankIfscBranch && (
+                                  <div>
+                                    IFSC / Branch: <strong>{d.bankIfscBranch}</strong>
+                                  </div>
+                                )}
+                              </div>
+                              {d.qrDataUrl && (
+                                <div className="flex flex-col items-center shrink-0">
+                                  <img
+                                    src={getOptimizedMediaUrl(d.qrDataUrl, 'image')}
+                                    alt={`${d.recipientName} Payment QR`}
+                                    referrerPolicy="no-referrer"
+                                    className="w-24 h-24 rounded-lg border border-[#D8B4FE] bg-white p-1 object-contain"
+                                  />
+                                  <span className="text-[10px] font-semibold text-[#6D28D9] mt-0.5">
+                                    Scan QR
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
 
                     <div className="flex flex-wrap items-center gap-2.5 pt-1 border-t border-[#F4ECF8]">
                       <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-[#FDF9FF] px-3 py-1.5 text-[11px] font-semibold text-[#6D28D9] cursor-pointer">
                         <Upload className="w-3 h-3" />
                         <span>
                           {uploadingScreenshot
-                            ? 'Compressing...'
+                            ? `Uploading${screenshotProgress !== null ? ` ${screenshotProgress}%` : ''}...`
                             : upiScreenshotDataUrl
                               ? 'Change Screenshot'
                               : 'Upload Screenshot *'}
@@ -1050,7 +1258,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         </span>
                       )}
                       <span className="text-[10px] text-[#6B5B7B]">
-                        Max 300KB (সর্বোচ্চ 300KB)
+                        Saved to Cloudinary
                       </span>
                     </div>
                   </div>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
+import { getMediaCrossOrigin, getOptimizedMediaUrl } from '../utils/cloudinary';
 
 interface BrandLogoProps {
   logoDataUrl?: string;
@@ -16,7 +17,8 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   size = 64,
   className = '',
 }) => {
-  const src = logoDataUrl && logoDataUrl.trim() ? logoDataUrl : DEFAULT_CREST_PATH;
+  const rawSrc = logoDataUrl && logoDataUrl.trim() ? logoDataUrl : DEFAULT_CREST_PATH;
+  const src = getOptimizedMediaUrl(rawSrc, 'image');
   const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
@@ -38,6 +40,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
     <img
       src={src}
       alt={businessName}
+      crossOrigin={getMediaCrossOrigin(src)}
       referrerPolicy="no-referrer"
       onError={() => setImgError(true)}
       style={{ width: size, height: size }}

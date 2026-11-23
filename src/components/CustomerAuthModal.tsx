@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
+  ArrowLeft,
   Camera,
+  CheckCircle2,
   Eye,
   EyeOff,
+  KeyRound,
   Lock,
   MessageCircle,
   Phone,
@@ -14,12 +17,13 @@ import { api, formatApiError } from '../utils/api';
 import {
   buildForgotPasswordWhatsAppUrl,
   normalizeIndianPhone,
-  resizeImageFileToDataUrl,
   validateEnglishName,
-  validateImageFileUnder300KB,
+  validateGmailAddress,
 } from '../utils/calculations';
+import { uploadMediaToCloudinary } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
+import { EmailOtpBox } from './EmailOtpBox';
 
 interface CustomerAuthModalProps {
   open: boolean;
@@ -36,8 +40,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
   const [error, setError] = useState('');
+  const [successBanner, setSuccessBanner] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   // Login state
@@ -47,6 +52,8 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
 
   // Registration state
   const [regName, setRegName] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regOtpId, setRegOtpId] = useState('');
   const [regPhone, setRegPhone] = useState('');
   const [regAddress, setRegAddress] = useState('');
   const [regCity, setRegCity] = useState('');
@@ -56,11 +63,22 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   const [showRegPassword, setShowRegPassword] = useState(false);
   const [regPhoto, setRegPhoto] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+
+  // Forgot Password via Email OTP state
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotOtpId, setForgotOtpId] = useState('');
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   useEffect(() => {
     if (open) {
       setMode(initialMode);
       setError('');
+      setSuccessBanner('');
+      setRegOtpId('');
+      setForgotOtpId('');
     }
   }, [open, initialMode]);
 
@@ -71,27 +89,27 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     e.target.value = '';
     if (!file) return;
     setError('');
-    const sizeErr = validateImageFileUnder300KB(file);
-    if (sizeErr) {
-      setError(sizeErr);
-      return;
-    }
     setUploadingPhoto(true);
+    setUploadProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 240, {
-        quality: 0.78,
-        preserveTransparency: false,
-        maxDataUrlLength: 48_000,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'customer',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/customer/avatars',
+        relatedEntityType: 'customer_avatar',
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadProgress(pct),
       });
-      setRegPhoto(dataUrl);
+      setRegPhoto(record.secureUrl);
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : 'Could not process profile photo. Please pick a JPG/PNG under 300KB.'
+          : 'Could not upload profile photo. Please pick a valid JPG, PNG, or WEBP file.'
       );
     } finally {
       setUploadingPhoto(false);
+      setUploadProgress(null);
     }
   };
 
@@ -126,10 +144,24 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccessBanner('');
 
     const nameCheck = validateEnglishName(regName, 'Full Name');
     if (!nameCheck.valid) {
       setError(nameCheck.error || 'Please enter your full name in English.');
+      return;
+    }
+    const gmailCheck = validateGmailAddress(regEmail);
+    if (!gmailCheck.valid) {
+      setError(
+        gmailCheck.error || 'Please enter a valid @gmail.com address for OTP verification.'
+      );
+      return;
+    }
+    if (!regOtpId) {
+      setError(
+        'Please send and verify the 6-digit Email OTP on your Gmail address first.'
+      );
       return;
     }
     const phoneCheck = normalizeIndianPhone(regPhone);
@@ -158,6 +190,8 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       }
       const res = await api.registerCustomerAccount({
         name: nameCheck.cleaned,
+        email: gmailCheck.email,
+        otpId: regOtpId,
         phone: phoneCheck.formatted,
         address: regAddress.trim(),
         city: regCity.trim(),
@@ -171,6 +205,54 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     } catch (err) {
       setError(
         formatApiError(err, 'Could not create your customer account.')
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccessBanner('');
+
+    const gmailCheck = validateGmailAddress(forgotEmail);
+    if (!gmailCheck.valid) {
+      setError(
+        gmailCheck.error || 'Please enter your registered @gmail.com address.'
+      );
+      return;
+    }
+    if (!forgotOtpId) {
+      setError('Please send and verify the 6-digit Email OTP first.');
+      return;
+    }
+    if (forgotNewPassword.trim().length < 4) {
+      setError('New password must be at least 4 characters.');
+      return;
+    }
+    if (forgotNewPassword.trim() !== forgotConfirmPassword.trim()) {
+      setError('New password and Confirm password do not match.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await api.resetCustomerPasswordWithOtp({
+        email: gmailCheck.email,
+        otpId: forgotOtpId,
+        newPassword: forgotNewPassword.trim(),
+      });
+      setForgotNewPassword('');
+      setForgotConfirmPassword('');
+      setForgotOtpId('');
+      setMode('login');
+      setSuccessBanner(
+        'Password reset successful! You can now sign in with your phone number and new password.'
+      );
+    } catch (err) {
+      setError(
+        formatApiError(err, 'Could not reset password. Please try again.')
       );
     } finally {
       setSubmitting(false);
@@ -194,12 +276,18 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
               id="customer-auth-title"
               className="font-display-serif text-lg font-bold text-[#1F122B]"
             >
-              {mode === 'login' ? 'Customer Sign In' : 'Create Customer Account'}
+              {mode === 'login'
+                ? 'Customer Sign In'
+                : mode === 'register'
+                  ? 'Create Customer Account'
+                  : 'Reset Password via Gmail OTP'}
             </h2>
             <p className="text-xs text-[#6B5B7B] mt-0.5">
               {mode === 'login'
                 ? 'Access your cart, track orders, and download bills.'
-                : 'Register once for faster checkout and order tracking.'}
+                : mode === 'register'
+                  ? 'Register once with Gmail OTP verification for faster checkout.'
+                  : 'Verify your registered Gmail with a 6-digit OTP to set a new password.'}
             </p>
           </div>
           <button
@@ -219,6 +307,13 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
             </div>
           )}
 
+          {successBanner && (
+            <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2.5 text-xs font-semibold text-[#15803D] flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{successBanner}</span>
+            </div>
+          )}
+
           {/* Mode Tabs */}
           <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#F8F3FB] border border-[#EFE2F5]">
             <button
@@ -228,7 +323,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 setError('');
               }}
               className={`rounded-lg py-2 text-xs font-bold transition-colors cursor-pointer ${
-                mode === 'login'
+                mode === 'login' || mode === 'forgot'
                   ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
                   : 'text-[#5B4B6B] hover:text-[#1F122B]'
               }`}
@@ -240,6 +335,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
               onClick={() => {
                 setMode('register');
                 setError('');
+                setSuccessBanner('');
               }}
               className={`rounded-lg py-2 text-xs font-bold transition-colors cursor-pointer ${
                 mode === 'register'
@@ -286,15 +382,18 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                   <label className="block text-xs font-semibold text-[#4A3B59]">
                     Password <span className="text-[#DB2777]">*</span>
                   </label>
-                  <a
-                    href={forgotPasswordUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#7E22CE] hover:text-[#DB2777] hover:underline"
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('forgot');
+                      setError('');
+                      setSuccessBanner('');
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#7E22CE] hover:text-[#DB2777] hover:underline cursor-pointer"
                   >
-                    <MessageCircle className="w-3 h-3" />
+                    <KeyRound className="w-3 h-3" />
                     <span>Forgot Password?</span>
-                  </a>
+                  </button>
                 </div>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -338,9 +437,115 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                   href={forgotPasswordUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="font-bold text-[#15803D] hover:underline whitespace-nowrap shrink-0"
+                  className="inline-flex items-center gap-1 font-bold text-[#15803D] hover:underline whitespace-nowrap shrink-0"
                 >
-                  WhatsApp Support
+                  <MessageCircle className="w-3 h-3" />
+                  <span>WhatsApp Support</span>
+                </a>
+              </div>
+            </form>
+          ) : mode === 'forgot' ? (
+            <form onSubmit={handleForgotSubmit} noValidate className="space-y-3.5">
+              <EmailOtpBox
+                purpose="customer_forgot_password"
+                email={forgotEmail}
+                onEmailChange={setForgotEmail}
+                label="Registered Gmail Address (@gmail.com)"
+                helperText="Enter the @gmail.com address linked to your customer account to receive a 6-digit OTP."
+                verifiedOtpId={forgotOtpId}
+                onVerified={({ otpId, email: verifiedEmail }) => {
+                  setForgotOtpId(otpId);
+                  setForgotEmail(verifiedEmail);
+                  setError('');
+                }}
+                onResetVerification={() => setForgotOtpId('')}
+                disabled={submitting}
+              />
+
+              {forgotOtpId && (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      New Password <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type={showForgotPassword ? 'text' : 'password'}
+                        required
+                        minLength={4}
+                        autoComplete="new-password"
+                        value={forgotNewPassword}
+                        onChange={(e) => setForgotNewPassword(e.target.value)}
+                        placeholder="Minimum 4 characters"
+                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-10 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotPassword((prev) => !prev)}
+                        aria-label={
+                          showForgotPassword ? 'Hide password' : 'Show password'
+                        }
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                      >
+                        {showForgotPassword ? (
+                          <EyeOff className="w-4 h-4" />
+                        ) : (
+                          <Eye className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Confirm New Password <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type={showForgotPassword ? 'text' : 'password'}
+                        required
+                        minLength={4}
+                        autoComplete="new-password"
+                        value={forgotConfirmPassword}
+                        onChange={(e) => setForgotConfirmPassword(e.target.value)}
+                        placeholder="Re-enter new password"
+                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-4 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="w-full rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2.5 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity cursor-pointer disabled:opacity-60"
+                  >
+                    {submitting ? 'Updating Password...' : 'Reset Password'}
+                  </button>
+                </>
+              )}
+
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('login');
+                    setError('');
+                  }}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Back to Sign In</span>
+                </button>
+                <a
+                  href={forgotPasswordUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#15803D] hover:underline"
+                >
+                  <MessageCircle className="w-3 h-3" />
+                  <span>WhatsApp Support</span>
                 </a>
               </div>
             </form>
@@ -359,14 +564,14 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-semibold text-[#1F122B]">
-                    Profile Photo (Optional · Max 300KB / সর্বোচ্চ 300KB)
+                    Profile Photo (Optional · Saved to Cloudinary)
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
                       <Camera className="w-3 h-3" />
                       <span>
                         {uploadingPhoto
-                          ? 'Compressing...'
+                          ? `Uploading${uploadProgress !== null ? ` ${uploadProgress}%` : ''}...`
                           : regPhoto
                             ? 'Change Photo'
                             : 'Upload Photo'}
@@ -425,6 +630,22 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                   />
                 </div>
               </div>
+
+              <EmailOtpBox
+                purpose="customer_register"
+                email={regEmail}
+                onEmailChange={setRegEmail}
+                label="Gmail Address (@gmail.com · OTP Required)"
+                helperText="First-time account creation requires a 6-digit OTP sent to your Gmail. Future sign-ins use password only."
+                verifiedOtpId={regOtpId}
+                onVerified={({ otpId, email: verifiedEmail }) => {
+                  setRegOtpId(otpId);
+                  setRegEmail(verifiedEmail);
+                  setError('');
+                }}
+                onResetVerification={() => setRegOtpId('')}
+                disabled={submitting}
+              />
 
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">

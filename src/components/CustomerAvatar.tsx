@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { User } from 'lucide-react';
+import { getOptimizedMediaUrl } from '../utils/cloudinary';
 
 interface CustomerAvatarProps {
   photoDataUrl?: string;
@@ -16,6 +17,12 @@ export const CustomerAvatar: React.FC<CustomerAvatarProps> = ({
 }) => {
   const [imgFailed, setImgFailed] = useState(false);
 
+  const resolvedUrl = getOptimizedMediaUrl(photoDataUrl, 'image');
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [resolvedUrl]);
+
   const initials = name
     .trim()
     .split(/\s+/)
@@ -23,7 +30,7 @@ export const CustomerAvatar: React.FC<CustomerAvatarProps> = ({
     .map((part) => part[0]?.toUpperCase() || '')
     .join('');
 
-  const showImg = Boolean(photoDataUrl && photoDataUrl.trim() && !imgFailed);
+  const showImg = Boolean(resolvedUrl && !imgFailed);
 
   return (
     <div
@@ -32,7 +39,7 @@ export const CustomerAvatar: React.FC<CustomerAvatarProps> = ({
     >
       {showImg ? (
         <img
-          src={photoDataUrl}
+          src={resolvedUrl}
           alt={name || 'Customer avatar'}
           referrerPolicy="no-referrer"
           onError={() => setImgFailed(true)}

@@ -13,25 +13,33 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
+  AdminPaymentSettings,
   BusinessSettings,
   Client,
+  CloudinaryMediaRecord,
   CustomerCartItem,
   CustomerOrder,
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
   DeliveryStatus,
+  EmailOtpPurpose,
+  EmailOtpRecord,
   ExpenseRecord,
   HighlightRequest,
   HighlightRequestStatus,
   Invoice,
   InvoiceLineItem,
+  MediaResourceType,
   PaymentMethod,
   PaymentRecord,
   Product,
+  ProductReview,
   PublicCustomerLookupResult,
   SellerAccountStatus,
   SellerApplication,
   SellerApprovalStatus,
+  SellerFollowRecord,
+  SellerPublicPaymentProfile,
   SupportChatMessage,
   SupportChatThread,
   SupportSenderRole,
@@ -44,8 +52,10 @@ import {
 } from './adminAuth';
 import {
   addDaysIsoDate,
-  CHECKOUT_UPI_ID,
+  ADMIN_OTP_EMAIL,
   COD_DELIVERY_CHARGE_PER_ITEM,
+  DEFAULT_ADMIN_PAYMENT_SETTINGS,
+  DEFAULT_ADMIN_UPI_ID,
   DEFAULT_HIGHLIGHT_CONFIG,
   DEFAULT_SETTINGS,
   formatPhoneWithPlus91,
@@ -53,18 +63,23 @@ import {
   getCustomerReferralCode,
   HIGHLIGHT_UPI_ID,
   isProductHighlightActive,
+  mergeAdminPaymentSettings,
   mergeBusinessSettings,
   normalizeIndianPhone,
   normalizePhoneDigits,
   normalizeSupportName,
+  OTP_MAX_ATTEMPTS,
   phoneNumbersMatch,
   todayIsoDate,
   validateAdultDateOfBirth,
   validateEnglishName,
+  validateGmailAddress,
 } from './calculations';
 
 const SETTINGS_COL = 'settings';
 const SETTINGS_DOC = 'business';
+const PAYMENT_SETTINGS_COL = 'payment_settings';
+const PAYMENT_SETTINGS_DOC = 'admin';
 const CLIENTS_COL = 'clients';
 const PRODUCTS_COL = 'products';
 const INVOICES_COL = 'invoices';
@@ -72,8 +87,12 @@ const PAYMENTS_COL = 'payments';
 const EXPENSES_COL = 'expenses';
 const ORDERS_COL = 'orders';
 const SELLER_APPLICATIONS_COL = 'seller_applications';
+const SELLER_FOLLOWS_COL = 'seller_follows';
+const PRODUCT_REVIEWS_COL = 'product_reviews';
 const HIGHLIGHT_REQUESTS_COL = 'highlight_requests';
 const SUPPORT_CHATS_COL = 'support_chats';
+const EMAIL_OTPS_COL = 'email_otps';
+const MEDIA_RECORDS_COL = 'media_records';
 
 function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -94,6 +113,14 @@ function stripUndefinedDeep<T>(value: T): T {
 function safeNum(v: unknown, fallback = 0): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function isPermissionDeniedError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return (
+    msg.includes('permission-denied') ||
+    msg.includes('Missing or insufficient permissions')
+  );
 }
 
 function sortDescByCreated<T extends { createdAt?: string }>(arr: T[]): T[] {
@@ -132,6 +159,24 @@ function sanitizePublicSeller(app: SellerApplication): SellerApplication {
   return safe as SellerApplication;
 }
 
+function extractPublicSellerPaymentProfile(
+  app: SellerApplication
+): SellerPublicPaymentProfile {
+  return {
+    sellerId: app.id,
+    sellerName: app.name || 'Seller',
+    sellerPhotoDataUrl: String(app.sellerPhotoDataUrl || '').trim(),
+    sellerCoverPhotoDataUrl: String(app.sellerCoverPhotoDataUrl || '').trim(),
+    followersCount: Math.max(0, Number(app.followersCount) || 0),
+    upiId: String(app.sellerUpiId || '').trim(),
+    bankAccountName: String(app.sellerBankAccountName || '').trim(),
+    bankName: String(app.sellerBankName || '').trim(),
+    bankAccountNo: String(app.sellerBankAccountNo || '').trim(),
+    bankIfscBranch: String(app.sellerBankIfscBranch || '').trim(),
+    qrDataUrl: String(app.sellerQrDataUrl || '').trim(),
+  };
+}
+
 function sanitizePublicInvoice(inv: Invoice): Invoice {
   return {
     ...inv,
@@ -147,6 +192,45 @@ function sanitizePublicInvoice(inv: Invoice): Invoice {
         }))
       : [],
   };
+}
+
+function sanitizePublicSettings(settings: BusinessSettings): BusinessSettings {
+  const { lastAdminOtpVerifiedAt: _admOtp, ...rest } = settings;
+  return rest as BusinessSettings;
+}
+
+async function assertVerifiedEmailOtp(
+  otpId: string | undefined,
+  expectedEmail: string,
+  expectedPurpose: EmailOtpPurpose
+): Promise<void> {
+  const cleanOtpId = String(otpId || '').trim();
+  if (!cleanOtpId) {
+    throw new Error('Please verify the 6-digit Email OTP sent to your Gmail address.');
+  }
+  let snap;
+  try {
+    snap = await getDoc(doc(db, EMAIL_OTPS_COL, cleanOtpId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `${EMAIL_OTPS_COL}/${cleanOtpId}`);
+  }
+  if (!snap || !snap.exists()) {
+    throw new Error('Email OTP verification record not found. Please request a new OTP.');
+  }
+  const record = snap.data() as EmailOtpRecord;
+  if (!record.verified) {
+    throw new Error('Email OTP is not verified yet. Please click Verify OTP first.');
+  }
+  if (
+    record.purpose !== expectedPurpose ||
+    String(record.email || '').trim().toLowerCase() !== expectedEmail.trim().toLowerCase()
+  ) {
+    throw new Error('Verified Email OTP does not match this Gmail address.');
+  }
+  const expMs = Date.parse(record.expiresAt);
+  if (!Number.isNaN(expMs) && Date.now() > expMs + 15 * 60 * 1000) {
+    throw new Error('Email OTP verification session has expired. Please request a new OTP.');
+  }
 }
 
 function normalizeInvoice(raw: Partial<Invoice>, existing?: Invoice): Invoice {
@@ -271,8 +355,27 @@ async function computeStockDeltaProducts(
 }
 
 export const firestoreService = {
+  async saveMediaRecord(record: CloudinaryMediaRecord): Promise<CloudinaryMediaRecord> {
+    const cleanRecord: CloudinaryMediaRecord = stripUndefinedDeep({
+      ...record,
+      id: record.id || `med-${crypto.randomUUID()}`,
+      createdAt: record.createdAt || new Date().toISOString(),
+    });
+    try {
+      await setDoc(doc(db, MEDIA_RECORDS_COL, cleanRecord.id), cleanRecord);
+      return cleanRecord;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.CREATE,
+        `${MEDIA_RECORDS_COL}/${cleanRecord.id}`
+      );
+    }
+  },
+
   async fetchWorkspace(): Promise<WorkspaceData> {
     let settings: BusinessSettings = mergeBusinessSettings();
+    let paymentSettings: AdminPaymentSettings = { ...DEFAULT_ADMIN_PAYMENT_SETTINGS };
     try {
       const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
       if (settingsSnap.exists()) {
@@ -280,6 +383,42 @@ export const firestoreService = {
       } else {
         await setDoc(doc(db, SETTINGS_COL, SETTINGS_DOC), stripUndefinedDeep(DEFAULT_SETTINGS));
       }
+      try {
+        const paymentSnap = await getDoc(
+          doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC)
+        );
+        if (paymentSnap.exists()) {
+          paymentSettings = mergeAdminPaymentSettings(
+            paymentSnap.data() as Partial<AdminPaymentSettings>,
+            settings
+          );
+        } else {
+          paymentSettings = mergeAdminPaymentSettings(undefined, settings);
+          await setDoc(
+            doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC),
+            stripUndefinedDeep(paymentSettings)
+          );
+        }
+      } catch (payErr) {
+        if (!isPermissionDeniedError(payErr)) {
+          throw payErr;
+        }
+        paymentSettings = mergeAdminPaymentSettings(undefined, settings);
+      }
+      settings = mergeBusinessSettings({
+        ...settings,
+        upiId: paymentSettings.upiId,
+        upiNumber: paymentSettings.upiNumber,
+        bankAccountName: paymentSettings.bankAccountName,
+        bankName: paymentSettings.bankName,
+        bankAccountNo: paymentSettings.bankAccountNo,
+        bankIfscBranch: paymentSettings.bankIfscBranch,
+        paymentQrDataUrl: paymentSettings.qrDataUrl,
+        highlightConfig: {
+          ...(settings.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG),
+          upiId: paymentSettings.upiId,
+        },
+      });
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`);
     }
@@ -289,6 +428,18 @@ export const firestoreService = {
         const snap = await getDocs(collection(db, colName));
         return sortDescByCreated(snap.docs.map((d) => d.data() as T));
       } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, colName);
+      }
+    };
+
+    const fetchColSafe = async <T extends { createdAt?: string }>(
+      colName: string
+    ): Promise<T[]> => {
+      try {
+        const snap = await getDocs(collection(db, colName));
+        return sortDescByCreated(snap.docs.map((d) => d.data() as T));
+      } catch (error) {
+        if (isPermissionDeniedError(error)) return [];
         handleFirestoreError(error, OperationType.LIST, colName);
       }
     };
@@ -303,6 +454,8 @@ export const firestoreService = {
       sellerApplications,
       supportChatsRaw,
       highlightRequests,
+      sellerFollows,
+      productReviews,
     ] = await Promise.all([
       fetchCol<Client>(CLIENTS_COL),
       fetchCol<Product>(PRODUCTS_COL),
@@ -313,10 +466,13 @@ export const firestoreService = {
       fetchCol<SellerApplication>(SELLER_APPLICATIONS_COL),
       fetchCol<SupportChatThread>(SUPPORT_CHATS_COL),
       fetchCol<HighlightRequest>(HIGHLIGHT_REQUESTS_COL),
+      fetchColSafe<SellerFollowRecord>(SELLER_FOLLOWS_COL),
+      fetchColSafe<ProductReview>(PRODUCT_REVIEWS_COL),
     ]);
 
     return {
       settings,
+      paymentSettings,
       clients,
       products,
       invoices,
@@ -326,6 +482,8 @@ export const firestoreService = {
       sellerApplications,
       supportChats: sortDescByUpdated(supportChatsRaw),
       highlightRequests,
+      sellerFollows,
+      productReviews,
     };
   },
 
@@ -348,10 +506,56 @@ export const firestoreService = {
           const nextSettings = mergeBusinessSettings(
             snap.data() as Partial<BusinessSettings>
           );
-          onUpdate((prev) => ({ ...prev, settings: nextSettings }));
+          onUpdate((prev) => ({
+            ...prev,
+            settings: nextSettings,
+            paymentSettings: mergeAdminPaymentSettings(
+              prev.paymentSettings,
+              nextSettings
+            ),
+          }));
         }
       },
       (err) => reportError(OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`, err)
+    );
+
+    const unsubPaymentSettings = onSnapshot(
+      doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC),
+      (snap) => {
+        if (snap.exists()) {
+          const rawPay = snap.data() as Partial<AdminPaymentSettings>;
+          onUpdate((prev) => {
+            const nextPay = mergeAdminPaymentSettings(rawPay, prev.settings);
+            return {
+              ...prev,
+              paymentSettings: nextPay,
+              settings: mergeBusinessSettings({
+                ...prev.settings,
+                upiId: nextPay.upiId,
+                upiNumber: nextPay.upiNumber,
+                bankAccountName: nextPay.bankAccountName,
+                bankName: nextPay.bankName,
+                bankAccountNo: nextPay.bankAccountNo,
+                bankIfscBranch: nextPay.bankIfscBranch,
+                paymentQrDataUrl: nextPay.qrDataUrl,
+                highlightConfig: {
+                  ...(prev.settings.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG),
+                  upiId: nextPay.upiId,
+                },
+              }),
+            };
+          });
+        }
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(
+            OperationType.GET,
+            `${PAYMENT_SETTINGS_COL}/${PAYMENT_SETTINGS_DOC}`,
+            err
+          );
+        }
+      }
     );
 
     const unsubClients = onSnapshot(
@@ -441,8 +645,39 @@ export const firestoreService = {
       (err) => reportError(OperationType.LIST, HIGHLIGHT_REQUESTS_COL, err)
     );
 
+    const unsubSellerFollows = onSnapshot(
+      collection(db, SELLER_FOLLOWS_COL),
+      (snap) => {
+        const sellerFollows = sortDescByCreated(
+          snap.docs.map((d) => d.data() as SellerFollowRecord)
+        );
+        onUpdate((prev) => ({ ...prev, sellerFollows }));
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, SELLER_FOLLOWS_COL, err);
+        }
+      }
+    );
+
+    const unsubProductReviews = onSnapshot(
+      collection(db, PRODUCT_REVIEWS_COL),
+      (snap) => {
+        const productReviews = sortDescByCreated(
+          snap.docs.map((d) => d.data() as ProductReview)
+        );
+        onUpdate((prev) => ({ ...prev, productReviews }));
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, PRODUCT_REVIEWS_COL, err);
+        }
+      }
+    );
+
     return () => {
       unsubSettings();
+      unsubPaymentSettings();
       unsubClients();
       unsubProducts();
       unsubInvoices();
@@ -452,16 +687,368 @@ export const firestoreService = {
       unsubSellerApps();
       unsubSupportChats();
       unsubHighlightRequests();
+      unsubSellerFollows();
+      unsubProductReviews();
     };
   },
 
   async updateSettings(next: BusinessSettings): Promise<BusinessSettings> {
     const clean = stripUndefinedDeep(mergeBusinessSettings(next));
+    const settingsRef = doc(db, SETTINGS_COL, SETTINGS_DOC);
+    const paymentRef = doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC);
     try {
-      await setDoc(doc(db, SETTINGS_COL, SETTINGS_DOC), clean);
-      return clean;
+      let syncedUpi =
+        String(clean.upiId || DEFAULT_ADMIN_UPI_ID).trim() || DEFAULT_ADMIN_UPI_ID;
+      const existingSnap = await getDoc(settingsRef);
+      if (existingSnap.exists()) {
+        const existing = mergeBusinessSettings(
+          existingSnap.data() as Partial<BusinessSettings>
+        );
+        const hcUpi = String(clean.highlightConfig?.upiId || '').trim();
+        const prevHcUpi = String(existing.highlightConfig?.upiId || '').trim();
+        if (hcUpi && hcUpi !== prevHcUpi && clean.upiId === existing.upiId) {
+          syncedUpi = hcUpi;
+        }
+      }
+      const syncedSettings = stripUndefinedDeep(
+        mergeBusinessSettings({
+          ...clean,
+          upiId: syncedUpi,
+          highlightConfig: {
+            ...(clean.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG),
+            upiId: syncedUpi,
+          },
+        })
+      );
+      const syncedPayment = stripUndefinedDeep({
+        ...mergeAdminPaymentSettings(undefined, syncedSettings),
+        upiId: syncedUpi,
+        updatedAt: new Date().toISOString(),
+      });
+      try {
+        const batch = writeBatch(db);
+        batch.set(settingsRef, syncedSettings);
+        batch.set(paymentRef, syncedPayment);
+        await batch.commit();
+      } catch (batchErr) {
+        if (!isPermissionDeniedError(batchErr)) {
+          throw batchErr;
+        }
+        await setDoc(settingsRef, syncedSettings);
+      }
+      return syncedSettings;
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${SETTINGS_COL}/${SETTINGS_DOC}`);
+    }
+  },
+
+  async updatePaymentSettings(
+    next: AdminPaymentSettings
+  ): Promise<{ paymentSettings: AdminPaymentSettings; settings: BusinessSettings }> {
+    const cleanUpi = String(next.upiId || '').trim();
+    if (cleanUpi.length < 3 || !cleanUpi.includes('@')) {
+      throw new Error('Please enter a valid UPI ID (e.g., name@axl or name@ibl).');
+    }
+    const now = new Date().toISOString();
+    const cleanPayment: AdminPaymentSettings = stripUndefinedDeep({
+      upiId: cleanUpi,
+      upiNumber: String(next.upiNumber || '').trim(),
+      bankAccountName: String(next.bankAccountName || '').trim(),
+      bankName: String(next.bankName || '').trim(),
+      bankAccountNo: String(next.bankAccountNo || '').trim(),
+      bankIfscBranch: String(next.bankIfscBranch || '').trim(),
+      qrDataUrl: String(next.qrDataUrl || '').trim(),
+      updatedAt: now,
+    });
+
+    const settingsRef = doc(db, SETTINGS_COL, SETTINGS_DOC);
+    const paymentRef = doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC);
+    try {
+      const snap = await getDoc(settingsRef);
+      const baseSettings = snap.exists()
+        ? mergeBusinessSettings(snap.data() as Partial<BusinessSettings>)
+        : mergeBusinessSettings();
+      const updatedSettings: BusinessSettings = stripUndefinedDeep(
+        mergeBusinessSettings({
+          ...baseSettings,
+          upiId: cleanPayment.upiId,
+          upiNumber: cleanPayment.upiNumber,
+          bankAccountName: cleanPayment.bankAccountName,
+          bankName: cleanPayment.bankName,
+          bankAccountNo: cleanPayment.bankAccountNo,
+          bankIfscBranch: cleanPayment.bankIfscBranch,
+          paymentQrDataUrl: cleanPayment.qrDataUrl,
+          highlightConfig: {
+            ...(baseSettings.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG),
+            upiId: cleanPayment.upiId,
+            updatedAt: now,
+          },
+        })
+      );
+      try {
+        const batch = writeBatch(db);
+        batch.set(paymentRef, cleanPayment);
+        batch.set(settingsRef, updatedSettings);
+        await batch.commit();
+      } catch (batchErr) {
+        if (!isPermissionDeniedError(batchErr)) {
+          throw batchErr;
+        }
+        await setDoc(settingsRef, updatedSettings);
+      }
+      return { paymentSettings: cleanPayment, settings: updatedSettings };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `${PAYMENT_SETTINGS_COL}/${PAYMENT_SETTINGS_DOC}`
+      );
+    }
+  },
+
+  async updateSellerPaymentDetails(
+    sellerId: string,
+    payload: {
+      sellerUpiId?: string;
+      sellerBankAccountName?: string;
+      sellerBankName?: string;
+      sellerBankAccountNo?: string;
+      sellerBankIfscBranch?: string;
+      sellerQrDataUrl?: string;
+    }
+  ): Promise<SellerApplication> {
+    const cleanUpi = String(payload.sellerUpiId || '').trim();
+    if (cleanUpi && !cleanUpi.includes('@')) {
+      throw new Error('Please enter a valid Seller UPI ID (e.g., seller@axl).');
+    }
+    const ref = doc(db, SELLER_APPLICATIONS_COL, sellerId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Seller account not found.');
+      const existing = snap.data() as SellerApplication;
+      const now = new Date().toISOString();
+      const updated: SellerApplication = stripUndefinedDeep({
+        ...existing,
+        sellerUpiId: cleanUpi,
+        sellerBankAccountName: String(payload.sellerBankAccountName || '').trim(),
+        sellerBankName: String(payload.sellerBankName || '').trim(),
+        sellerBankAccountNo: String(payload.sellerBankAccountNo || '').trim(),
+        sellerBankIfscBranch: String(payload.sellerBankIfscBranch || '').trim(),
+        sellerQrDataUrl: String(payload.sellerQrDataUrl || '').trim(),
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+      return sanitizePublicSeller(updated);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Seller')) throw error;
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${SELLER_APPLICATIONS_COL}/${sellerId}`
+      );
+    }
+  },
+
+  async updateSellerStoreProfile(
+    sellerId: string,
+    payload: {
+      name: string;
+      sellerPhotoDataUrl?: string;
+      sellerCoverPhotoDataUrl?: string;
+    }
+  ): Promise<SellerApplication> {
+    const nameCheck = validateEnglishName(payload.name, 'Seller Name');
+    if (!nameCheck.valid) {
+      throw new Error(nameCheck.error);
+    }
+    const ref = doc(db, SELLER_APPLICATIONS_COL, sellerId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Seller account not found.');
+      const existing = snap.data() as SellerApplication;
+      const now = new Date().toISOString();
+      const updated: SellerApplication = stripUndefinedDeep({
+        ...existing,
+        name: nameCheck.cleaned,
+        sellerPhotoDataUrl:
+          payload.sellerPhotoDataUrl !== undefined
+            ? String(payload.sellerPhotoDataUrl || '').trim()
+            : existing.sellerPhotoDataUrl,
+        sellerCoverPhotoDataUrl:
+          payload.sellerCoverPhotoDataUrl !== undefined
+            ? String(payload.sellerCoverPhotoDataUrl || '').trim()
+            : String(existing.sellerCoverPhotoDataUrl || '').trim(),
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+
+      if (existing.name !== nameCheck.cleaned) {
+        try {
+          const prodSnap = await getDocs(
+            query(collection(db, PRODUCTS_COL), where('sellerId', '==', sellerId))
+          );
+          if (!prodSnap.empty) {
+            const batch = writeBatch(db);
+            for (const prodDoc of prodSnap.docs) {
+              batch.update(prodDoc.ref, {
+                sellerName: nameCheck.cleaned,
+                updatedAt: now,
+              });
+            }
+            await batch.commit();
+          }
+        } catch {
+          // non-blocking secondary sync
+        }
+      }
+
+      return sanitizePublicSeller(updated);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('Seller') || error.message.includes('English'))
+      ) {
+        throw error;
+      }
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${SELLER_APPLICATIONS_COL}/${sellerId}`
+      );
+    }
+  },
+
+  async toggleSellerFollow(payload: {
+    sellerId: string;
+    clientId: string;
+    customerName?: string;
+  }): Promise<{
+    following: boolean;
+    followersCount: number;
+    follow?: SellerFollowRecord;
+  }> {
+    const cleanSellerId = String(payload.sellerId || '').trim();
+    const cleanClientId = String(payload.clientId || '').trim();
+    if (!cleanSellerId || !cleanClientId) {
+      throw new Error('Please sign in to follow this seller.');
+    }
+    const followId = `${cleanSellerId}__${cleanClientId}`.replace(
+      /[^a-zA-Z0-9_-]/g,
+      ''
+    ).slice(0, 128);
+    const followRef = doc(db, SELLER_FOLLOWS_COL, followId);
+    const now = new Date().toISOString();
+
+    try {
+      const existingSnap = await getDoc(followRef);
+      let following = false;
+      let createdFollow: SellerFollowRecord | undefined;
+
+      if (existingSnap.exists()) {
+        await deleteDoc(followRef);
+        following = false;
+      } else {
+        createdFollow = stripUndefinedDeep({
+          id: followId,
+          sellerId: cleanSellerId,
+          clientId: cleanClientId,
+          customerName: String(payload.customerName || 'Customer').trim(),
+          createdAt: now,
+        });
+        await setDoc(followRef, createdFollow);
+        following = true;
+      }
+
+      const countSnap = await getDocs(
+        query(
+          collection(db, SELLER_FOLLOWS_COL),
+          where('sellerId', '==', cleanSellerId)
+        )
+      );
+      const followersCount = countSnap.size;
+
+      try {
+        await updateDoc(doc(db, SELLER_APPLICATIONS_COL, cleanSellerId), {
+          followersCount,
+          updatedAt: now,
+        });
+      } catch {
+        // non-blocking if seller document doesn't exist
+      }
+
+      return { following, followersCount, follow: createdFollow };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `${SELLER_FOLLOWS_COL}/${followId}`
+      );
+    }
+  },
+
+  async submitProductReview(payload: {
+    productId: string;
+    sellerId?: string;
+    clientId: string;
+    customerName: string;
+    rating: number;
+    comment: string;
+    mediaUrl?: string;
+    mediaType?: MediaResourceType;
+    mediaRecord?: CloudinaryMediaRecord;
+  }): Promise<ProductReview> {
+    const cleanProductId = String(payload.productId || '').trim();
+    const cleanClientId = String(payload.clientId || '').trim();
+    if (!cleanProductId) {
+      throw new Error('Invalid product selected for review.');
+    }
+    if (!cleanClientId) {
+      throw new Error('Please sign in to submit a rating and review.');
+    }
+    const cleanCustomerName =
+      String(payload.customerName || '').trim() || 'Customer';
+    const numericRating = Math.min(
+      5,
+      Math.max(1, Math.round(Number(payload.rating) || 0))
+    );
+    if (!Number.isFinite(numericRating) || numericRating < 1 || numericRating > 5) {
+      throw new Error('Please select a rating between 1 and 5 stars.');
+    }
+    const cleanComment = String(payload.comment || '').trim().slice(0, 1000);
+    if (cleanComment.length < 2) {
+      throw new Error('Please write a review comment (minimum 2 characters).');
+    }
+
+    const cleanMediaUrl = payload.mediaUrl ? String(payload.mediaUrl).trim().slice(0, 1000) : '';
+    const now = new Date().toISOString();
+    const review: ProductReview = stripUndefinedDeep({
+      id: `rev-${crypto.randomUUID()}`,
+      productId: cleanProductId,
+      sellerId: payload.sellerId ? String(payload.sellerId).trim() : '',
+      clientId: cleanClientId,
+      customerName: cleanCustomerName,
+      rating: numericRating,
+      comment: cleanComment,
+      ...(cleanMediaUrl
+        ? {
+            mediaUrl: cleanMediaUrl,
+            mediaType: payload.mediaType || 'image',
+            ...(payload.mediaRecord ? { mediaRecord: payload.mediaRecord } : {}),
+          }
+        : {}),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, PRODUCT_REVIEWS_COL, review.id), review);
+      return review;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.CREATE,
+        `${PRODUCT_REVIEWS_COL}/${review.id}`
+      );
     }
   },
 
@@ -984,8 +1571,13 @@ export const firestoreService = {
   },
 
   async restoreBackup(workspace: WorkspaceData): Promise<WorkspaceData> {
+    const restoredSettings = stripUndefinedDeep(mergeBusinessSettings(workspace.settings));
+    const restoredPaymentSettings = stripUndefinedDeep(
+      mergeAdminPaymentSettings(workspace.paymentSettings, restoredSettings)
+    );
     const restored: WorkspaceData = {
-      settings: stripUndefinedDeep(mergeBusinessSettings(workspace.settings)),
+      settings: restoredSettings,
+      paymentSettings: restoredPaymentSettings,
       clients: Array.isArray(workspace.clients)
         ? workspace.clients.map((c) => stripUndefinedDeep(c))
         : [],
@@ -1009,6 +1601,9 @@ export const firestoreService = {
         : [],
       supportChats: Array.isArray(workspace.supportChats)
         ? workspace.supportChats.map((c) => stripUndefinedDeep(c))
+        : [],
+      highlightRequests: Array.isArray(workspace.highlightRequests)
+        ? workspace.highlightRequests.map((h) => stripUndefinedDeep(h))
         : [],
     };
 
@@ -1036,6 +1631,14 @@ export const firestoreService = {
     ops.push((batch) =>
       batch.set(doc(db, SETTINGS_COL, SETTINGS_DOC), restored.settings)
     );
+    if (restored.paymentSettings) {
+      ops.push((batch) =>
+        batch.set(
+          doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC),
+          restored.paymentSettings!
+        )
+      );
+    }
     for (const c of restored.clients) {
       ops.push((batch) => batch.set(doc(db, CLIENTS_COL, c.id), c));
     }
@@ -1155,6 +1758,8 @@ export const firestoreService = {
 
   async registerCustomerAccount(payload: {
     name: string;
+    email: string;
+    otpId: string;
     phone: string;
     address: string;
     city?: string;
@@ -1165,6 +1770,7 @@ export const firestoreService = {
     referredBy?: string;
   }): Promise<{ client: Client }> {
     const nameCheck = validateEnglishName(payload.name, 'Full Name');
+    const gmailCheck = validateGmailAddress(payload.email);
     const phoneCheck = normalizeIndianPhone(payload.phone);
     const cleanAddress = String(payload.address || '').trim();
     const cleanPassword = String(payload.password || '').trim();
@@ -1173,6 +1779,9 @@ export const firestoreService = {
       throw new Error(nameCheck.error);
     }
     const cleanName = nameCheck.cleaned;
+    if (!gmailCheck.valid) {
+      throw new Error(gmailCheck.error);
+    }
     if (!phoneCheck.valid) {
       throw new Error(
         phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
@@ -1184,6 +1793,12 @@ export const firestoreService = {
     if (cleanPassword.length < 4) {
       throw new Error('Password must be at least 4 characters long.');
     }
+
+    await assertVerifiedEmailOtp(
+      payload.otpId,
+      gmailCheck.email,
+      'customer_register'
+    );
 
     const formattedPhone = phoneCheck.formatted;
 
@@ -1207,6 +1822,18 @@ export const firestoreService = {
       );
     }
 
+    const emailConflict = existingClients.find(
+      (c) =>
+        c.id !== matchedClient?.id &&
+        c.passwordHash &&
+        String(c.email || '').trim().toLowerCase() === gmailCheck.email
+    );
+    if (emailConflict) {
+      throw new Error(
+        'An account with this Gmail address already exists. Please Sign In or click Forgot Password.'
+      );
+    }
+
     const { salt, hash } = await hashCustomerPassword(cleanPassword);
     const runningPasswordEnc = encryptRunningPassword(cleanPassword, salt);
     const now = new Date().toISOString();
@@ -1221,6 +1848,7 @@ export const firestoreService = {
       ? stripUndefinedDeep({
           ...matchedClient,
           name: cleanName,
+          email: gmailCheck.email,
           mobile: formattedPhone,
           whatsapp: matchedClient.whatsapp
             ? formatPhoneWithPlus91(matchedClient.whatsapp)
@@ -1245,6 +1873,7 @@ export const firestoreService = {
       : stripUndefinedDeep({
           id: newClientId,
           name: cleanName,
+          email: gmailCheck.email,
           mobile: formattedPhone,
           whatsapp: formattedPhone,
           address: cleanAddress,
@@ -1402,6 +2031,8 @@ export const firestoreService = {
               : undefined,
           quantity: Math.max(1, Math.floor(safeNum(item.quantity, 1))),
           imageDataUrl: item.imageDataUrl ? String(item.imageDataUrl) : '',
+          sellerId: item.sellerId ? String(item.sellerId) : '',
+          sellerName: item.sellerName ? String(item.sellerName).trim() : '',
         })
       );
       const now = new Date().toISOString();
@@ -1439,6 +2070,10 @@ export const firestoreService = {
     quantity: number;
     unitPrice: number;
     paymentMethod: CustomerOrderPaymentMethod;
+    upiIdUsed?: string;
+    sellerId?: string;
+    paymentRecipientType?: 'admin' | 'seller' | 'mixed';
+    paymentRecipientName?: string;
     paymentScreenshotDataUrl?: string;
     customerNote?: string;
   }): Promise<{ order: CustomerOrder; client: Client }> {
@@ -1494,6 +2129,8 @@ export const firestoreService = {
               originalPrice,
               lineTotal: Number((qty * unitPrice).toFixed(2)),
               imageDataUrl: it.imageDataUrl ? String(it.imageDataUrl) : '',
+              sellerId: it.sellerId ? String(it.sellerId) : '',
+              sellerName: it.sellerName ? String(it.sellerName).trim() : '',
             });
           })
         : [
@@ -1515,6 +2152,7 @@ export const firestoreService = {
                   Math.max(0, safeNum(payload.unitPrice, 0))
                 ).toFixed(2)
               ),
+              sellerId: payload.sellerId ? String(payload.sellerId) : '',
             }),
           ];
 
@@ -1548,13 +2186,32 @@ export const firestoreService = {
 
     let existingClients: Client[] = [];
     let existingOrders: CustomerOrder[] = [];
+    let resolvedAdminUpi = String(payload.upiIdUsed || '').trim();
     try {
-      const [cliSnap, ordSnap] = await Promise.all([
+      const [cliSnap, ordSnap, paySettingsSnap] = await Promise.all([
         getDocs(collection(db, CLIENTS_COL)),
         getDocs(collection(db, ORDERS_COL)),
+        paymentMethod === 'UPI' && !resolvedAdminUpi
+          ? getDoc(doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC))
+          : Promise.resolve(null),
       ]);
       existingClients = cliSnap.docs.map((d) => d.data() as Client);
       existingOrders = ordSnap.docs.map((d) => d.data() as CustomerOrder);
+      if (paySettingsSnap && paySettingsSnap.exists()) {
+        const ps = paySettingsSnap.data() as Partial<AdminPaymentSettings>;
+        if (ps.upiId && ps.upiId.trim()) {
+          resolvedAdminUpi = ps.upiId.trim();
+        }
+      }
+      if (paymentMethod === 'UPI' && !resolvedAdminUpi) {
+        const setSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
+        if (setSnap.exists()) {
+          const s = setSnap.data() as Partial<BusinessSettings>;
+          if (s.upiId && s.upiId.trim()) {
+            resolvedAdminUpi = s.upiId.trim();
+          }
+        }
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, ORDERS_COL);
     }
@@ -1645,7 +2302,11 @@ export const firestoreService = {
       deliveryCharge,
       totalAmount,
       paymentMethod,
-      upiIdUsed: paymentMethod === 'UPI' ? CHECKOUT_UPI_ID : '',
+      upiIdUsed:
+        paymentMethod === 'UPI' ? resolvedAdminUpi || DEFAULT_ADMIN_UPI_ID : '',
+      sellerId: String(payload.sellerId || normalizedItems[0].sellerId || ''),
+      paymentRecipientType: payload.paymentRecipientType,
+      paymentRecipientName: String(payload.paymentRecipientName || '').trim(),
       paymentScreenshotDataUrl:
         paymentMethod === 'UPI' ? String(payload.paymentScreenshotDataUrl || '') : '',
       customerNote: String(payload.customerNote || '').trim(),
@@ -1865,7 +2526,7 @@ export const firestoreService = {
         remainingDueAfter: invoice.dueAmount,
         paymentDate: invoice.invoiceDate,
         paymentMethod: 'UPI',
-        note: `Online UPI payment for ${order.orderNumber} (${order.upiIdUsed || CHECKOUT_UPI_ID})`,
+        note: `Online UPI payment for ${order.orderNumber} (${order.upiIdUsed || DEFAULT_ADMIN_UPI_ID})`,
         createdAt: now,
       });
     }
@@ -2037,6 +2698,7 @@ export const firestoreService = {
     clientId?: string;
     name: string;
     email?: string;
+    otpId?: string;
     dateOfBirth: string;
     fullAddress: string;
     phone: string;
@@ -2045,6 +2707,7 @@ export const firestoreService = {
     gstNumber?: string;
     password?: string;
     sellerPhotoDataUrl: string;
+    sellerCoverPhotoDataUrl?: string;
     panDocDataUrl: string;
     aadhaarDocDataUrl: string;
     gstDocDataUrl?: string;
@@ -2154,6 +2817,15 @@ export const firestoreService = {
       throw new Error('Your seller account is already approved. Please use Seller Login.');
     }
 
+    // Require Gmail OTP verification ONLY when creating a new seller account for the first time
+    if (!matchedExisting) {
+      const gmailCheck = validateGmailAddress(cleanEmail);
+      if (!gmailCheck.valid) {
+        throw new Error(gmailCheck.error);
+      }
+      await assertVerifiedEmailOtp(payload.otpId, gmailCheck.email, 'seller_register');
+    }
+
     if (!matchedExisting && !cleanPassword) {
       throw new Error('Please create a Seller Login Password (minimum 4 characters).');
     }
@@ -2192,6 +2864,12 @@ export const firestoreService = {
       aadhaarNumber: cleanAadhaar,
       gstNumber: cleanGst,
       sellerPhotoDataUrl: payload.sellerPhotoDataUrl,
+      sellerCoverPhotoDataUrl: String(
+        payload.sellerCoverPhotoDataUrl ||
+          matchedExisting?.sellerCoverPhotoDataUrl ||
+          ''
+      ),
+      followersCount: Math.max(0, Number(matchedExisting?.followersCount) || 0),
       panDocDataUrl: payload.panDocDataUrl,
       aadhaarDocDataUrl: payload.aadhaarDocDataUrl,
       gstDocDataUrl: String(payload.gstDocDataUrl || ''),
@@ -2480,16 +3158,19 @@ export const firestoreService = {
     const sellerRef = doc(db, SELLER_APPLICATIONS_COL, payload.sellerId);
     const productRef = doc(db, PRODUCTS_COL, payload.productId);
     const settingsRef = doc(db, SETTINGS_COL, SETTINGS_DOC);
+    const paymentSettingsRef = doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC);
 
     let seller: SellerApplication;
     let product: Product;
     let settings: BusinessSettings;
+    let livePaymentUpi = '';
 
     try {
-      const [sellerSnap, prodSnap, settingsSnap] = await Promise.all([
+      const [sellerSnap, prodSnap, settingsSnap, paySnap] = await Promise.all([
         getDoc(sellerRef),
         getDoc(productRef),
         getDoc(settingsRef),
+        getDoc(paymentSettingsRef),
       ]);
       if (!sellerSnap.exists()) throw new Error('Seller account not found.');
       seller = sellerSnap.data() as SellerApplication;
@@ -2504,6 +3185,11 @@ export const firestoreService = {
       settings = settingsSnap.exists()
         ? mergeBusinessSettings(settingsSnap.data() as Partial<BusinessSettings>)
         : mergeBusinessSettings();
+      if (paySnap.exists()) {
+        livePaymentUpi = String(
+          (paySnap.data() as Partial<AdminPaymentSettings>).upiId || ''
+        ).trim();
+      }
     } catch (error) {
       if (
         error instanceof Error &&
@@ -2602,7 +3288,7 @@ export const firestoreService = {
       planTitle,
       durationDays,
       amount,
-      upiIdUsed: config.upiId || HIGHLIGHT_UPI_ID,
+      upiIdUsed: livePaymentUpi || config.upiId || HIGHLIGHT_UPI_ID,
       transactionRef: cleanTxRef,
       paymentScreenshotDataUrl: cleanShot,
       placementRule: config.placementRule || 'top_featured',
@@ -2753,11 +3439,16 @@ export const firestoreService = {
 
   async fetchCustomerStorefront(): Promise<{
     settings: BusinessSettings;
+    paymentSettings: AdminPaymentSettings;
     products: Product[];
     approvedSellerIds: string[];
+    sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile>;
     highlightSeatUsage: Record<string, number>;
+    sellerFollows: SellerFollowRecord[];
+    productReviews: ProductReview[];
   }> {
     let settings: BusinessSettings = mergeBusinessSettings();
+    let paymentSettings: AdminPaymentSettings = { ...DEFAULT_ADMIN_PAYMENT_SETTINGS };
     try {
       const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
       if (settingsSnap.exists()) {
@@ -2765,34 +3456,69 @@ export const firestoreService = {
           settingsSnap.data() as Partial<BusinessSettings>
         );
       }
+      try {
+        const paymentSnap = await getDoc(
+          doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC)
+        );
+        paymentSettings = mergeAdminPaymentSettings(
+          paymentSnap.exists()
+            ? (paymentSnap.data() as Partial<AdminPaymentSettings>)
+            : undefined,
+          settings
+        );
+      } catch (payErr) {
+        if (!isPermissionDeniedError(payErr)) {
+          throw payErr;
+        }
+        paymentSettings = mergeAdminPaymentSettings(undefined, settings);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`);
     }
 
     let products: Product[] = [];
     let approvedSellerIds: string[] = [];
+    const sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile> = {};
     const highlightSeatUsage: Record<string, number> = {};
+    let sellerFollows: SellerFollowRecord[] = [];
+    let productReviews: ProductReview[] = [];
     try {
-      const [prodSnap, sellerSnap, seatsSnap] = await Promise.all([
-        getDocs(collection(db, PRODUCTS_COL)),
-        getDocs(
-          query(
-            collection(db, SELLER_APPLICATIONS_COL),
-            where('status', '==', 'approved')
-          )
-        ),
-        getDocs(
-          query(
-            collection(db, HIGHLIGHT_REQUESTS_COL),
-            where('requestType', '==', 'offer_seat')
-          )
-        ),
-      ]);
+      const [prodSnap, sellerSnap, seatsSnap, followsSnap, reviewsSnap] =
+        await Promise.all([
+          getDocs(collection(db, PRODUCTS_COL)),
+          getDocs(
+            query(
+              collection(db, SELLER_APPLICATIONS_COL),
+              where('status', '==', 'approved')
+            )
+          ),
+          getDocs(
+            query(
+              collection(db, HIGHLIGHT_REQUESTS_COL),
+              where('requestType', '==', 'offer_seat')
+            )
+          ),
+          getDocs(collection(db, SELLER_FOLLOWS_COL)).catch(() => null),
+          getDocs(collection(db, PRODUCT_REVIEWS_COL)).catch(() => null),
+        ]);
       products = sortDescByCreated(prodSnap.docs.map((d) => d.data() as Product));
-      approvedSellerIds = sellerSnap.docs
+      if (followsSnap) {
+        sellerFollows = sortDescByCreated(
+          followsSnap.docs.map((d) => d.data() as SellerFollowRecord)
+        );
+      }
+      if (reviewsSnap) {
+        productReviews = sortDescByCreated(
+          reviewsSnap.docs.map((d) => d.data() as ProductReview)
+        );
+      }
+      const approvedSellers = sellerSnap.docs
         .map((d) => d.data() as SellerApplication)
-        .filter((a) => a.status === 'approved' && a.accountActivated !== false)
-        .map((a) => a.id);
+        .filter((a) => a.status === 'approved' && a.accountActivated !== false);
+      approvedSellerIds = approvedSellers.map((a) => a.id);
+      for (const app of approvedSellers) {
+        sellerPaymentProfiles[app.id] = extractPublicSellerPaymentProfile(app);
+      }
 
       for (const d of seatsSnap.docs) {
         const req = d.data() as HighlightRequest;
@@ -2813,15 +3539,30 @@ export const firestoreService = {
       handleFirestoreError(error, OperationType.LIST, PRODUCTS_COL);
     }
 
-    return { settings, products, approvedSellerIds, highlightSeatUsage };
+    return {
+      settings: sanitizePublicSettings(settings),
+      paymentSettings,
+      products,
+      approvedSellerIds,
+      sellerPaymentProfiles,
+      highlightSeatUsage,
+      sellerFollows,
+      productReviews,
+    };
   },
 
   subscribeCustomerStorefront(
     onSettings: (settings: BusinessSettings) => void,
+    onPaymentSettings: (paymentSettings: AdminPaymentSettings) => void,
     onProducts: (products: Product[]) => void,
     onApprovedSellerIds: (sellerIds: string[]) => void,
+    onSellerPaymentProfiles: (
+      profiles: Record<string, SellerPublicPaymentProfile>
+    ) => void,
     onHighlightSeatUsage: (usage: Record<string, number>) => void,
-    onError: (err: Error) => void
+    onError: (err: Error) => void,
+    onSellerFollows?: (follows: SellerFollowRecord[]) => void,
+    onProductReviews?: (reviews: ProductReview[]) => void
   ): () => void {
     const reportError = (op: OperationType, path: string, err: unknown) => {
       try {
@@ -2835,12 +3576,34 @@ export const firestoreService = {
       doc(db, SETTINGS_COL, SETTINGS_DOC),
       (snap) => {
         if (snap.exists()) {
-          onSettings(
-            mergeBusinessSettings(snap.data() as Partial<BusinessSettings>)
+          const next = mergeBusinessSettings(
+            snap.data() as Partial<BusinessSettings>
           );
+          onSettings(sanitizePublicSettings(next));
+          onPaymentSettings(mergeAdminPaymentSettings(undefined, next));
         }
       },
       (err) => reportError(OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`, err)
+    );
+
+    const unsubPaymentSettings = onSnapshot(
+      doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC),
+      (snap) => {
+        if (snap.exists()) {
+          onPaymentSettings(
+            mergeAdminPaymentSettings(snap.data() as Partial<AdminPaymentSettings>)
+          );
+        }
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(
+            OperationType.GET,
+            `${PAYMENT_SETTINGS_COL}/${PAYMENT_SETTINGS_DOC}`,
+            err
+          );
+        }
+      }
     );
 
     const unsubProducts = onSnapshot(
@@ -2857,11 +3620,15 @@ export const firestoreService = {
         where('status', '==', 'approved')
       ),
       (snap) => {
-        const ids = snap.docs
+        const approvedSellers = snap.docs
           .map((d) => d.data() as SellerApplication)
-          .filter((a) => a.status === 'approved' && a.accountActivated !== false)
-          .map((a) => a.id);
-        onApprovedSellerIds(ids);
+          .filter((a) => a.status === 'approved' && a.accountActivated !== false);
+        onApprovedSellerIds(approvedSellers.map((a) => a.id));
+        const profiles: Record<string, SellerPublicPaymentProfile> = {};
+        for (const app of approvedSellers) {
+          profiles[app.id] = extractPublicSellerPaymentProfile(app);
+        }
+        onSellerPaymentProfiles(profiles);
       },
       (err) => reportError(OperationType.LIST, SELLER_APPLICATIONS_COL, err)
     );
@@ -2892,11 +3659,48 @@ export const firestoreService = {
       (err) => reportError(OperationType.LIST, HIGHLIGHT_REQUESTS_COL, err)
     );
 
+    const unsubFollows = onSellerFollows
+      ? onSnapshot(
+          collection(db, SELLER_FOLLOWS_COL),
+          (snap) => {
+            onSellerFollows(
+              sortDescByCreated(
+                snap.docs.map((d) => d.data() as SellerFollowRecord)
+              )
+            );
+          },
+          (err) => {
+            if (!isPermissionDeniedError(err)) {
+              reportError(OperationType.LIST, SELLER_FOLLOWS_COL, err);
+            }
+          }
+        )
+      : () => undefined;
+
+    const unsubReviews = onProductReviews
+      ? onSnapshot(
+          collection(db, PRODUCT_REVIEWS_COL),
+          (snap) => {
+            onProductReviews(
+              sortDescByCreated(snap.docs.map((d) => d.data() as ProductReview))
+            );
+          },
+          (err) => {
+            if (!isPermissionDeniedError(err)) {
+              reportError(OperationType.LIST, PRODUCT_REVIEWS_COL, err);
+            }
+          }
+        )
+      : () => undefined;
+
     return () => {
       unsubSettings();
+      unsubPaymentSettings();
       unsubProducts();
       unsubSellers();
       unsubSeatUsage();
+      unsubFollows();
+      unsubReviews();
     };
   },
 
@@ -3085,7 +3889,7 @@ export const firestoreService = {
       }
 
       throw new Error(
-        'A support chat for this mobile number exists under a different name. Please enter the exact Name & Phone Number used previously, or Sign In. / এই মোবাইল নম্বরে অন্য নামে আগের চ্যাট রয়েছে। অনুগ্রহ করে আগের সঠিক নাম ও ফোন নম্বর দিন বা সাইন ইন করুন।'
+        'A support chat for this mobile number exists under a different name. Please enter the exact Name & Phone Number used previously, or Sign In.'
       );
     } catch (error) {
       if (
@@ -3316,6 +4120,389 @@ export const firestoreService = {
       await updateDoc(ref, patch);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `${SUPPORT_CHATS_COL}/${chatId}`);
+    }
+  },
+
+  async sendEmailOtp(
+    email: string,
+    purpose: EmailOtpPurpose
+  ): Promise<{
+    otpId: string;
+    email: string;
+    expiresAt: string;
+    resendAvailableAt: string;
+    challengeToken: string;
+  }> {
+    let targetEmail = ADMIN_OTP_EMAIL;
+    if (purpose !== 'admin_login') {
+      const check = validateGmailAddress(email);
+      if (!check.valid) {
+        throw new Error(check.error);
+      }
+      targetEmail = check.email;
+    }
+
+    if (purpose === 'customer_register') {
+      const snap = await getDocs(
+        query(collection(db, CLIENTS_COL), where('email', '==', targetEmail))
+      );
+      const existing = snap.docs.map((d) => d.data() as Client).find((c) => Boolean(c.passwordHash));
+      if (existing) {
+        throw new Error(
+          'A customer account with this Gmail already exists. Please Sign In or use Forgot Password.'
+        );
+      }
+    } else if (purpose === 'seller_register') {
+      const snap = await getDocs(
+        query(
+          collection(db, SELLER_APPLICATIONS_COL),
+          where('email', '==', targetEmail)
+        )
+      );
+      const approved = snap.docs
+        .map((d) => d.data() as SellerApplication)
+        .find((s) => s.status === 'approved');
+      if (approved) {
+        throw new Error(
+          'A verified Seller account already uses this Gmail. Please use Seller Login.'
+        );
+      }
+    } else if (purpose === 'customer_forgot_password') {
+      const snap = await getDocs(
+        query(collection(db, CLIENTS_COL), where('email', '==', targetEmail))
+      );
+      if (snap.empty) {
+        throw new Error(
+          'No customer account found with this Gmail address. Please check your Gmail or use WhatsApp Support.'
+        );
+      }
+    } else if (purpose === 'seller_forgot_password') {
+      const snap = await getDocs(
+        query(
+          collection(db, SELLER_APPLICATIONS_COL),
+          where('email', '==', targetEmail)
+        )
+      );
+      if (snap.empty) {
+        throw new Error('No Seller account found registered with this Gmail address.');
+      }
+    }
+
+    // Enforce 30-second cooldown across refreshes via Firestore
+    try {
+      const existingOtps = await getDocs(
+        query(collection(db, EMAIL_OTPS_COL), where('email', '==', targetEmail))
+      );
+      const latestCooldownMs = existingOtps.docs
+        .map((d) => d.data() as EmailOtpRecord)
+        .filter((o) => o.purpose === purpose && !o.verified)
+        .reduce((max, o) => {
+          const ts = Date.parse(o.resendAvailableAt || '');
+          return Number.isNaN(ts) ? max : Math.max(max, ts);
+        }, 0);
+      if (latestCooldownMs > Date.now()) {
+        const waitSec = Math.ceil((latestCooldownMs - Date.now()) / 1000);
+        throw new Error(`Please wait ${waitSec}s before requesting another OTP.`);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Please wait ')) {
+        throw err;
+      }
+      // ignore non-blocking cooldown read fallback; server also checks cooldown
+    }
+
+    const response = await fetch('/api/otp/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: targetEmail, purpose }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      otpId?: string;
+      email?: string;
+      otpHash?: string;
+      expiresAt?: string;
+      resendAvailableAt?: string;
+      challengeToken?: string;
+      error?: string;
+    };
+    if (
+      !response.ok ||
+      !payload.otpId ||
+      !payload.email ||
+      !payload.otpHash ||
+      !payload.expiresAt ||
+      !payload.resendAvailableAt ||
+      !payload.challengeToken
+    ) {
+      throw new Error(
+        payload.error || 'Could not send 6-digit Email OTP. Please try again.'
+      );
+    }
+
+    const now = new Date().toISOString();
+    const record: EmailOtpRecord = stripUndefinedDeep({
+      id: payload.otpId,
+      email: payload.email,
+      purpose,
+      otpHash: payload.otpHash,
+      expiresAt: payload.expiresAt,
+      attempts: 0,
+      maxAttempts: OTP_MAX_ATTEMPTS,
+      verified: false,
+      resendAvailableAt: payload.resendAvailableAt,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, EMAIL_OTPS_COL, record.id), record);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `${EMAIL_OTPS_COL}/${record.id}`);
+    }
+
+    return {
+      otpId: payload.otpId,
+      email: payload.email,
+      expiresAt: payload.expiresAt,
+      resendAvailableAt: payload.resendAvailableAt,
+      challengeToken: payload.challengeToken,
+    };
+  },
+
+  async verifyEmailOtp(params: {
+    otpId: string;
+    email: string;
+    purpose: EmailOtpPurpose;
+    code: string;
+    challengeToken: string;
+  }): Promise<{ verified: true; otpId: string; email: string }> {
+    const cleanOtpId = String(params.otpId || '').trim();
+    const cleanCode = String(params.code || '').trim();
+    const targetEmail =
+      params.purpose === 'admin_login'
+        ? ADMIN_OTP_EMAIL
+        : String(params.email || '').trim().toLowerCase();
+
+    if (!cleanOtpId || !params.challengeToken) {
+      throw new Error('Please click Send OTP first before verifying.');
+    }
+    if (!/^\d{6}$/.test(cleanCode)) {
+      throw new Error('Please enter the 6-digit OTP sent to your Gmail.');
+    }
+
+    const ref = doc(db, EMAIL_OTPS_COL, cleanOtpId);
+    let record: EmailOtpRecord;
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        throw new Error('OTP session expired or not found. Please click Send OTP again.');
+      }
+      record = snap.data() as EmailOtpRecord;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('OTP session')) throw error;
+      handleFirestoreError(error, OperationType.GET, `${EMAIL_OTPS_COL}/${cleanOtpId}`);
+    }
+
+    if (record.verified) {
+      return { verified: true, otpId: cleanOtpId, email: targetEmail };
+    }
+    const expMs = Date.parse(record.expiresAt);
+    if (!Number.isNaN(expMs) && Date.now() > expMs) {
+      throw new Error('This OTP has expired (5-minute limit). Please click Resend OTP.');
+    }
+    if (record.attempts >= record.maxAttempts) {
+      throw new Error(
+        'Maximum verification attempts (5) exceeded. Please click Resend OTP for a new code.'
+      );
+    }
+
+    const response = await fetch('/api/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        otpId: cleanOtpId,
+        email: targetEmail,
+        purpose: params.purpose,
+        code: cleanCode,
+        challengeToken: params.challengeToken,
+      }),
+    });
+    const resData = (await response.json().catch(() => ({}))) as {
+      verified?: boolean;
+      error?: string;
+    };
+
+    const now = new Date().toISOString();
+    if (!response.ok || !resData.verified) {
+      const nextAttempts = record.attempts + 1;
+      try {
+        await updateDoc(ref, {
+          attempts: nextAttempts,
+          updatedAt: now,
+        });
+      } catch {
+        // ignore secondary update error
+      }
+      const remaining = Math.max(0, record.maxAttempts - nextAttempts);
+      const suffix =
+        remaining > 0
+          ? ` (${remaining} attempt${remaining === 1 ? '' : 's'} remaining)`
+          : ' (Attempt limit reached — please Resend OTP)';
+      throw new Error((resData.error || 'Incorrect 6-digit OTP code.') + suffix);
+    }
+
+    try {
+      await updateDoc(ref, {
+        verified: true,
+        verifiedAt: now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${EMAIL_OTPS_COL}/${cleanOtpId}`);
+    }
+
+    return { verified: true, otpId: cleanOtpId, email: targetEmail };
+  },
+
+  async resetCustomerPasswordWithOtp(payload: {
+    email: string;
+    otpId: string;
+    newPassword: string;
+  }): Promise<{ ok: boolean }> {
+    const gmailCheck = validateGmailAddress(payload.email);
+    if (!gmailCheck.valid) {
+      throw new Error(gmailCheck.error);
+    }
+    const cleanPassword = String(payload.newPassword || '').trim();
+    if (cleanPassword.length < 4) {
+      throw new Error('New password must be at least 4 characters long.');
+    }
+
+    await assertVerifiedEmailOtp(
+      payload.otpId,
+      gmailCheck.email,
+      'customer_forgot_password'
+    );
+
+    let matched: Client | undefined;
+    try {
+      const snap = await getDocs(
+        query(collection(db, CLIENTS_COL), where('email', '==', gmailCheck.email))
+      );
+      if (!snap.empty) {
+        matched = snap.docs[0].data() as Client;
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, CLIENTS_COL);
+    }
+
+    if (!matched) {
+      throw new Error('No customer account found with this Gmail address.');
+    }
+
+    const { salt, hash } = await hashCustomerPassword(cleanPassword);
+    const runningPasswordEnc = encryptRunningPassword(cleanPassword, salt);
+    const now = new Date().toISOString();
+
+    const updated: Client = stripUndefinedDeep({
+      ...matched,
+      passwordSalt: salt,
+      passwordHash: hash,
+      runningPasswordEnc,
+      passwordUpdatedAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, CLIENTS_COL, matched.id), updated);
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${CLIENTS_COL}/${matched.id}`);
+    }
+  },
+
+  async resetSellerPasswordWithOtp(payload: {
+    email: string;
+    otpId: string;
+    newPassword: string;
+  }): Promise<{ ok: boolean }> {
+    const gmailCheck = validateGmailAddress(payload.email);
+    if (!gmailCheck.valid) {
+      throw new Error(gmailCheck.error);
+    }
+    const cleanPassword = String(payload.newPassword || '').trim();
+    if (cleanPassword.length < 4) {
+      throw new Error('New password must be at least 4 characters long.');
+    }
+
+    await assertVerifiedEmailOtp(
+      payload.otpId,
+      gmailCheck.email,
+      'seller_forgot_password'
+    );
+
+    let matched: SellerApplication | undefined;
+    try {
+      const snap = await getDocs(
+        query(
+          collection(db, SELLER_APPLICATIONS_COL),
+          where('email', '==', gmailCheck.email)
+        )
+      );
+      if (!snap.empty) {
+        matched = snap.docs[0].data() as SellerApplication;
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, SELLER_APPLICATIONS_COL);
+    }
+
+    if (!matched) {
+      throw new Error('No Seller account found registered with this Gmail address.');
+    }
+
+    const { salt, hash } = await hashCustomerPassword(cleanPassword);
+    const runningPasswordEnc = encryptRunningPassword(cleanPassword, salt);
+    const now = new Date().toISOString();
+
+    const updated: SellerApplication = stripUndefinedDeep({
+      ...matched,
+      passwordSalt: salt,
+      passwordHash: hash,
+      runningPasswordEnc,
+      passwordUpdatedAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, SELLER_APPLICATIONS_COL, matched.id), updated);
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${SELLER_APPLICATIONS_COL}/${matched.id}`
+      );
+    }
+  },
+
+  async recordAdminOtpVerified(otpId: string): Promise<{ verifiedAt: string }> {
+    await assertVerifiedEmailOtp(otpId, ADMIN_OTP_EMAIL, 'admin_login');
+
+    const now = new Date().toISOString();
+    const ref = doc(db, SETTINGS_COL, SETTINGS_DOC);
+    try {
+      const snap = await getDoc(ref);
+      const current = snap.exists()
+        ? mergeBusinessSettings(snap.data() as Partial<BusinessSettings>)
+        : mergeBusinessSettings();
+      const updated = stripUndefinedDeep({
+        ...current,
+        lastAdminOtpVerifiedAt: now,
+      });
+      await setDoc(ref, updated);
+      return { verifiedAt: now };
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${SETTINGS_COL}/${SETTINGS_DOC}`);
     }
   },
 };

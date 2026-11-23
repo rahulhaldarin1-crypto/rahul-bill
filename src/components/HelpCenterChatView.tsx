@@ -283,7 +283,7 @@ export const HelpCenterChatView: React.FC<HelpCenterChatViewProps> = ({
             </div>
             <div>
               <h1 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
-                Help Center (হেল্প সেন্টার)
+                Help Center
               </h1>
               <p className="text-xs text-[#6B5B7B]">
                 Private real-time support chat — only you and Admin can view this conversation

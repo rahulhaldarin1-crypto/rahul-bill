@@ -1,18 +1,59 @@
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 import {
+  AdminPaymentSettings,
   BusinessSettings,
   HighlightConfig,
   Invoice,
   InvoiceLineItem,
+  Product,
+  SellerPublicPaymentProfile,
   ViewPanelConfig,
   WorkspaceData,
 } from '../types/business';
 
-export const CHECKOUT_UPI_ID = '9332578394-4@ibl';
-export const HIGHLIGHT_UPI_ID = 'rahulhaldar189941@axl';
+export const DEFAULT_ADMIN_UPI_ID = 'rahulhaldar189941@axl';
+export const CHECKOUT_UPI_ID = DEFAULT_ADMIN_UPI_ID;
+export const HIGHLIGHT_UPI_ID = DEFAULT_ADMIN_UPI_ID;
 export const WHATSAPP_SUPPORT_PHONE = '919332578394';
 export const COD_DELIVERY_CHARGE_PER_ITEM = 50;
+
+export const ADMIN_OTP_EMAIL = 'rahulhaldar.in@gmail.com';
+export const ADMIN_OTP_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const OTP_EXPIRY_MS = 5 * 60 * 1000;
+export const OTP_RESEND_COOLDOWN_SEC = 30;
+export const OTP_MAX_ATTEMPTS = 5;
+
+export function validateGmailAddress(raw?: string): {
+  valid: boolean;
+  email: string;
+  error?: string;
+} {
+  const cleaned = String(raw || '').trim().toLowerCase();
+  if (!cleaned) {
+    return {
+      valid: false,
+      email: '',
+      error: 'Please enter your @gmail.com email address for OTP verification.',
+    };
+  }
+  if (!/^[a-z0-9._%+-]+@gmail\.com$/i.test(cleaned)) {
+    return {
+      valid: false,
+      email: cleaned,
+      error: 'Please enter a valid Gmail address ending with @gmail.com.',
+    };
+  }
+  return { valid: true, email: cleaned };
+}
+
+export function isAdminOtpWindowValid(lastVerifiedAt?: string): boolean {
+  if (!lastVerifiedAt || !String(lastVerifiedAt).trim()) return false;
+  const ts = Date.parse(lastVerifiedAt);
+  if (Number.isNaN(ts)) return false;
+  const elapsed = Date.now() - ts;
+  return elapsed >= 0 && elapsed < ADMIN_OTP_WINDOW_MS;
+}
 
 export const PRODUCT_CATEGORIES = [
   "Women's Clothing",
@@ -26,17 +67,28 @@ export const PRODUCT_CATEGORIES = [
 
 export const DEFAULT_PRODUCT_CATEGORY = PRODUCT_CATEGORIES[0];
 
-export const MAX_IMAGE_UPLOAD_BYTES = 300 * 1024; // Strict 300KB (307,200 bytes)
+export const MAX_COMPRESSED_IMAGE_BYTES = 100 * 1024; // Strictly under 100KB (102,400 bytes)
+export const TARGET_COMPRESSED_IMAGE_BYTES = 95 * 1024; // ~80KB-95KB target binary size
 
-export function validateImageFileUnder300KB(file: File): string | null {
-  if (!file.type || !file.type.startsWith('image/')) {
-    return 'Please select a valid JPG/PNG image file. অনুগ্রহ করে সঠিক ছবি (JPG/PNG) নির্বাচন করুন।';
-  }
-  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
-    const sizeKb = Math.ceil(file.size / 1024);
-    return `File size (${sizeKb}KB) exceeds the 300KB limit. অনুগ্রহ করে 300KB-এর কম সাইজের ফাইল আপলোড করুন। (Please upload an image under 300KB.)`;
+export function validateImageFileType(file: File): string | null {
+  const mime = (file.type || '').toLowerCase();
+  const hasImageExtension = /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(
+    file.name || ''
+  );
+  if (!mime.startsWith('image/') && !hasImageExtension) {
+    return 'Please select a valid image file (JPG, PNG, or WEBP).';
   }
   return null;
+}
+
+export function estimateDataUrlBinaryBytes(dataUrl: string): number {
+  const commaIdx = dataUrl.indexOf(',');
+  if (commaIdx === -1) return dataUrl.length;
+  const b64 = dataUrl.slice(commaIdx + 1);
+  let padding = 0;
+  if (b64.endsWith('==')) padding = 2;
+  else if (b64.endsWith('=')) padding = 1;
+  return Math.max(0, Math.floor((b64.length * 3) / 4) - padding);
 }
 
 export function validateEnglishName(
@@ -50,14 +102,14 @@ export function validateEnglishName(
     return {
       valid: false,
       cleaned,
-      error: `${fieldLabel} must be at least 2 characters in English. (নাম কমপক্ষে ২ অক্ষরের ইংরেজিতে লিখুন।)`,
+      error: `${fieldLabel} must be at least 2 characters in English.`,
     };
   }
   if (!/^[A-Za-z .'-]+$/.test(cleaned) || !/[A-Za-z]{2,}/.test(cleaned)) {
     return {
       valid: false,
       cleaned,
-      error: `${fieldLabel} must be written in English letters only (A-Z, a-z). (নাম শুধুমাত্র ইংরেজি অক্ষরে লিখুন।)`,
+      error: `${fieldLabel} must be written in English letters only (A-Z, a-z).`,
     };
   }
   return { valid: true, cleaned };
@@ -84,7 +136,7 @@ export function validateAdultDateOfBirth(dobRaw?: string): {
       valid: false,
       dob: '',
       age: 0,
-      error: 'Please enter a valid Date of Birth. (সঠিক জন্ম তারিখ দিন।)',
+      error: 'Please enter a valid Date of Birth.',
     };
   }
   const year = parseInt(match[1], 10);
@@ -127,7 +179,7 @@ export function validateAdultDateOfBirth(dobRaw?: string): {
       dob,
       age,
       error:
-        'Applicant must be at least 18 years old to register as a Seller. (সেলার হওয়ার জন্য কমপক্ষে ১৮ বছর বয়স হতে হবে।)',
+        'Applicant must be at least 18 years old to register as a Seller.',
     };
   }
 
@@ -336,6 +388,17 @@ export const DEFAULT_HIGHLIGHT_CONFIG: HighlightConfig = {
   updatedAt: '',
 };
 
+export const DEFAULT_ADMIN_PAYMENT_SETTINGS: AdminPaymentSettings = {
+  upiId: DEFAULT_ADMIN_UPI_ID,
+  upiNumber: '',
+  bankAccountName: '',
+  bankName: '',
+  bankAccountNo: '',
+  bankIfscBranch: '',
+  qrDataUrl: '',
+  updatedAt: '',
+};
+
 export const DEFAULT_SETTINGS: BusinessSettings = {
   businessName: 'Glamour Galleria',
   tagline: 'Your Style, Our Priority',
@@ -348,11 +411,13 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   currencySymbol: '₹',
   currencyCode: 'INR',
   invoicePrefix: 'GG-',
-  upiId: '',
+  upiId: DEFAULT_ADMIN_UPI_ID,
   upiNumber: '',
   bankAccountName: '',
+  bankName: '',
   bankAccountNo: '',
   bankIfscBranch: '',
+  paymentQrDataUrl: '',
   invoiceFooterNote:
     'Every piece is chosen with love to make you feel confident and beautiful. We truly appreciate your trust and support. If you have any question about your order, just message us anytime.',
   socialTagLine: 'Loved your order? Tag us @glamour.galleria.in and share your look with us!',
@@ -361,14 +426,155 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   highlightConfig: DEFAULT_HIGHLIGHT_CONFIG,
 };
 
+export function mergeAdminPaymentSettings(
+  raw?: Partial<AdminPaymentSettings> | null,
+  fallbackSettings?: Partial<BusinessSettings> | null
+): AdminPaymentSettings {
+  const upi =
+    String(
+      raw?.upiId ||
+        fallbackSettings?.upiId ||
+        fallbackSettings?.highlightConfig?.upiId ||
+        DEFAULT_ADMIN_UPI_ID
+    ).trim() || DEFAULT_ADMIN_UPI_ID;
+
+  return {
+    upiId: upi,
+    upiNumber: String(raw?.upiNumber ?? fallbackSettings?.upiNumber ?? '').trim(),
+    bankAccountName: String(
+      raw?.bankAccountName ?? fallbackSettings?.bankAccountName ?? ''
+    ).trim(),
+    bankName: String(raw?.bankName ?? fallbackSettings?.bankName ?? '').trim(),
+    bankAccountNo: String(
+      raw?.bankAccountNo ?? fallbackSettings?.bankAccountNo ?? ''
+    ).trim(),
+    bankIfscBranch: String(
+      raw?.bankIfscBranch ?? fallbackSettings?.bankIfscBranch ?? ''
+    ).trim(),
+    qrDataUrl: String(
+      raw?.qrDataUrl ?? fallbackSettings?.paymentQrDataUrl ?? ''
+    ).trim(),
+    updatedAt: String(raw?.updatedAt || ''),
+  };
+}
+
+export interface EffectivePaymentDetails {
+  source: 'product' | 'seller' | 'admin';
+  recipientType: 'admin' | 'seller';
+  recipientName: string;
+  sellerId?: string;
+  upiId: string;
+  upiNumber: string;
+  bankAccountName: string;
+  bankName: string;
+  bankAccountNo: string;
+  bankIfscBranch: string;
+  qrDataUrl: string;
+}
+
+export function buildUpiDeepLink(
+  upiId: string,
+  payeeName: string,
+  amount: number
+): string {
+  const cleanUpi = String(upiId || '').trim();
+  if (!cleanUpi) return '';
+  const pn = encodeURIComponent(payeeName || 'Glamour Galleria');
+  const am = Number.isFinite(amount) && amount > 0 ? amount.toFixed(2) : '0.00';
+  return `upi://pay?pa=${encodeURIComponent(cleanUpi)}&pn=${pn}&am=${am}&cu=INR`;
+}
+
+export function resolveEffectivePaymentDetails(params: {
+  product?: Partial<Product> | null;
+  sellerProfile?: SellerPublicPaymentProfile | null;
+  adminPaymentSettings?: Partial<AdminPaymentSettings> | null;
+  settings?: Partial<BusinessSettings> | null;
+}): EffectivePaymentDetails {
+  const adminMerged = mergeAdminPaymentSettings(
+    params.adminPaymentSettings,
+    params.settings
+  );
+
+  const prod = params.product;
+  const pUpi = String(prod?.sellerPaymentUpiId || '').trim();
+  const pHolder = String(prod?.sellerPaymentBankAccountName || '').trim();
+  const pBank = String(prod?.sellerPaymentBankName || '').trim();
+  const pAcc = String(prod?.sellerPaymentBankAccountNo || '').trim();
+  const pIfsc = String(prod?.sellerPaymentBankIfscBranch || '').trim();
+  const pQr = String(prod?.sellerPaymentQrDataUrl || '').trim();
+
+  if (pUpi || pHolder || pBank || pAcc || pIfsc || pQr) {
+    return {
+      source: 'product',
+      recipientType: 'seller',
+      recipientName: prod?.sellerName || 'Seller Product Payment',
+      sellerId: prod?.sellerId,
+      upiId: pUpi,
+      upiNumber: '',
+      bankAccountName: pHolder,
+      bankName: pBank,
+      bankAccountNo: pAcc,
+      bankIfscBranch: pIfsc,
+      qrDataUrl: pQr,
+    };
+  }
+
+  const sp = params.sellerProfile;
+  if (sp) {
+    const sUpi = String(sp.upiId || '').trim();
+    const sHolder = String(sp.bankAccountName || '').trim();
+    const sBank = String(sp.bankName || '').trim();
+    const sAcc = String(sp.bankAccountNo || '').trim();
+    const sIfsc = String(sp.bankIfscBranch || '').trim();
+    const sQr = String(sp.qrDataUrl || '').trim();
+    if (sUpi || sHolder || sBank || sAcc || sIfsc || sQr) {
+      return {
+        source: 'seller',
+        recipientType: 'seller',
+        recipientName: sp.sellerName || prod?.sellerName || 'Seller Account',
+        sellerId: sp.sellerId || prod?.sellerId,
+        upiId: sUpi,
+        upiNumber: '',
+        bankAccountName: sHolder,
+        bankName: sBank,
+        bankAccountNo: sAcc,
+        bankIfscBranch: sIfsc,
+        qrDataUrl: sQr,
+      };
+    }
+  }
+
+  return {
+    source: 'admin',
+    recipientType: 'admin',
+    recipientName:
+      String(params.settings?.businessName || 'Glamour Galleria').trim() ||
+      'Glamour Galleria',
+    upiId: adminMerged.upiId || DEFAULT_ADMIN_UPI_ID,
+    upiNumber: adminMerged.upiNumber || '',
+    bankAccountName: adminMerged.bankAccountName || '',
+    bankName: adminMerged.bankName || '',
+    bankAccountNo: adminMerged.bankAccountNo || '',
+    bankIfscBranch: adminMerged.bankIfscBranch || '',
+    qrDataUrl: adminMerged.qrDataUrl || '',
+  };
+}
+
 export function mergeBusinessSettings(
   raw?: Partial<BusinessSettings> | null
 ): BusinessSettings {
   const rawVp = raw?.viewPanel;
   const rawHc = raw?.highlightConfig;
+  const resolvedUpi =
+    String(raw?.upiId || DEFAULT_ADMIN_UPI_ID).trim() || DEFAULT_ADMIN_UPI_ID;
+  const resolvedHighlightUpi =
+    String(rawHc?.upiId || raw?.upiId || DEFAULT_HIGHLIGHT_CONFIG.upiId).trim() ||
+    DEFAULT_ADMIN_UPI_ID;
+
   return {
     ...DEFAULT_SETTINGS,
     ...(raw || {}),
+    upiId: resolvedUpi,
     viewPanel: {
       advertisement: {
         ...DEFAULT_VIEW_PANEL_CONFIG.advertisement,
@@ -391,7 +597,7 @@ export function mergeBusinessSettings(
       updatedAt: rawVp?.updatedAt || '',
     },
     highlightConfig: {
-      upiId: String(rawHc?.upiId || DEFAULT_HIGHLIGHT_CONFIG.upiId).trim() || HIGHLIGHT_UPI_ID,
+      upiId: resolvedHighlightUpi,
       placementRule:
         rawHc?.placementRule === 'priority_category' ||
         rawHc?.placementRule === 'featured_badge_only'
@@ -411,6 +617,7 @@ export function mergeBusinessSettings(
 export function createEmptyWorkspace(): WorkspaceData {
   return {
     settings: { ...DEFAULT_SETTINGS },
+    paymentSettings: { ...DEFAULT_ADMIN_PAYMENT_SETTINGS },
     clients: [],
     products: [],
     invoices: [],
@@ -660,39 +867,26 @@ export async function exportInvoiceElementToPdf(
 
 export function resizeImageFileToDataUrl(
   file: File,
-  maxSize = 480,
+  maxSize = 1000,
   options: {
     quality?: number;
     preserveTransparency?: boolean;
     maxDataUrlLength?: number;
+    maxCompressedBytes?: number;
     maxFileBytes?: number | false;
   } = {}
 ): Promise<string> {
   const {
-    quality = 0.85,
+    quality = 0.86,
     preserveTransparency = false,
-    maxDataUrlLength = 350_000,
-    maxFileBytes = MAX_IMAGE_UPLOAD_BYTES,
+    maxDataUrlLength = 132_000, // ~98KB binary base64 envelope
+    maxCompressedBytes = TARGET_COMPRESSED_IMAGE_BYTES,
   } = options;
 
   return new Promise((resolve, reject) => {
-    if (!file.type || !file.type.startsWith('image/')) {
-      reject(
-        new Error(
-          'Please select a valid JPG/PNG image file. অনুগ্রহ করে সঠিক ছবি (JPG/PNG) নির্বাচন করুন।'
-        )
-      );
-      return;
-    }
-
-    if (maxFileBytes !== false && file.size > maxFileBytes) {
-      const limitKb = Math.round(maxFileBytes / 1024);
-      const fileKb = Math.ceil(file.size / 1024);
-      reject(
-        new Error(
-          `File size (${fileKb}KB) exceeds the ${limitKb}KB limit. অনুগ্রহ করে ${limitKb}KB-এর কম সাইজের ফাইল আপলোড করুন। (Please upload an image under ${limitKb}KB.)`
-        )
-      );
+    const typeErr = validateImageFileType(file);
+    if (typeErr) {
+      reject(new Error(typeErr));
       return;
     }
 
@@ -704,8 +898,8 @@ export function resizeImageFileToDataUrl(
       img.onload = () => {
         const renderAt = (targetMax: number, q: number, mime: string): string => {
           const canvas = document.createElement('canvas');
-          let w = img.width;
-          let h = img.height;
+          let w = img.width || targetMax;
+          let h = img.height || targetMax;
           if (w > targetMax || h > targetMax) {
             if (w > h) {
               h = Math.max(1, Math.round((h * targetMax) / w));
@@ -719,6 +913,10 @@ export function resizeImageFileToDataUrl(
           canvas.height = h;
           const ctx = canvas.getContext('2d');
           if (!ctx) return String(reader.result);
+          if (mime === 'image/jpeg') {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, w, h);
+          }
           ctx.drawImage(img, 0, 0, w, h);
           return canvas.toDataURL(mime, q);
         };
@@ -730,28 +928,51 @@ export function resizeImageFileToDataUrl(
             file.type === 'image/svg+xml');
         const primaryMime = prefersAlpha ? 'image/webp' : 'image/jpeg';
 
-        let currentMax = maxSize;
-        let currentQuality = quality;
-        let output = renderAt(currentMax, currentQuality, primaryMime);
+        // Clamp effective limits strictly under 100KB (102,400 bytes)
+        const effectiveByteLimit = Math.min(
+          maxCompressedBytes,
+          MAX_COMPRESSED_IMAGE_BYTES - 1024
+        );
+        const effectiveCharLimit = Math.min(
+          maxDataUrlLength,
+          Math.floor((effectiveByteLimit * 4) / 3) + 64
+        );
 
-        // Fallback if browser doesn't encode image/webp or output exceeds Firestore budget
+        const fitsBudget = (url: string) =>
+          estimateDataUrlBinaryBytes(url) <= effectiveByteLimit &&
+          url.length <= effectiveCharLimit;
+
+        let currentMax = Math.max(240, maxSize);
+        let currentQuality = Math.min(0.9, Math.max(0.5, quality));
+        let activeMime = primaryMime;
+        let output = renderAt(currentMax, currentQuality, activeMime);
+
+        // Fallback if browser does not support WebP encoding
         if (prefersAlpha && !output.startsWith('data:image/webp')) {
-          output = renderAt(currentMax, currentQuality, 'image/png');
+          activeMime = 'image/jpeg';
+          output = renderAt(currentMax, currentQuality, activeMime);
         }
 
-        let attempts = 0;
-        while (output.length > maxDataUrlLength && attempts < 4) {
-          attempts += 1;
-          currentQuality = Math.max(0.5, currentQuality - 0.12);
-          currentMax = Math.max(240, Math.round(currentMax * 0.8));
-          output = renderAt(
-            currentMax,
-            currentQuality,
-            prefersAlpha ? 'image/webp' : 'image/jpeg'
-          );
-          if (output.length > maxDataUrlLength && attempts >= 3) {
-            output = renderAt(currentMax, currentQuality, 'image/jpeg');
+        // First step down quality smoothly to preserve crisp dimensions
+        const qualitySteps = [0.78, 0.68, 0.58, 0.48, 0.38];
+        for (const qStep of qualitySteps) {
+          if (fitsBudget(output)) break;
+          if (qStep < currentQuality) {
+            currentQuality = qStep;
+            output = renderAt(currentMax, currentQuality, activeMime);
           }
+        }
+
+        // If still over budget (or alpha WebP is heavy), scale down dimensions step by step
+        let dimAttempts = 0;
+        while (!fitsBudget(output) && dimAttempts < 6) {
+          dimAttempts += 1;
+          currentMax = Math.max(280, Math.round(currentMax * 0.78));
+          if (activeMime !== 'image/jpeg' && dimAttempts >= 2) {
+            activeMime = 'image/jpeg';
+          }
+          currentQuality = Math.max(0.32, currentQuality - 0.05);
+          output = renderAt(currentMax, currentQuality, activeMime);
         }
 
         resolve(output);

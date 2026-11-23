@@ -20,7 +20,12 @@ import {
   Invoice,
   Product,
 } from '../types/business';
-import { downloadImageAsset, formatCurrency } from '../utils/calculations';
+import {
+  DEFAULT_ADMIN_UPI_ID,
+  downloadImageAsset,
+  formatCurrency,
+} from '../utils/calculations';
+import { getOptimizedMediaUrl } from '../utils/cloudinary';
 import { ConfirmModal } from './ConfirmModal';
 
 interface OrdersViewProps {
@@ -344,7 +349,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                                 <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-white overflow-hidden flex items-center justify-center">
                                   {thumb ? (
                                     <img
-                                      src={thumb}
+                                      src={getOptimizedMediaUrl(thumb, 'image')}
                                       alt={it.productName}
                                       referrerPolicy="no-referrer"
                                       className="w-full h-full object-cover"
@@ -408,7 +413,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-white overflow-hidden flex items-center justify-center">
                                 {thumb ? (
                                   <img
-                                    src={thumb}
+                                    src={getOptimizedMediaUrl(thumb, 'image')}
                                     alt={order.productName}
                                     referrerPolicy="no-referrer"
                                     className="w-full h-full object-cover"
@@ -503,8 +508,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       </div>
                     )}
                     {order.paymentMethod === 'UPI' && (
-                      <div className="text-[#5B4B6B] font-mono-num">
-                        UPI: {order.upiIdUsed || '9332578394-4@ibl'}
+                      <div className="space-y-0.5 text-[#5B4B6B] font-mono-num">
+                        <div>UPI: {order.upiIdUsed || DEFAULT_ADMIN_UPI_ID}</div>
+                        {order.paymentRecipientName && (
+                          <div className="text-[11px] font-sans text-[#6D28D9] font-semibold">
+                            Paid To: {order.paymentRecipientName}
+                          </div>
+                        )}
                       </div>
                     )}
                     {order.paymentScreenshotDataUrl ? (
@@ -520,7 +530,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         className="inline-flex items-center gap-2 rounded-lg border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
                       >
                         <img
-                          src={order.paymentScreenshotDataUrl}
+                          src={getOptimizedMediaUrl(order.paymentScreenshotDataUrl, 'image')}
                           alt="Payment screenshot"
                           referrerPolicy="no-referrer"
                           className="w-7 h-7 rounded object-cover border border-[#E6D9EE]"
@@ -631,7 +641,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </div>
             <div className="max-h-[75vh] overflow-auto rounded-xl border border-[#EFE2F5] bg-[#FDFBFE] flex items-center justify-center p-2">
               <img
-                src={previewScreenshot.dataUrl}
+                src={getOptimizedMediaUrl(previewScreenshot.dataUrl, 'image')}
                 alt="Customer UPI payment proof"
                 referrerPolicy="no-referrer"
                 className="max-w-full max-h-[68vh] object-contain rounded-lg"

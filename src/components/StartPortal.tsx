@@ -13,41 +13,61 @@ import {
   Image as ImageIcon,
   LifeBuoy,
   MapPin,
+  MessageSquare,
   Minus,
   MoreVertical,
   Plus,
+  QrCode,
   Share2,
   ShoppingBag,
   ShoppingCart,
+  Star,
   Store,
   Tag,
   Truck,
   Upload,
   User,
+  UserCheck,
+  UserPlus,
+  Users,
+  Video,
   X,
 } from 'lucide-react';
 import {
+  AdminPaymentSettings,
   BusinessSettings,
   Client,
+  CloudinaryMediaRecord,
   CustomerCartItem,
   CustomerOrder,
   CustomerOrderPaymentMethod,
   Invoice,
+  MediaResourceType,
   Product,
+  ProductReview,
+  SellerFollowRecord,
+  SellerPublicPaymentProfile,
   ViewPanelConfig,
 } from '../types/business';
 import { api, formatApiError } from '../utils/api';
 import {
-  CHECKOUT_UPI_ID,
   COD_DELIVERY_CHARGE_PER_ITEM,
+  DEFAULT_ADMIN_UPI_ID,
   DEFAULT_VIEW_PANEL_CONFIG,
   PRODUCT_CATEGORIES,
+  buildUpiDeepLink,
   formatCurrency,
+  isProductHighlightActive,
   normalizeIndianPhone,
-  resizeImageFileToDataUrl,
+  resolveEffectivePaymentDetails,
   stripPlus91Prefix,
-  validateImageFileUnder200KB,
+  validateEnglishName,
 } from '../utils/calculations';
+import {
+  getOptimizedMediaUrl,
+  isVideoUrl,
+  uploadMediaToCloudinary,
+} from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { AppBackground } from './AppBackground';
 import { BrandLogo } from './BrandLogo';
@@ -63,8 +83,13 @@ import { SellerHubView } from './SellerHubView';
 
 interface StartPortalProps {
   settings?: BusinessSettings;
+  paymentSettings?: AdminPaymentSettings;
   products?: Product[];
   approvedSellerIds?: string[];
+  sellerPaymentProfiles?: Record<string, SellerPublicPaymentProfile>;
+  highlightSeatUsage?: Record<string, number>;
+  sellerFollows?: SellerFollowRecord[];
+  productReviews?: ProductReview[];
   loggedInCustomer?: Client | null;
   customerOrders?: CustomerOrder[];
   customerBills?: Invoice[];
@@ -77,6 +102,20 @@ interface StartPortalProps {
     expectedSellerId?: string
   ) => Promise<void>;
   onDeleteProduct?: (id: string, expectedSellerId?: string) => Promise<void>;
+  onToggleFollowSeller?: (
+    sellerId: string,
+    client: Client
+  ) => Promise<{ following: boolean; followersCount: number }>;
+  onSubmitProductReview?: (payload: {
+    productId: string;
+    sellerId?: string;
+    client: Client;
+    rating: number;
+    comment: string;
+    mediaUrl?: string;
+    mediaType?: MediaResourceType;
+    mediaRecord?: CloudinaryMediaRecord;
+  }) => Promise<ProductReview>;
 }
 
 interface PublicShopProduct {
@@ -87,12 +126,22 @@ interface PublicShopProduct {
   price: number;
   originalPrice?: number;
   highlighted?: boolean;
+  highlightPlacement?: Product['highlightPlacement'];
   size?: string;
   color?: string;
   stockQty?: number;
   imageDataUrl?: string;
   imageDataUrls: string[];
+  videoUrl?: string;
   description?: string;
+  sellerId?: string;
+  sellerName?: string;
+  sellerPaymentUpiId?: string;
+  sellerPaymentBankAccountName?: string;
+  sellerPaymentBankName?: string;
+  sellerPaymentBankAccountNo?: string;
+  sellerPaymentBankIfscBranch?: string;
+  sellerPaymentQrDataUrl?: string;
 }
 
 type PendingAuthAction =
@@ -100,6 +149,16 @@ type PendingAuthAction =
   | { type: 'order'; product: PublicShopProduct; qty: number }
   | { type: 'account'; tab: CustomerDashboardTab }
   | { type: 'portal'; view: 'seller-hub' | 'help-center' | 'refer-earn' }
+  | { type: 'follow'; sellerId: string }
+  | {
+      type: 'review';
+      product: PublicShopProduct;
+      rating: number;
+      comment: string;
+      mediaUrl?: string;
+      mediaType?: MediaResourceType;
+      mediaRecord?: CloudinaryMediaRecord;
+    }
   | null;
 
 function isSafeHttpUrl(url?: string): boolean {
@@ -145,8 +204,13 @@ function buildProductWhatsAppUrl(
 
 export const StartPortal: React.FC<StartPortalProps> = ({
   settings,
+  paymentSettings,
   products = [],
   approvedSellerIds = [],
+  sellerPaymentProfiles = {},
+  highlightSeatUsage = {},
+  sellerFollows = [],
+  productReviews = [],
   loggedInCustomer = null,
   customerOrders = [],
   customerBills = [],
@@ -155,14 +219,38 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   onCustomerUpdated,
   onSaveProduct,
   onDeleteProduct,
+  onToggleFollowSeller,
+  onSubmitProductReview,
 }) => {
-  // Active View inside Storefront ('shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn')
+  // Active View inside Storefront ('shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn' | 'seller-profile')
   const [portalView, setPortalView] = useState<
-    'shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn'
+    | 'shop'
+    | 'account'
+    | 'seller-hub'
+    | 'help-center'
+    | 'refer-earn'
+    | 'seller-profile'
   >('shop');
+  const [viewingSellerId, setViewingSellerId] = useState<string | null>(null);
   const [accountTab, setAccountTab] = useState<CustomerDashboardTab>('cart');
   const [menuOpen, setMenuOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Follow & Product Review UI state
+  const [followBusySellerId, setFollowBusySellerId] = useState<string | null>(null);
+  const [reviewRating, setReviewRating] = useState<number>(5);
+  const [reviewComment, setReviewComment] = useState('');
+  const [reviewMediaUrl, setReviewMediaUrl] = useState('');
+  const [reviewMediaType, setReviewMediaType] = useState<MediaResourceType | undefined>(
+    undefined
+  );
+  const [reviewMediaRecord, setReviewMediaRecord] = useState<
+    CloudinaryMediaRecord | undefined
+  >(undefined);
+  const [uploadingReviewMedia, setUploadingReviewMedia] = useState(false);
+  const [reviewMediaProgress, setReviewMediaProgress] = useState<number | null>(null);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState('');
 
   // Customer Auth Modal & pending action after login
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -236,6 +324,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     useState<CustomerOrderPaymentMethod>('COD');
   const [upiScreenshotDataUrl, setUpiScreenshotDataUrl] = useState('');
   const [uploadingScreenshot, setUploadingScreenshot] = useState(false);
+  const [uploadingScreenshotProgress, setUploadingScreenshotProgress] = useState<
+    number | null
+  >(null);
   const [upiCopied, setUpiCopied] = useState(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [orderError, setOrderError] = useState('');
@@ -274,7 +365,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const showAdvertisement =
     viewPanel.advertisement.enabled &&
     Boolean(
-      (viewPanel.advertisement.imageDataUrl && !failedAdImage) ||
+      ((viewPanel.advertisement.videoUrl || viewPanel.advertisement.imageDataUrl) &&
+        !failedAdImage) ||
         viewPanel.advertisement.title.trim()
     );
 
@@ -282,6 +374,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     () => new Set(approvedSellerIds),
     [approvedSellerIds]
   );
+
+  const placementRule = settings?.highlightConfig?.placementRule || 'top_featured';
 
   const shoppingItems: PublicShopProduct[] = useMemo(() => {
     const customItems: PublicShopProduct[] = viewPanel.shopping.items.map(
@@ -299,11 +393,21 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           price: item.price,
           originalPrice: item.originalPrice,
           highlighted: Boolean(item.highlighted),
+          highlightPlacement: item.highlightPlacement,
           size: item.size,
           color: item.color,
           imageDataUrl: gallery[0] || '',
           imageDataUrls: gallery,
+          videoUrl: item.videoUrl,
           description: item.description,
+          sellerId: item.sellerId,
+          sellerName: item.sellerName,
+          sellerPaymentUpiId: item.sellerPaymentUpiId,
+          sellerPaymentBankAccountName: item.sellerPaymentBankAccountName,
+          sellerPaymentBankName: item.sellerPaymentBankName,
+          sellerPaymentBankAccountNo: item.sellerPaymentBankAccountNo,
+          sellerPaymentBankIfscBranch: item.sellerPaymentBankIfscBranch,
+          sellerPaymentQrDataUrl: item.sellerPaymentQrDataUrl,
         };
       }
     );
@@ -331,31 +435,54 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             category: prod.category || PRODUCT_CATEGORIES[0],
             price: prod.sellingPrice,
             originalPrice: prod.originalPrice,
-            highlighted: Boolean(prod.highlighted),
+            highlighted: isProductHighlightActive(prod),
+            highlightPlacement: prod.highlightPlacement,
             size: prod.size,
             color: prod.color,
             stockQty: prod.stockQty,
             imageDataUrl: gallery[0] || '',
             imageDataUrls: gallery,
+            videoUrl: prod.videoUrl,
             description: prod.description,
+            sellerId: prod.sellerId,
+            sellerName: prod.sellerName,
+            sellerPaymentUpiId: prod.sellerPaymentUpiId,
+            sellerPaymentBankAccountName: prod.sellerPaymentBankAccountName,
+            sellerPaymentBankName: prod.sellerPaymentBankName,
+            sellerPaymentBankAccountNo: prod.sellerPaymentBankAccountNo,
+            sellerPaymentBankIfscBranch: prod.sellerPaymentBankIfscBranch,
+            sellerPaymentQrDataUrl: prod.sellerPaymentQrDataUrl,
           };
         })
       : [];
 
-    return [...catalogItems, ...customItems].sort(
-      (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
-    );
+    const combined = [...catalogItems, ...customItems];
+    if (placementRule === 'top_featured') {
+      return combined.sort(
+        (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
+      );
+    }
+    return combined;
   }, [
     viewPanel.shopping.items,
     viewPanel.shopping.includeCatalogProducts,
     products,
     approvedSellerIdsSet,
+    placementRule,
   ]);
 
   const filteredShoppingItems = useMemo(() => {
     if (shoppingCategory === 'ALL') return shoppingItems;
-    return shoppingItems.filter((item) => item.category === shoppingCategory);
-  }, [shoppingItems, shoppingCategory]);
+    const matched = shoppingItems.filter(
+      (item) => item.category === shoppingCategory
+    );
+    if (placementRule === 'priority_category') {
+      return [...matched].sort(
+        (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
+      );
+    }
+    return matched;
+  }, [shoppingItems, shoppingCategory, placementRule]);
 
   const hasDiscountContent =
     viewPanel.discount.enabled &&
@@ -372,6 +499,65 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     );
   }, [loggedInCustomer]);
 
+  const followerCountsBySeller = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const [sid, prof] of Object.entries(sellerPaymentProfiles)) {
+      counts[sid] = Math.max(0, Number(prof?.followersCount) || 0);
+    }
+    const followDocsCount: Record<string, number> = {};
+    for (const f of sellerFollows) {
+      if (f.sellerId) {
+        followDocsCount[f.sellerId] = (followDocsCount[f.sellerId] || 0) + 1;
+      }
+    }
+    for (const [sid, cnt] of Object.entries(followDocsCount)) {
+      counts[sid] = Math.max(counts[sid] || 0, cnt);
+    }
+    return counts;
+  }, [sellerPaymentProfiles, sellerFollows]);
+
+  const followedSellerIdsSet = useMemo(() => {
+    if (!loggedInCustomer) return new Set<string>();
+    return new Set(
+      sellerFollows
+        .filter((f) => f.clientId === loggedInCustomer.id)
+        .map((f) => f.sellerId)
+    );
+  }, [sellerFollows, loggedInCustomer]);
+
+  const reviewsByProductId = useMemo(() => {
+    const map = new Map<string, ProductReview[]>();
+    for (const rev of productReviews) {
+      if (!rev.productId) continue;
+      const list = map.get(rev.productId) || [];
+      list.push(rev);
+      map.set(rev.productId, list);
+    }
+    return map;
+  }, [productReviews]);
+
+  const ratingSummaryByProductId = useMemo(() => {
+    const map = new Map<string, { avg: number; count: number }>();
+    for (const [pid, list] of reviewsByProductId.entries()) {
+      if (list.length === 0) continue;
+      const total = list.reduce((s, r) => s + (Number(r.rating) || 0), 0);
+      map.set(pid, {
+        avg: Number((total / list.length).toFixed(1)),
+        count: list.length,
+      });
+    }
+    return map;
+  }, [reviewsByProductId]);
+
+  const viewingSellerProfile = viewingSellerId
+    ? sellerPaymentProfiles[viewingSellerId]
+    : undefined;
+
+  const viewingSellerProducts = useMemo(() => {
+    if (!viewingSellerId) return [];
+    return shoppingItems.filter((item) => item.sellerId === viewingSellerId);
+  }, [shoppingItems, viewingSellerId]);
+
   const handleCopyCode = async (id: string, code: string) => {
     try {
       await navigator.clipboard.writeText(code);
@@ -384,9 +570,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
-  const handleCopyUpi = async () => {
+  const handleCopyUpi = async (upiValue: string) => {
+    if (!upiValue) return;
     try {
-      await navigator.clipboard.writeText(CHECKOUT_UPI_ID);
+      await navigator.clipboard.writeText(upiValue);
       setUpiCopied(true);
       setTimeout(() => setUpiCopied(false), 2200);
     } catch {
@@ -428,6 +615,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           originalPrice: product.originalPrice,
           quantity: Math.max(1, qtyToAdd),
           imageDataUrl: product.imageDataUrls[0] || product.imageDataUrl || '',
+          sellerId: product.sellerId,
+          sellerName: product.sellerName,
         });
       }
 
@@ -503,7 +692,198 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       setPlacedOrder(null);
       prefillCheckoutFromClient(client);
       setModalStep('checkout');
+      return;
     }
+
+    if (action.type === 'follow') {
+      await runFollowSeller(action.sellerId, client);
+      return;
+    }
+
+    if (action.type === 'review') {
+      setSelectedProduct(action.product);
+      setActiveImageIndex(0);
+      setModalStep('detail');
+      await runSubmitReview(
+        action.product,
+        client,
+        action.rating,
+        action.comment,
+        action.mediaUrl,
+        action.mediaType,
+        action.mediaRecord
+      );
+    }
+  };
+
+  const runFollowSeller = async (sellerId: string, client: Client) => {
+    if (!sellerId) return;
+    setFollowBusySellerId(sellerId);
+    try {
+      const res = onToggleFollowSeller
+        ? await onToggleFollowSeller(sellerId, client)
+        : await api.toggleSellerFollow({
+            sellerId,
+            clientId: client.id,
+            customerName: client.name,
+          });
+      triggerStoreNotice(
+        res.following ? 'Following seller store!' : 'Unfollowed seller store.'
+      );
+    } catch (err) {
+      triggerStoreNotice(
+        formatApiError(err, 'Could not update follow status. Please try again.')
+      );
+    } finally {
+      setFollowBusySellerId(null);
+    }
+  };
+
+  const handleToggleFollowAction = async (
+    sellerId?: string,
+    e?: React.MouseEvent
+  ) => {
+    e?.stopPropagation();
+    if (!sellerId) return;
+    if (!loggedInCustomer) {
+      openAuthForAction(
+        { type: 'follow', sellerId },
+        'Please sign in or create an account to follow this seller.'
+      );
+      return;
+    }
+    await runFollowSeller(sellerId, loggedInCustomer);
+  };
+
+  const openSellerProfile = (sellerId?: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!sellerId) return;
+    setSelectedProduct(null);
+    setViewingSellerId(sellerId);
+    setPortalView('seller-profile');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const runSubmitReview = async (
+    product: PublicShopProduct,
+    client: Client,
+    ratingVal: number,
+    commentText: string,
+    mediaUrl?: string,
+    mediaType?: MediaResourceType,
+    mediaRecord?: CloudinaryMediaRecord
+  ) => {
+    const canonicalProductId = product.catalogProductId || product.id;
+    setReviewError('');
+    setReviewSubmitting(true);
+    try {
+      if (onSubmitProductReview) {
+        await onSubmitProductReview({
+          productId: canonicalProductId,
+          sellerId: product.sellerId,
+          client,
+          rating: ratingVal,
+          comment: commentText,
+          mediaUrl,
+          mediaType,
+          mediaRecord,
+        });
+      } else {
+        await api.submitProductReview({
+          productId: canonicalProductId,
+          sellerId: product.sellerId,
+          clientId: client.id,
+          customerName: client.name,
+          rating: ratingVal,
+          comment: commentText,
+          mediaUrl,
+          mediaType,
+          mediaRecord,
+        });
+      }
+      setReviewComment('');
+      setReviewRating(5);
+      setReviewMediaUrl('');
+      setReviewMediaType(undefined);
+      setReviewMediaRecord(undefined);
+      triggerStoreNotice('Your rating and review have been posted!');
+    } catch (err) {
+      setReviewError(
+        formatApiError(err, 'Could not submit review. Please try again.')
+      );
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const handleUploadReviewMedia = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !selectedProduct) return;
+    setReviewError('');
+    setUploadingReviewMedia(true);
+    setReviewMediaProgress(1);
+    try {
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'customer',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/customer/reviews',
+        relatedEntityType: 'review',
+        relatedEntityId: selectedProduct.catalogProductId || selectedProduct.id,
+        uploadedByUid: loggedInCustomer?.id,
+        allowedTypes: ['image', 'video'],
+        onProgress: (pct) => setReviewMediaProgress(pct),
+      });
+      setReviewMediaUrl(record.secureUrl);
+      setReviewMediaType(record.resourceType);
+      setReviewMediaRecord(record);
+    } catch (err) {
+      setReviewError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to upload review photo/video to Cloudinary.'
+      );
+    } finally {
+      setUploadingReviewMedia(false);
+      setReviewMediaProgress(null);
+    }
+  };
+
+  const handleSubmitReviewForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProduct) return;
+    setReviewError('');
+    const cleanComment = reviewComment.trim();
+    if (cleanComment.length < 2) {
+      setReviewError('Please write a review comment (minimum 2 characters).');
+      return;
+    }
+    if (!loggedInCustomer) {
+      openAuthForAction(
+        {
+          type: 'review',
+          product: selectedProduct,
+          rating: reviewRating,
+          comment: cleanComment,
+          mediaUrl: reviewMediaUrl || undefined,
+          mediaType: reviewMediaType,
+          mediaRecord: reviewMediaRecord,
+        },
+        'Please sign in or create an account to post your rating and review.'
+      );
+      return;
+    }
+    await runSubmitReview(
+      selectedProduct,
+      loggedInCustomer,
+      reviewRating,
+      cleanComment,
+      reviewMediaUrl || undefined,
+      reviewMediaType,
+      reviewMediaRecord
+    );
   };
 
   const handleOpenAccount = (tab: CustomerDashboardTab = 'cart') => {
@@ -529,6 +909,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setOrderQty('1');
     setOrderError('');
     setPlacedOrder(null);
+    setReviewError('');
+    setReviewRating(5);
+    setReviewComment('');
+    setReviewMediaUrl('');
+    setReviewMediaType(undefined);
+    setReviewMediaRecord(undefined);
   };
 
   useEffect(() => {
@@ -626,6 +1012,18 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setModalStep('checkout');
   };
 
+  const selectedEffectivePayment = useMemo(() => {
+    const sellerProfile = selectedProduct?.sellerId
+      ? sellerPaymentProfiles?.[selectedProduct.sellerId]
+      : undefined;
+    return resolveEffectivePaymentDetails({
+      product: selectedProduct,
+      sellerProfile,
+      adminPaymentSettings: paymentSettings,
+      settings,
+    });
+  }, [selectedProduct, sellerPaymentProfiles, paymentSettings, settings]);
+
   const handleUploadUpiScreenshot = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -633,27 +1031,30 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     e.target.value = '';
     if (!file) return;
     setOrderError('');
-    const sizeErr = validateImageFileUnder200KB(file);
-    if (sizeErr) {
-      setOrderError(sizeErr);
-      return;
-    }
     setUploadingScreenshot(true);
+    setUploadingScreenshotProgress(1);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file, 640, {
-        quality: 0.72,
-        preserveTransparency: false,
-        maxDataUrlLength: 140_000,
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'customer',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/customer/order-payments',
+        relatedEntityType: 'order_payment',
+        relatedEntityId:
+          selectedProduct?.catalogProductId || selectedProduct?.id,
+        uploadedByUid: loggedInCustomer?.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadingScreenshotProgress(pct),
       });
-      setUpiScreenshotDataUrl(dataUrl);
+      setUpiScreenshotDataUrl(record.secureUrl);
     } catch (err) {
       setOrderError(
         err instanceof Error
           ? err.message
-          : 'Invalid screenshot image. Please choose JPG or PNG under 200KB.'
+          : 'Invalid screenshot image. Please choose a valid JPG, PNG, or WebP file.'
       );
     } finally {
       setUploadingScreenshot(false);
+      setUploadingScreenshotProgress(null);
     }
   };
 
@@ -662,8 +1063,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     if (!selectedProduct || !loggedInCustomer) return;
     setOrderError('');
 
-    if (!customerName.trim()) {
-      setOrderError('Please enter your full name.');
+    const nameCheck = validateEnglishName(customerName, 'Full Name');
+    if (!nameCheck.valid) {
+      setOrderError(nameCheck.error || 'Please enter your full name in English.');
       return;
     }
     const phoneCheck = normalizeIndianPhone(customerPhone);
@@ -692,7 +1094,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
     if (paymentMethod === 'UPI' && !upiScreenshotDataUrl) {
       setOrderError(
-        `Please upload your UPI payment screenshot after paying to ${CHECKOUT_UPI_ID}.`
+        `Please upload your payment screenshot after paying to ${
+          selectedEffectivePayment.upiId || 'the displayed Bank / QR details'
+        }.`
       );
       return;
     }
@@ -702,7 +1106,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       const res = await api.createCustomerOrder({
         clientId: loggedInCustomer.id,
         clearCart: false,
-        customerName: customerName.trim(),
+        customerName: nameCheck.cleaned,
         customerPhone: phoneCheck.formatted,
         customerWhatsapp: formattedWhatsapp,
         customerAddress: customerAddress.trim(),
@@ -725,6 +1129,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               selectedProduct.imageDataUrls[0] ||
               selectedProduct.imageDataUrl ||
               '',
+            sellerId: selectedProduct.sellerId,
+            sellerName: selectedProduct.sellerName,
           },
         ],
         productId: selectedProduct.catalogProductId,
@@ -735,6 +1141,23 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         quantity: parsedQty,
         unitPrice: selectedProduct.price,
         paymentMethod,
+        upiIdUsed:
+          paymentMethod === 'UPI'
+            ? selectedEffectivePayment.upiId ||
+              (selectedEffectivePayment.bankAccountNo ||
+              selectedEffectivePayment.qrDataUrl
+                ? 'Bank/QR'
+                : DEFAULT_ADMIN_UPI_ID)
+            : '',
+        sellerId: selectedEffectivePayment.sellerId || selectedProduct.sellerId,
+        paymentRecipientType:
+          paymentMethod === 'UPI'
+            ? selectedEffectivePayment.recipientType
+            : undefined,
+        paymentRecipientName:
+          paymentMethod === 'UPI'
+            ? selectedEffectivePayment.recipientName
+            : undefined,
         paymentScreenshotDataUrl:
           paymentMethod === 'UPI' ? upiScreenshotDataUrl : '',
         customerNote: customerNote.trim(),
@@ -751,20 +1174,42 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
+  const adMediaRawSrc =
+    viewPanel.advertisement.videoUrl ||
+    viewPanel.advertisement.imageDataUrl ||
+    '';
+  const adMediaIsVideo = isVideoUrl(
+    adMediaRawSrc,
+    viewPanel.advertisement.mediaType
+  );
+
   const adBannerCard = (
     <div className="rounded-2xl overflow-hidden border border-[#EFE2F5] bg-white/95 backdrop-blur-md shadow-sm relative">
-      {viewPanel.advertisement.imageDataUrl && !failedAdImage ? (
+      {adMediaRawSrc && !failedAdImage ? (
         <div className="relative">
-          <img
-            src={viewPanel.advertisement.imageDataUrl}
-            alt={viewPanel.advertisement.title || 'Featured Advertisement'}
-            referrerPolicy="no-referrer"
-            onError={() => setFailedAdImage(true)}
-            className="w-full max-h-[240px] sm:max-h-[320px] object-cover"
-          />
+          {adMediaIsVideo ? (
+            <video
+              src={getOptimizedMediaUrl(adMediaRawSrc, 'video')}
+              autoPlay
+              muted
+              loop
+              playsInline
+              controls
+              onError={() => setFailedAdImage(true)}
+              className="w-full max-h-[240px] sm:max-h-[320px] object-cover bg-black"
+            />
+          ) : (
+            <img
+              src={getOptimizedMediaUrl(adMediaRawSrc, 'image')}
+              alt={viewPanel.advertisement.title || 'Featured Advertisement'}
+              referrerPolicy="no-referrer"
+              onError={() => setFailedAdImage(true)}
+              className="w-full max-h-[240px] sm:max-h-[320px] object-cover"
+            />
+          )}
           {(viewPanel.advertisement.title ||
             viewPanel.advertisement.subtitle) && (
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-5 py-4 text-white">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-5 py-4 text-white">
               {viewPanel.advertisement.title && (
                 <div className="font-display-serif text-lg sm:text-xl font-bold leading-snug">
                   {viewPanel.advertisement.title}
@@ -793,11 +1238,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     </div>
   );
 
-  const upiDeepLink = `upi://pay?pa=${encodeURIComponent(
-    CHECKOUT_UPI_ID
-  )}&pn=${encodeURIComponent(
-    settings?.businessName || 'Glamour Galleria'
-  )}&am=${checkoutSubtotal.toFixed(2)}&cu=INR`;
+  const upiDeepLink = selectedEffectivePayment.upiId
+    ? buildUpiDeepLink(
+        selectedEffectivePayment.upiId,
+        selectedEffectivePayment.recipientName,
+        checkoutSubtotal
+      )
+    : '';
 
   return (
     <div className="relative min-h-screen text-[#1F122B] flex flex-col">
@@ -897,7 +1344,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     }`}
                   >
                     <Store className="w-4 h-4 text-[#DB2777] shrink-0" />
-                    <span>Seller Hub (সেলার হাব)</span>
+                    <span>Seller Hub</span>
                   </button>
 
                   <button
@@ -915,7 +1362,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     }`}
                   >
                     <LifeBuoy className="w-4 h-4 text-[#7E22CE] shrink-0" />
-                    <span>Help Center (হেল্প সেন্টার)</span>
+                    <span>Help Center</span>
                   </button>
 
                   <button
@@ -986,6 +1433,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             orders={customerOrders}
             bills={customerBills}
             settings={settings}
+            products={products}
+            paymentSettings={paymentSettings}
+            sellerPaymentProfiles={sellerPaymentProfiles}
             initialTab={accountTab}
             onBackToShop={() => setPortalView('shop')}
             onLogout={() => {
@@ -999,6 +1449,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           <SellerHubView
             loggedInCustomer={loggedInCustomer}
             products={products}
+            settings={settings}
+            paymentSettings={paymentSettings}
+            highlightSeatUsage={highlightSeatUsage}
+            sellerFollows={sellerFollows}
+            productReviews={productReviews}
             currencySymbol={sym}
             defaultLowStock={settings?.lowStockThreshold || 5}
             onBackToShop={() => setPortalView('shop')}
@@ -1006,13 +1461,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setPortalView('help-center');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            onRequestSignIn={() =>
-              openAuthForAction(
-                { type: 'portal', view: 'seller-hub' },
-                'Sign in to link your Seller Hub account.',
-                'login'
-              )
-            }
             onSaveProduct={async (payload, existingId, expectedSellerId) => {
               if (onSaveProduct) {
                 await onSaveProduct(payload, existingId, expectedSellerId);
@@ -1039,6 +1487,219 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               triggerStoreNotice('Seller application submitted!')
             }
           />
+        ) : portalView === 'seller-profile' && viewingSellerId ? (
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setPortalView('shop')}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Shop</span>
+              </button>
+            </div>
+
+            {/* Public Seller Store Banner (Strictly Public Info Only — zero private KYC/phone/email/status) */}
+            <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md overflow-hidden shadow-sm">
+              <div className="h-36 sm:h-48 w-full bg-gradient-to-r from-[#FDF2F8] via-[#FAF5FF] to-[#F3E8FF] relative overflow-hidden">
+                {viewingSellerProfile?.sellerCoverPhotoDataUrl ? (
+                  <img
+                    src={getOptimizedMediaUrl(
+                      viewingSellerProfile.sellerCoverPhotoDataUrl,
+                      'image'
+                    )}
+                    alt={`${viewingSellerProfile.sellerName} store cover`}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-[#C084FC]/50">
+                    <Store className="w-12 h-12" />
+                  </div>
+                )}
+              </div>
+
+              <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="w-16 h-16 sm:w-20 sm:h-20 -mt-10 sm:-mt-12 relative z-10 rounded-2xl border-4 border-white bg-[#FDF9FE] shadow-md overflow-hidden shrink-0 flex items-center justify-center">
+                    {viewingSellerProfile?.sellerPhotoDataUrl ? (
+                      <img
+                        src={getOptimizedMediaUrl(
+                          viewingSellerProfile.sellerPhotoDataUrl,
+                          'image'
+                        )}
+                        alt={viewingSellerProfile.sellerName}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <Store className="w-8 h-8 text-[#7E22CE]" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-[#15803D]">
+                      Verified Seller Store
+                    </div>
+                    <h1 className="font-display-serif text-xl sm:text-2xl font-bold text-[#1F122B] truncate">
+                      {viewingSellerProfile?.sellerName ||
+                        viewingSellerProducts[0]?.sellerName ||
+                        'Seller Store'}
+                    </h1>
+                    <div className="text-xs text-[#5B4B6B] font-mono-num mt-0.5 flex flex-wrap items-center gap-x-2.5">
+                      <span className="inline-flex items-center gap-1">
+                        <Users className="w-3.5 h-3.5 text-[#7E22CE]" />
+                        <strong>
+                          {followerCountsBySeller[viewingSellerId] || 0}
+                        </strong>{' '}
+                        Followers
+                      </span>
+                      <span>·</span>
+                      <span>
+                        <strong>{viewingSellerProducts.length}</strong> Products
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={followBusySellerId === viewingSellerId}
+                  onClick={() => handleToggleFollowAction(viewingSellerId)}
+                  className={`inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-xs sm:text-sm font-bold transition-all cursor-pointer shrink-0 disabled:opacity-60 ${
+                    followedSellerIdsSet.has(viewingSellerId)
+                      ? 'border border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                      : 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white hover:opacity-95'
+                  }`}
+                >
+                  {followedSellerIdsSet.has(viewingSellerId) ? (
+                    <>
+                      <UserCheck className="w-4 h-4" />
+                      <span>Following</span>
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus className="w-4 h-4" />
+                      <span>Follow Store</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Seller Store Products Grid */}
+            <section className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-4 sm:p-6 space-y-4">
+              <div className="flex items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                  Products by{' '}
+                  {viewingSellerProfile?.sellerName ||
+                    viewingSellerProducts[0]?.sellerName ||
+                    'Seller'}
+                </h2>
+                <span className="text-xs font-mono-num text-[#6B5B7B]">
+                  {viewingSellerProducts.length} items
+                </span>
+              </div>
+
+              {viewingSellerProducts.length === 0 ? (
+                <div className="py-10 text-center text-xs text-[#6B5B7B]">
+                  This seller currently has no live approved products listed.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                  {viewingSellerProducts.map((item) => {
+                    const mainImg =
+                      item.imageDataUrls[0] || item.imageDataUrl || '';
+                    const canonicalId = item.catalogProductId || item.id;
+                    const ratingSummary =
+                      ratingSummaryByProductId.get(canonicalId);
+                    return (
+                      <div
+                        key={item.id}
+                        className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
+                      >
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openProductDetail(item)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              openProductDetail(item);
+                            }
+                          }}
+                          className="cursor-pointer"
+                        >
+                          <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                            {mainImg ? (
+                              <img
+                                src={getOptimizedMediaUrl(mainImg, 'image')}
+                                alt={item.name}
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              />
+                            ) : (
+                              <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
+                            )}
+                            {item.videoUrl && (
+                              <span className="absolute bottom-1.5 left-1.5 inline-flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                <Video className="w-3 h-3" />
+                                <span>Video</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="p-2.5 sm:p-3 space-y-1">
+                            <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
+                              {item.category}
+                            </div>
+                            <h3 className="text-xs sm:text-sm font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2.25rem]">
+                              {item.name}
+                            </h3>
+                            {ratingSummary && (
+                              <div className="text-[11px] font-mono-num text-[#B45309] font-semibold">
+                                ★ {ratingSummary.avg.toFixed(1)} ({ratingSummary.count})
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
+                          <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
+                            <span className="text-sm sm:text-base font-bold text-[#1F122B]">
+                              {formatCurrency(item.price, sym)}
+                            </span>
+                            {item.originalPrice &&
+                              item.originalPrice > item.price && (
+                                <span className="text-[11px] text-[#8E7C9E] line-through">
+                                  {formatCurrency(item.originalPrice, sym)}
+                                </span>
+                              )}
+                          </div>
+                          <div className="grid grid-cols-[auto_1fr] gap-1.5">
+                            <button
+                              type="button"
+                              disabled={addingToCart}
+                              onClick={() => handleAddToCartAction(item, 1)}
+                              title="Add to Cart"
+                              className="inline-flex items-center justify-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                            >
+                              <ShoppingCart className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openProductDetail(item)}
+                              className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-1.5 px-2 text-center text-[11px] font-semibold text-white hover:opacity-95 cursor-pointer"
+                            >
+                              View &amp; Order
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
         ) : portalView === 'help-center' ? (
           <HelpCenterChatView
             loggedInCustomer={loggedInCustomer}
@@ -1328,7 +1989,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                   <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
                                     {mainImg ? (
                                       <img
-                                        src={mainImg}
+                                        src={getOptimizedMediaUrl(mainImg, 'image')}
                                         alt={item.name}
                                         referrerPolicy="no-referrer"
                                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -1357,10 +2018,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     >
                                       <Share2 className="w-3.5 h-3.5" />
                                     </button>
-                                    {item.imageDataUrls.length > 1 && (
-                                      <span className="absolute bottom-1.5 right-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white font-mono-num">
-                                        {item.imageDataUrls.length} photos
-                                      </span>
+                                    {(item.imageDataUrls.length > 1 || item.videoUrl) && (
+                                      <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
+                                        {item.videoUrl && (
+                                          <span className="inline-flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                            <Video className="w-3 h-3" />
+                                            <span>Video</span>
+                                          </span>
+                                        )}
+                                        {item.imageDataUrls.length > 1 && (
+                                          <span className="rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white font-mono-num">
+                                            {item.imageDataUrls.length} photos
+                                          </span>
+                                        )}
+                                      </div>
                                     )}
                                   </div>
 
@@ -1371,6 +2042,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     <h3 className="text-xs sm:text-sm font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2.25rem]">
                                       {item.name}
                                     </h3>
+                                    {(() => {
+                                      const canonicalId =
+                                        item.catalogProductId || item.id;
+                                      const ratingSummary =
+                                        ratingSummaryByProductId.get(
+                                          canonicalId
+                                        );
+                                      if (!ratingSummary) return null;
+                                      return (
+                                        <div className="text-[11px] font-mono-num text-[#B45309] font-semibold">
+                                          ★ {ratingSummary.avg.toFixed(1)} ({ratingSummary.count})
+                                        </div>
+                                      );
+                                    })()}
                                     {(item.size || item.color) && (
                                       <div className="text-[10px] text-[#6B5B7B] truncate">
                                         {[
@@ -1475,88 +2160,116 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </button>
             </div>
 
-            {/* STEP 1: PRODUCT DETAIL VIEW WITH MULTI-IMAGE GALLERY */}
+            {/* STEP 1: PRODUCT DETAIL VIEW WITH MULTI-IMAGE & VIDEO GALLERY */}
             {modalStep === 'detail' && (
               <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-                <div className="space-y-2.5">
-                  <div className="aspect-square rounded-2xl border border-[#EFE2F5] bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden flex items-center justify-center">
-                    {selectedProduct.imageDataUrls.length > 0 ? (
-                      <>
-                        <img
-                          src={
-                            selectedProduct.imageDataUrls[activeImageIndex] ||
-                            selectedProduct.imageDataUrls[0]
-                          }
-                          alt={`${selectedProduct.name} photo ${activeImageIndex + 1}`}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                        {selectedProduct.imageDataUrls.length > 1 && (
-                          <>
-                            <button
-                              type="button"
-                              aria-label="Previous photo"
-                              onClick={() =>
-                                setActiveImageIndex((prev) =>
-                                  prev === 0
-                                    ? selectedProduct.imageDataUrls.length - 1
-                                    : prev - 1
-                                )
-                              }
-                              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
-                            >
-                              <ChevronLeft className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              aria-label="Next photo"
-                              onClick={() =>
-                                setActiveImageIndex(
-                                  (prev) =>
-                                    (prev + 1) %
-                                    selectedProduct.imageDataUrls.length
-                                )
-                              }
-                              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
-                            >
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
-                            <span className="absolute bottom-2 right-2 rounded-lg bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-white font-mono-num">
-                              {activeImageIndex + 1} /{' '}
-                              {selectedProduct.imageDataUrls.length}
-                            </span>
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      <ShoppingBag className="w-14 h-14 text-[#C084FC]" />
-                    )}
-                  </div>
+                {(() => {
+                  const mediaSlides: Array<{ type: 'image' | 'video'; url: string }> = [
+                    ...selectedProduct.imageDataUrls.map((url) => ({
+                      type: 'image' as const,
+                      url,
+                    })),
+                    ...(selectedProduct.videoUrl
+                      ? [{ type: 'video' as const, url: selectedProduct.videoUrl }]
+                      : []),
+                  ];
+                  const safeSlideIdx =
+                    mediaSlides.length > 0
+                      ? Math.min(activeImageIndex, mediaSlides.length - 1)
+                      : 0;
+                  const currentSlide = mediaSlides[safeSlideIdx];
 
-                  {selectedProduct.imageDataUrls.length > 1 && (
-                    <div className="grid grid-cols-5 gap-2">
-                      {selectedProduct.imageDataUrls.map((thumb, idx) => (
-                        <button
-                          key={`${idx}-${thumb.slice(0, 20)}`}
-                          type="button"
-                          onClick={() => setActiveImageIndex(idx)}
-                          className={`aspect-square rounded-xl border overflow-hidden cursor-pointer transition-all ${
-                            activeImageIndex === idx
-                              ? 'border-[#DB2777] ring-2 ring-[#DB2777]/30'
-                              : 'border-[#E6D9EE] opacity-75 hover:opacity-100'
-                          }`}
-                        >
-                          <img
-                            src={thumb}
-                            alt={`Thumbnail ${idx + 1}`}
-                            referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
-                          />
-                        </button>
-                      ))}
+                  return (
+                    <div className="space-y-2.5">
+                      <div className="aspect-square rounded-2xl border border-[#EFE2F5] bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden flex items-center justify-center">
+                        {currentSlide ? (
+                          <>
+                            {currentSlide.type === 'video' ? (
+                              <video
+                                key={currentSlide.url}
+                                src={getOptimizedMediaUrl(currentSlide.url, 'video')}
+                                controls
+                                playsInline
+                                className="w-full h-full object-contain bg-black"
+                              />
+                            ) : (
+                              <img
+                                src={getOptimizedMediaUrl(currentSlide.url, 'image')}
+                                alt={`${selectedProduct.name} photo ${safeSlideIdx + 1}`}
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover"
+                              />
+                            )}
+                            {mediaSlides.length > 1 && (
+                              <>
+                                <button
+                                  type="button"
+                                  aria-label="Previous media"
+                                  onClick={() =>
+                                    setActiveImageIndex((prev) =>
+                                      prev <= 0 ? mediaSlides.length - 1 : prev - 1
+                                    )
+                                  }
+                                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
+                                >
+                                  <ChevronLeft className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="Next media"
+                                  onClick={() =>
+                                    setActiveImageIndex(
+                                      (prev) => (prev + 1) % mediaSlides.length
+                                    )
+                                  }
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
+                                >
+                                  <ChevronRight className="w-4 h-4" />
+                                </button>
+                                <span className="pointer-events-none absolute bottom-2 right-2 rounded-lg bg-black/60 px-2 py-0.5 text-[11px] font-semibold text-white font-mono-num">
+                                  {safeSlideIdx + 1} / {mediaSlides.length}
+                                </span>
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          <ShoppingBag className="w-14 h-14 text-[#C084FC]" />
+                        )}
+                      </div>
+
+                      {mediaSlides.length > 1 && (
+                        <div className="grid grid-cols-5 gap-2">
+                          {mediaSlides.map((slide, idx) => (
+                            <button
+                              key={`${slide.type}-${idx}-${slide.url.slice(0, 20)}`}
+                              type="button"
+                              onClick={() => setActiveImageIndex(idx)}
+                              className={`aspect-square rounded-xl border overflow-hidden cursor-pointer transition-all flex items-center justify-center ${
+                                safeSlideIdx === idx
+                                  ? 'border-[#DB2777] ring-2 ring-[#DB2777]/30'
+                                  : 'border-[#E6D9EE] opacity-75 hover:opacity-100'
+                              } ${slide.type === 'video' ? 'bg-[#1F122B] text-white' : ''}`}
+                            >
+                              {slide.type === 'video' ? (
+                                <div className="flex flex-col items-center justify-center gap-0.5">
+                                  <Video className="w-4 h-4" />
+                                  <span className="text-[9px] font-bold">Video</span>
+                                </div>
+                              ) : (
+                                <img
+                                  src={getOptimizedMediaUrl(slide.url, 'image')}
+                                  alt={`Thumbnail ${idx + 1}`}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover"
+                                />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
 
                 <div className="space-y-4">
                   <div className="space-y-1.5">
@@ -1566,7 +2279,100 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     <h2 className="font-display-serif text-2xl font-bold text-[#1F122B] leading-snug">
                       {selectedProduct.name}
                     </h2>
+                    {(() => {
+                      const canonicalId =
+                        selectedProduct.catalogProductId || selectedProduct.id;
+                      const summary = ratingSummaryByProductId.get(canonicalId);
+                      if (!summary) return null;
+                      return (
+                        <div className="text-xs font-mono-num font-bold text-[#B45309]">
+                          ★ {summary.avg.toFixed(1)} · {summary.count}{' '}
+                          {summary.count === 1 ? 'review' : 'reviews'}
+                        </div>
+                      );
+                    })()}
                   </div>
+
+                  {/* Verified Seller Info + Follow + View Store (Public Store Info Only) */}
+                  {selectedProduct.sellerId &&
+                    approvedSellerIdsSet.has(selectedProduct.sellerId) && (() => {
+                      const sid = selectedProduct.sellerId!;
+                      const sellerProf = sellerPaymentProfiles[sid];
+                      const sellerDisplayName =
+                        sellerProf?.sellerName ||
+                        selectedProduct.sellerName ||
+                        'Verified Seller';
+                      const isFollowing = followedSellerIdsSet.has(sid);
+                      const followers = followerCountsBySeller[sid] || 0;
+                      return (
+                        <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-3 flex flex-wrap items-center justify-between gap-2.5">
+                          <button
+                            type="button"
+                            onClick={(e) => openSellerProfile(sid, e)}
+                            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
+                          >
+                            <div className="w-10 h-10 rounded-xl border border-[#D8B4FE] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                              {sellerProf?.sellerPhotoDataUrl ? (
+                                <img
+                                  src={getOptimizedMediaUrl(
+                                    sellerProf.sellerPhotoDataUrl,
+                                    'image'
+                                  )}
+                                  alt={sellerDisplayName}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <Store className="w-4 h-4 text-[#7E22CE]" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold text-[#1F122B] group-hover:text-[#7E22CE] truncate">
+                                {sellerDisplayName}
+                              </div>
+                              <div className="text-[11px] text-[#6B5B7B] font-mono-num">
+                                {followers}{' '}
+                                {followers === 1 ? 'Follower' : 'Followers'} ·
+                                View Store
+                              </div>
+                            </div>
+                          </button>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              disabled={followBusySellerId === sid}
+                              onClick={(e) => handleToggleFollowAction(sid, e)}
+                              className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60 ${
+                                isFollowing
+                                  ? 'border border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                                  : 'bg-[#7E22CE] text-white hover:opacity-95'
+                              }`}
+                            >
+                              {isFollowing ? (
+                                <>
+                                  <UserCheck className="w-3.5 h-3.5" />
+                                  <span>Following</span>
+                                </>
+                              ) : (
+                                <>
+                                  <UserPlus className="w-3.5 h-3.5" />
+                                  <span>Follow</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => openSellerProfile(sid, e)}
+                              className="inline-flex items-center gap-1 rounded-xl border border-[#E6D9EE] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
+                            >
+                              <Store className="w-3.5 h-3.5 text-[#DB2777]" />
+                              <span>Store</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                   <div className="flex items-baseline gap-2.5 flex-wrap font-mono-num">
                     <span className="text-2xl font-bold text-[#1F122B]">
@@ -1724,6 +2530,202 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* Product Ratings & Customer Reviews Section */}
+                {(() => {
+                  const canonicalId =
+                    selectedProduct.catalogProductId || selectedProduct.id;
+                  const itemReviews = reviewsByProductId.get(canonicalId) || [];
+                  const summary = ratingSummaryByProductId.get(canonicalId);
+                  return (
+                    <div className="md:col-span-2 pt-5 border-t border-[#F4ECF8] space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="inline-flex items-center gap-2 text-sm font-bold text-[#1F122B]">
+                          <MessageSquare className="w-4 h-4 text-[#7E22CE]" />
+                          <span>
+                            Ratings &amp; Customer Reviews ({itemReviews.length})
+                          </span>
+                        </div>
+                        {summary && (
+                          <span className="text-xs font-mono-num font-bold text-[#B45309]">
+                            Average: ★ {summary.avg.toFixed(1)} / 5
+                          </span>
+                        )}
+                      </div>
+
+                      <form
+                        onSubmit={handleSubmitReviewForm}
+                        className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-4 space-y-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-[#4A3B59]">
+                            Rate &amp; Review this Product
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {[1, 2, 3, 4, 5].map((starVal) => (
+                              <button
+                                key={starVal}
+                                type="button"
+                                onClick={() => setReviewRating(starVal)}
+                                aria-label={`Rate ${starVal} star${starVal > 1 ? 's' : ''}`}
+                                className="p-0.5 cursor-pointer"
+                              >
+                                <Star
+                                  className={`w-5 h-5 ${
+                                    starVal <= reviewRating
+                                      ? 'text-[#F59E0B] fill-[#F59E0B]'
+                                      : 'text-[#D6C9E0]'
+                                  }`}
+                                />
+                              </button>
+                            ))}
+                            <span className="ml-1.5 text-xs font-mono-num font-bold text-[#4A3B59]">
+                              {reviewRating}/5
+                            </span>
+                          </div>
+                        </div>
+
+                        {reviewError && (
+                          <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3 py-2 text-xs font-medium text-[#BE123C]">
+                            {reviewError}
+                          </div>
+                        )}
+
+                        <textarea
+                          rows={2}
+                          maxLength={1000}
+                          value={reviewComment}
+                          onChange={(e) => setReviewComment(e.target.value)}
+                          placeholder="Share your honest review about quality, sizing, or delivery..."
+                          className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs sm:text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                        />
+
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>
+                              {uploadingReviewMedia
+                                ? `Uploading${reviewMediaProgress !== null ? ` ${reviewMediaProgress}%` : ''}...`
+                                : reviewMediaUrl
+                                  ? 'Change Photo / Video'
+                                  : 'Attach Photo / Video (Optional)'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/*,video/*"
+                              disabled={uploadingReviewMedia}
+                              onChange={handleUploadReviewMedia}
+                              className="sr-only"
+                            />
+                          </label>
+
+                          {reviewMediaUrl && (
+                            <div className="flex items-center gap-2">
+                              {isVideoUrl(reviewMediaUrl, reviewMediaType) ? (
+                                <video
+                                  src={getOptimizedMediaUrl(reviewMediaUrl, 'video')}
+                                  controls
+                                  playsInline
+                                  className="w-16 h-12 rounded-lg object-cover border border-[#D8B4FE] bg-black"
+                                />
+                              ) : (
+                                <img
+                                  src={getOptimizedMediaUrl(reviewMediaUrl, 'image')}
+                                  alt="Review attachment preview"
+                                  referrerPolicy="no-referrer"
+                                  className="w-12 h-12 rounded-lg object-cover border border-[#D8B4FE]"
+                                />
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReviewMediaUrl('');
+                                  setReviewMediaType(undefined);
+                                  setReviewMediaRecord(undefined);
+                                }}
+                                className="text-[11px] font-semibold text-[#BE123C] cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] text-[#6B5B7B]">
+                            {loggedInCustomer
+                              ? `Posting as ${loggedInCustomer.name}`
+                              : 'Sign in required to post your review.'}
+                          </span>
+                          <button
+                            type="submit"
+                            disabled={reviewSubmitting || uploadingReviewMedia}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                          >
+                            <Star className="w-3.5 h-3.5 fill-current" />
+                            <span>
+                              {reviewSubmitting
+                                ? 'Posting...'
+                                : 'Post Rating & Review'}
+                            </span>
+                          </button>
+                        </div>
+                      </form>
+
+                      {itemReviews.length === 0 ? (
+                        <p className="text-xs text-[#6B5B7B]">
+                          No reviews yet. Be the first customer to review this product.
+                        </p>
+                      ) : (
+                        <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
+                          {itemReviews.map((rev) => (
+                            <div
+                              key={rev.id}
+                              className="rounded-2xl border border-[#EFE2F5] bg-white p-3 space-y-1.5 text-xs"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-[#1F122B]">
+                                  {rev.customerName}
+                                </span>
+                                <span className="text-[#D97706] font-mono-num font-bold">
+                                  {'★'.repeat(rev.rating)}
+                                  <span className="text-[#D6C9E0]">
+                                    {'★'.repeat(Math.max(0, 5 - rev.rating))}
+                                  </span>
+                                </span>
+                              </div>
+                              <p className="text-[#4A3B59] leading-relaxed">
+                                {rev.comment}
+                              </p>
+                              {rev.mediaUrl && (
+                                <div className="pt-1">
+                                  {isVideoUrl(rev.mediaUrl, rev.mediaType) ? (
+                                    <video
+                                      src={getOptimizedMediaUrl(rev.mediaUrl, 'video')}
+                                      controls
+                                      playsInline
+                                      className="max-h-44 rounded-xl border border-[#EFE2F5] bg-black"
+                                    />
+                                  ) : (
+                                    <img
+                                      src={getOptimizedMediaUrl(rev.mediaUrl, 'image')}
+                                      alt={`Review media by ${rev.customerName}`}
+                                      referrerPolicy="no-referrer"
+                                      className="max-h-40 rounded-xl border border-[#EFE2F5] object-cover"
+                                    />
+                                  )}
+                                </div>
+                              )}
+                              <div className="text-[10px] text-[#8E7C9E] font-mono-num">
+                                {rev.createdAt.slice(0, 10)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -1737,7 +2739,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       <div className="w-12 h-12 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
                         {selectedProduct.imageDataUrl ? (
                           <img
-                            src={selectedProduct.imageDataUrl}
+                            src={getOptimizedMediaUrl(
+                              selectedProduct.imageDataUrl,
+                              'image'
+                            )}
                             alt={selectedProduct.name}
                             referrerPolicy="no-referrer"
                             className="w-full h-full object-cover"
@@ -1993,42 +2998,139 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   {paymentMethod === 'UPI' && (
                     <div className="rounded-2xl border border-[#E9D5FF] bg-[#FDF9FF] p-4 space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <div className="text-[11px] font-semibold text-[#6B5B7B]">
-                            Pay {formatCurrency(checkoutSubtotal, sym)} to UPI ID:
+                        <div className="space-y-0.5">
+                          <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#7E22CE] bg-white border border-[#E6D9EE] rounded-md px-2 py-0.5">
+                            <span>
+                              {selectedEffectivePayment.source === 'product'
+                                ? 'Product Custom Payment'
+                                : selectedEffectivePayment.source === 'seller'
+                                  ? 'Seller Payment'
+                                  : 'Store Payment'}
+                            </span>
+                            <span>·</span>
+                            <span>{selectedEffectivePayment.recipientName}</span>
                           </div>
-                          <div className="font-mono-num text-base font-bold text-[#6D28D9] select-all">
-                            {CHECKOUT_UPI_ID}
+                          <div className="text-[11px] font-semibold text-[#6B5B7B] pt-1">
+                            Pay {formatCurrency(checkoutSubtotal, sym)}
+                            {selectedEffectivePayment.upiId
+                              ? ' to UPI ID:'
+                              : ' via Bank / QR Details:'}
                           </div>
+                          {selectedEffectivePayment.upiId && (
+                            <div className="font-mono-num text-base font-bold text-[#6D28D9] select-all">
+                              {selectedEffectivePayment.upiId}
+                            </div>
+                          )}
+                          {selectedEffectivePayment.upiNumber && (
+                            <div className="text-[11px] font-mono-num text-[#4A3B59]">
+                              UPI Number:{' '}
+                              <strong>{selectedEffectivePayment.upiNumber}</strong>
+                            </div>
+                          )}
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={handleCopyUpi}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-1.5 text-xs font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] cursor-pointer whitespace-nowrap"
-                          >
-                            {upiCopied ? (
-                              <>
-                                <Check className="w-3.5 h-3.5 text-[#15803D]" />
-                                <span className="text-[#15803D]">Copied</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3.5 h-3.5" />
-                                <span>Copy UPI ID</span>
-                              </>
+                        {selectedEffectivePayment.upiId && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCopyUpi(selectedEffectivePayment.upiId)
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-1.5 text-xs font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] cursor-pointer whitespace-nowrap"
+                            >
+                              {upiCopied ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-[#15803D]" />
+                                  <span className="text-[#15803D]">Copied</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>Copy UPI ID</span>
+                                </>
+                              )}
+                            </button>
+
+                            {upiDeepLink && (
+                              <a
+                                href={upiDeepLink}
+                                className="inline-flex items-center gap-1 rounded-xl bg-[#7E22CE] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap"
+                              >
+                                <span>Pay App</span>
+                              </a>
                             )}
-                          </button>
-
-                          <a
-                            href={upiDeepLink}
-                            className="inline-flex items-center gap-1 rounded-xl bg-[#7E22CE] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap"
-                          >
-                            <span>Pay App</span>
-                          </a>
-                        </div>
+                          </div>
+                        )}
                       </div>
+
+                      {(selectedEffectivePayment.bankAccountNo ||
+                        selectedEffectivePayment.bankAccountName ||
+                        selectedEffectivePayment.bankName ||
+                        selectedEffectivePayment.bankIfscBranch ||
+                        selectedEffectivePayment.qrDataUrl) && (
+                        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-start pt-2 border-t border-[#EFE2F5]">
+                          {(selectedEffectivePayment.bankAccountNo ||
+                            selectedEffectivePayment.bankAccountName ||
+                            selectedEffectivePayment.bankName ||
+                            selectedEffectivePayment.bankIfscBranch) && (
+                            <div className="rounded-xl border border-[#EFE2F5] bg-white p-2.5 text-[11px] text-[#4A3B59] space-y-0.5">
+                              <div className="font-bold text-[#1F122B]">
+                                Bank Transfer Details
+                              </div>
+                              {selectedEffectivePayment.bankAccountName && (
+                                <div>
+                                  Holder:{' '}
+                                  <strong>
+                                    {selectedEffectivePayment.bankAccountName}
+                                  </strong>
+                                </div>
+                              )}
+                              {selectedEffectivePayment.bankName && (
+                                <div>
+                                  Bank:{' '}
+                                  <strong>
+                                    {selectedEffectivePayment.bankName}
+                                  </strong>
+                                </div>
+                              )}
+                              {selectedEffectivePayment.bankAccountNo && (
+                                <div className="font-mono-num">
+                                  A/C:{' '}
+                                  <strong>
+                                    {selectedEffectivePayment.bankAccountNo}
+                                  </strong>
+                                </div>
+                              )}
+                              {selectedEffectivePayment.bankIfscBranch && (
+                                <div className="font-mono-num">
+                                  IFSC / Branch:{' '}
+                                  <strong>
+                                    {selectedEffectivePayment.bankIfscBranch}
+                                  </strong>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {selectedEffectivePayment.qrDataUrl && (
+                            <div className="rounded-xl border border-[#EFE2F5] bg-white p-2 text-center">
+                              <div className="inline-flex items-center gap-1 text-[10px] font-bold text-[#6D28D9] mb-1">
+                                <QrCode className="w-3 h-3" />
+                                <span>Scan QR</span>
+                              </div>
+                              <img
+                                src={getOptimizedMediaUrl(
+                                  selectedEffectivePayment.qrDataUrl,
+                                  'image'
+                                )}
+                                alt="Payment QR Code"
+                                referrerPolicy="no-referrer"
+                                className="w-28 h-28 object-contain rounded-lg mx-auto"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       <div className="pt-2 border-t border-[#EFE2F5] space-y-2">
                         <div className="text-xs font-semibold text-[#4A3B59]">
@@ -2040,7 +3142,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             <Upload className="w-3.5 h-3.5" />
                             <span>
                               {uploadingScreenshot
-                                ? 'Compressing...'
+                                ? `Uploading${uploadingScreenshotProgress !== null ? ` ${uploadingScreenshotProgress}%` : ''}...`
                                 : upiScreenshotDataUrl
                                   ? 'Change Screenshot'
                                   : 'Upload Screenshot'}
@@ -2057,7 +3159,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           {upiScreenshotDataUrl && (
                             <div className="flex items-center gap-2">
                               <img
-                                src={upiScreenshotDataUrl}
+                                src={getOptimizedMediaUrl(upiScreenshotDataUrl, 'image')}
                                 alt="Uploaded UPI payment screenshot"
                                 referrerPolicy="no-referrer"
                                 className="w-10 h-10 rounded-lg object-cover border border-[#D8B4FE]"
@@ -2076,7 +3178,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             </div>
                           )}
                           <span className="text-[11px] text-[#6B5B7B]">
-                            Max 200KB (সর্বোচ্চ 200KB)
+                            Saved to Cloudinary
                           </span>
                         </div>
                       </div>

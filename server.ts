@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import type { Request, Response } from 'express';
 import fs from 'fs';
+import nodemailer from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -313,6 +314,290 @@ async function startServer(): Promise<void> {
   // Health route
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', app: 'Glamour Galleria' });
+  });
+
+  // 6-DIGIT EMAIL OTP DELIVERY & VERIFICATION (SMTP)
+  const ADMIN_OTP_EMAIL = 'rahulhaldar.in@gmail.com';
+  const OTP_EXPIRY_MS = 5 * 60 * 1000;
+  const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+  const ALLOWED_OTP_PURPOSES = new Set([
+    'customer_register',
+    'seller_register',
+    'customer_forgot_password',
+    'seller_forgot_password',
+    'admin_login',
+  ]);
+  const OTP_SIGNING_SECRET: Buffer = process.env.OTP_SECRET
+    ? crypto.createHash('sha256').update(process.env.OTP_SECRET).digest()
+    : crypto.randomBytes(32);
+  const otpCooldownMap = new Map<string, number>();
+
+  const escapeHtml = (val: string): string =>
+    val
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const signOtpChallenge = (payload: Record<string, unknown>): string => {
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const sig = crypto
+      .createHmac('sha256', OTP_SIGNING_SECRET)
+      .update(encoded)
+      .digest('hex');
+    return `${encoded}.${sig}`;
+  };
+
+  const verifyOtpChallenge = (
+    token: string
+  ): {
+    otpId: string;
+    email: string;
+    purpose: string;
+    salt: string;
+    otpHash: string;
+    expiresAtMs: number;
+  } | null => {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    const [encoded, sigHex] = parts;
+    const expectedHex = crypto
+      .createHmac('sha256', OTP_SIGNING_SECRET)
+      .update(encoded)
+      .digest('hex');
+    const sigBuf = Buffer.from(sigHex, 'utf8');
+    const expectedBuf = Buffer.from(expectedHex, 'utf8');
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+        otpId?: string;
+        email?: string;
+        purpose?: string;
+        salt?: string;
+        otpHash?: string;
+        expiresAtMs?: number;
+      };
+      if (
+        !parsed.otpId ||
+        !parsed.email ||
+        !parsed.purpose ||
+        !parsed.salt ||
+        !parsed.otpHash ||
+        typeof parsed.expiresAtMs !== 'number'
+      ) {
+        return null;
+      }
+      return {
+        otpId: parsed.otpId,
+        email: parsed.email,
+        purpose: parsed.purpose,
+        salt: parsed.salt,
+        otpHash: parsed.otpHash,
+        expiresAtMs: parsed.expiresAtMs,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  app.post('/api/otp/send', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as { email?: unknown; purpose?: unknown };
+      const purpose = String(body.purpose || '').trim();
+      if (!ALLOWED_OTP_PURPOSES.has(purpose)) {
+        res.status(400).json({ error: 'Invalid OTP purpose.' });
+        return;
+      }
+
+      const targetEmail =
+        purpose === 'admin_login'
+          ? ADMIN_OTP_EMAIL
+          : String(body.email || '').trim().toLowerCase();
+
+      if (!/^[a-z0-9._%+-]+@gmail\.com$/i.test(targetEmail)) {
+        res.status(400).json({
+          error: 'Please enter a valid @gmail.com email address for OTP verification.',
+        });
+        return;
+      }
+
+      const nowMs = Date.now();
+      const cooldownKey = `${purpose}:${targetEmail}`;
+      const nextAllowedMs = otpCooldownMap.get(cooldownKey) || 0;
+      if (nextAllowedMs > nowMs) {
+        const waitSec = Math.ceil((nextAllowedMs - nowMs) / 1000);
+        res.status(429).json({
+          error: `Please wait ${waitSec}s before requesting another OTP.`,
+          retryAfterSec: waitSec,
+        });
+        return;
+      }
+
+      const smtpHost = String(process.env.SMTP_HOST || '').trim();
+      const smtpPort = Number(process.env.SMTP_PORT || 587);
+      const smtpUser = String(process.env.SMTP_USER || '').trim();
+      const smtpPass = String(process.env.SMTP_PASS || '').trim();
+      const fromEmail = String(process.env.OTP_FROM_EMAIL || smtpUser).trim();
+
+      if (!smtpHost || !smtpUser || !smtpPass || !fromEmail || !Number.isFinite(smtpPort)) {
+        res.status(503).json({
+          error:
+            'Email OTP service is not configured yet. Please configure SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and OTP_FROM_EMAIL environment variables.',
+        });
+        return;
+      }
+
+      const code = crypto.randomInt(100000, 1000000).toString();
+      const otpId = `otp-${crypto.randomUUID()}`;
+      const salt = crypto.randomBytes(16).toString('hex');
+      const otpHash = crypto
+        .createHash('sha256')
+        .update(`${salt}:${targetEmail}:${purpose}:${code}`)
+        .digest('hex');
+      const expiresAtMs = nowMs + OTP_EXPIRY_MS;
+      const resendAvailableAtMs = nowMs + OTP_RESEND_COOLDOWN_MS;
+
+      const purposeLabelMap: Record<string, string> = {
+        customer_register: 'New Customer Account Registration',
+        seller_register: 'New Seller Account Registration',
+        customer_forgot_password: 'Customer Password Reset',
+        seller_forgot_password: 'Seller Password Reset',
+        admin_login: 'Admin Panel Sign-In Verification',
+      };
+      const purposeLabel = purposeLabelMap[purpose] || 'Verification';
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+
+      await transporter.sendMail({
+        from: fromEmail,
+        to: targetEmail,
+        subject: `Glamour Galleria - Your 6-Digit OTP (${purposeLabel})`,
+        text: `Your Glamour Galleria 6-digit verification code for ${purposeLabel} is: ${code}\n\nThis code is valid for 5 minutes. Do not share this code with anyone.`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #EFE2F5; border-radius: 16px; background: #FDF9FC; color: #1F122B;">
+            <h2 style="margin: 0 0 8px; color: #6D28D9; font-size: 20px;">Glamour Galleria</h2>
+            <p style="margin: 0 0 16px; font-size: 13px; color: #5B4B6B;">${escapeHtml(purposeLabel)}</p>
+            <p style="margin: 0 0 12px; font-size: 14px;">Use the 6-digit OTP below to complete your verification:</p>
+            <div style="margin: 16px 0; padding: 14px 20px; background: #FFFFFF; border: 1px solid #D8B4FE; border-radius: 12px; text-align: center; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #7E22CE; font-family: monospace;">
+              ${escapeHtml(code)}
+            </div>
+            <p style="margin: 0; font-size: 12px; color: #6B5B7B;">This code expires in <strong>5 minutes</strong>. If you did not request this code, you can safely ignore this email.</p>
+          </div>
+        `,
+      });
+
+      otpCooldownMap.set(cooldownKey, resendAvailableAtMs);
+
+      const challengeToken = signOtpChallenge({
+        otpId,
+        email: targetEmail,
+        purpose,
+        salt,
+        otpHash,
+        expiresAtMs,
+      });
+
+      res.json({
+        otpId,
+        email: targetEmail,
+        purpose,
+        otpHash,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        resendAvailableAt: new Date(resendAvailableAtMs).toISOString(),
+        challengeToken,
+      });
+    } catch (err) {
+      console.error('OTP send error:', err);
+      res.status(500).json({
+        error: 'Could not send Email OTP. Please verify your SMTP configuration and try again.',
+      });
+    }
+  });
+
+  app.post('/api/otp/verify', (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      otpId?: unknown;
+      email?: unknown;
+      purpose?: unknown;
+      code?: unknown;
+      challengeToken?: unknown;
+    };
+    const otpId = String(body.otpId || '').trim();
+    const purpose = String(body.purpose || '').trim();
+    const code = String(body.code || '').trim();
+    const challengeToken = String(body.challengeToken || '').trim();
+
+    if (!ALLOWED_OTP_PURPOSES.has(purpose)) {
+      res.status(400).json({ verified: false, error: 'Invalid OTP purpose.' });
+      return;
+    }
+
+    const targetEmail =
+      purpose === 'admin_login'
+        ? ADMIN_OTP_EMAIL
+        : String(body.email || '').trim().toLowerCase();
+
+    if (!/^\d{6}$/.test(code)) {
+      res.status(400).json({
+        verified: false,
+        error: 'Please enter the exact 6-digit OTP code.',
+      });
+      return;
+    }
+
+    const challenge = verifyOtpChallenge(challengeToken);
+    if (
+      !challenge ||
+      challenge.otpId !== otpId ||
+      challenge.email !== targetEmail ||
+      challenge.purpose !== purpose
+    ) {
+      res.status(400).json({
+        verified: false,
+        error: 'OTP session is invalid. Please request a new OTP.',
+      });
+      return;
+    }
+
+    if (Date.now() > challenge.expiresAtMs) {
+      res.status(400).json({
+        verified: false,
+        expired: true,
+        error: 'This OTP has expired (5-minute limit). Please resend a new OTP.',
+      });
+      return;
+    }
+
+    const candidateHash = crypto
+      .createHash('sha256')
+      .update(`${challenge.salt}:${targetEmail}:${purpose}:${code}`)
+      .digest('hex');
+
+    const candidateBuf = Buffer.from(candidateHash, 'utf8');
+    const expectedBuf = Buffer.from(challenge.otpHash, 'utf8');
+    if (
+      candidateBuf.length !== expectedBuf.length ||
+      !crypto.timingSafeEqual(candidateBuf, expectedBuf)
+    ) {
+      res.status(400).json({
+        verified: false,
+        error: 'Incorrect 6-digit OTP code. Please check your email and try again.',
+      });
+      return;
+    }
+
+    res.json({ verified: true, otpId, email: targetEmail, purpose });
   });
 
   // OPEN ADMIN PANEL WORKSPACE ROUTES (No Login Gate)

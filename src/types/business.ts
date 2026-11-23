@@ -30,6 +30,41 @@ export interface UserAccount {
   createdAt: string;
 }
 
+export type MediaAppSource = 'glamour-galleria' | 'ggadminpanel';
+export type MediaUploaderRole = 'customer' | 'seller' | 'admin';
+export type MediaResourceType = 'image' | 'video';
+export type MediaEntityType =
+  | 'product'
+  | 'advertisement'
+  | 'featured_item'
+  | 'review'
+  | 'payment_qr'
+  | 'order_payment'
+  | 'highlight_payment'
+  | 'seller_kyc'
+  | 'seller_profile'
+  | 'customer_avatar'
+  | 'branding';
+
+export interface CloudinaryMediaRecord {
+  id: string;
+  appSource: MediaAppSource;
+  uploadedByRole: MediaUploaderRole;
+  uploadedByUid?: string;
+  relatedEntityType: MediaEntityType;
+  relatedEntityId?: string;
+  folder: string;
+  publicId: string;
+  secureUrl: string;
+  resourceType: MediaResourceType;
+  format?: string;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  duration?: number;
+  createdAt: string;
+}
+
 export interface ViewPanelDiscountOffer {
   id: string;
   title: string;
@@ -49,14 +84,28 @@ export interface ViewPanelShoppingItem {
   color?: string;
   imageDataUrl?: string;
   imageDataUrls?: string[];
+  videoUrl?: string;
+  mediaRecords?: CloudinaryMediaRecord[];
   description?: string;
   highlighted?: boolean;
+  sellerId?: string;
+  sellerName?: string;
+  highlightPlacement?: HighlightPlacementRule;
+  sellerPaymentUpiId?: string;
+  sellerPaymentBankAccountName?: string;
+  sellerPaymentBankName?: string;
+  sellerPaymentBankAccountNo?: string;
+  sellerPaymentBankIfscBranch?: string;
+  sellerPaymentQrDataUrl?: string;
 }
 
 export interface ViewPanelConfig {
   advertisement: {
     enabled: boolean;
     imageDataUrl: string;
+    videoUrl?: string;
+    mediaType?: MediaResourceType;
+    mediaRecord?: CloudinaryMediaRecord;
     title: string;
     subtitle: string;
     linkUrl: string;
@@ -109,6 +158,33 @@ export interface HighlightConfig {
   updatedAt?: string;
 }
 
+export interface AdminPaymentSettings {
+  upiId: string;
+  upiNumber?: string;
+  bankAccountName?: string;
+  bankName?: string;
+  bankAccountNo?: string;
+  bankIfscBranch?: string;
+  qrDataUrl?: string;
+  updatedAt?: string;
+}
+
+export interface SellerPublicPaymentProfile {
+  sellerId: string;
+  sellerName: string;
+  sellerPhotoDataUrl?: string;
+  sellerCoverPhotoDataUrl?: string;
+  followersCount?: number;
+  upiId?: string;
+  bankAccountName?: string;
+  bankName?: string;
+  bankAccountNo?: string;
+  bankIfscBranch?: string;
+  qrDataUrl?: string;
+}
+
+export type SellerPublicStoreProfile = SellerPublicPaymentProfile;
+
 export interface BusinessSettings {
   businessName: string;
   tagline: string;
@@ -124,13 +200,16 @@ export interface BusinessSettings {
   upiId: string;
   upiNumber?: string;
   bankAccountName?: string;
+  bankName?: string;
   bankAccountNo?: string;
   bankIfscBranch?: string;
+  paymentQrDataUrl?: string;
   invoiceFooterNote: string;
   socialTagLine?: string;
   lowStockThreshold: number;
   viewPanel?: ViewPanelConfig;
   highlightConfig?: HighlightConfig;
+  lastAdminOtpVerifiedAt?: string;
 }
 
 export interface CustomerCartItem {
@@ -144,11 +223,14 @@ export interface CustomerCartItem {
   originalPrice?: number;
   quantity: number;
   imageDataUrl?: string;
+  sellerId?: string;
+  sellerName?: string;
 }
 
 export interface Client {
   id: string;
   name: string;
+  email?: string;
   mobile: string;
   whatsapp: string;
   address: string;
@@ -174,6 +256,8 @@ export interface Product {
   name: string;
   imageDataUrl: string;
   imageDataUrls?: string[];
+  videoUrl?: string;
+  mediaRecords?: CloudinaryMediaRecord[];
   category: string;
   purchasePrice: number;
   sellingPrice: number;
@@ -191,6 +275,12 @@ export interface Product {
   sellerName?: string;
   sellerPhone?: string;
   sellerApprovalStatus?: SellerApprovalStatus;
+  sellerPaymentUpiId?: string;
+  sellerPaymentBankAccountName?: string;
+  sellerPaymentBankName?: string;
+  sellerPaymentBankAccountNo?: string;
+  sellerPaymentBankIfscBranch?: string;
+  sellerPaymentQrDataUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -291,6 +381,8 @@ export interface CustomerOrderItem {
   originalPrice?: number;
   lineTotal: number;
   imageDataUrl?: string;
+  sellerId?: string;
+  sellerName?: string;
 }
 
 export interface CustomerOrder {
@@ -320,6 +412,9 @@ export interface CustomerOrder {
   totalAmount: number;
   paymentMethod: CustomerOrderPaymentMethod;
   upiIdUsed?: string;
+  sellerId?: string;
+  paymentRecipientType?: 'admin' | 'seller' | 'mixed';
+  paymentRecipientName?: string;
   paymentScreenshotDataUrl?: string;
   customerNote?: string;
   status: CustomerOrderStatus;
@@ -346,11 +441,19 @@ export interface SellerApplication {
   aadhaarNumber: string;
   gstNumber?: string;
   sellerPhotoDataUrl: string;
+  sellerCoverPhotoDataUrl?: string;
+  followersCount?: number;
   panDocDataUrl: string;
   aadhaarDocDataUrl: string;
   gstDocDataUrl?: string;
   bankDocDataUrl: string;
   bankAccountDetails?: string;
+  sellerUpiId?: string;
+  sellerBankAccountName?: string;
+  sellerBankName?: string;
+  sellerBankAccountNo?: string;
+  sellerBankIfscBranch?: string;
+  sellerQrDataUrl?: string;
   passwordSalt?: string;
   passwordHash?: string;
   runningPasswordEnc?: string;
@@ -359,6 +462,29 @@ export interface SellerApplication {
   status: SellerAccountStatus;
   adminRemarks?: string;
   reviewedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SellerFollowRecord {
+  id: string;
+  sellerId: string;
+  clientId: string;
+  customerName?: string;
+  createdAt: string;
+}
+
+export interface ProductReview {
+  id: string;
+  productId: string;
+  sellerId?: string;
+  clientId: string;
+  customerName: string;
+  rating: number;
+  comment: string;
+  mediaUrl?: string;
+  mediaType?: MediaResourceType;
+  mediaRecord?: CloudinaryMediaRecord;
   createdAt: string;
   updatedAt: string;
 }
@@ -423,8 +549,31 @@ export interface PublicCustomerLookupResult {
   bills: Array<{ invoice: Invoice; settings: BusinessSettings }>;
 }
 
+export type EmailOtpPurpose =
+  | 'customer_register'
+  | 'seller_register'
+  | 'customer_forgot_password'
+  | 'seller_forgot_password'
+  | 'admin_login';
+
+export interface EmailOtpRecord {
+  id: string;
+  email: string;
+  purpose: EmailOtpPurpose;
+  otpHash: string;
+  expiresAt: string;
+  attempts: number;
+  maxAttempts: number;
+  verified: boolean;
+  verifiedAt?: string;
+  resendAvailableAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WorkspaceData {
   settings: BusinessSettings;
+  paymentSettings?: AdminPaymentSettings;
   clients: Client[];
   products: Product[];
   invoices: Invoice[];
@@ -434,4 +583,6 @@ export interface WorkspaceData {
   sellerApplications: SellerApplication[];
   supportChats: SupportChatThread[];
   highlightRequests: HighlightRequest[];
+  sellerFollows?: SellerFollowRecord[];
+  productReviews?: ProductReview[];
 }

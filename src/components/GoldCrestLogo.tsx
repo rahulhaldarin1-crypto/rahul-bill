@@ -1,4 +1,5 @@
 import React from 'react';
+import { getMediaCrossOrigin, getOptimizedMediaUrl } from '../utils/cloudinary';
 
 interface GoldCrestLogoProps {
   customLogoDataUrl?: string;
@@ -12,14 +13,16 @@ export const GoldCrestLogo: React.FC<GoldCrestLogoProps> = ({
   size = 94,
 }) => {
   if (customLogoDataUrl) {
+    const resolvedSrc = getOptimizedMediaUrl(customLogoDataUrl, 'image');
     return (
       <div
         style={{ width: size, height: size }}
         className="flex items-center justify-center overflow-hidden rounded-full border border-[#C9A449]/60 bg-[#1B1712]"
       >
         <img
-          src={customLogoDataUrl}
+          src={resolvedSrc}
           alt={`${storeName} logo`}
+          crossOrigin={getMediaCrossOrigin(resolvedSrc)}
           referrerPolicy="no-referrer"
           className="h-full w-full object-cover"
         />

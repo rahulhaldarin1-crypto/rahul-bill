@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { BusinessSettings, Invoice } from '../types/business';
 import { formatShortDate, suggestTrackingUrl } from '../utils/calculations';
+import { getMediaCrossOrigin, getOptimizedMediaUrl } from '../utils/cloudinary';
 import { BrandLogo } from './BrandLogo';
 
 interface InvoiceSheetProps {
@@ -433,8 +434,10 @@ export const InvoiceSheet: React.FC<InvoiceSheetProps> = ({
                 <span className="font-bold text-[#F5EFE4] shrink-0">QR code:</span>
                 {qrDataUrl ? (
                   <img
-                    src={qrDataUrl}
+                    src={getOptimizedMediaUrl(qrDataUrl, 'image')}
                     alt="UPI QR Code"
+                    crossOrigin={getMediaCrossOrigin(qrDataUrl)}
+                    referrerPolicy="no-referrer"
                     className="w-12 h-12 rounded-xs bg-white p-0.5 border border-[#8C7030]"
                   />
                 ) : (

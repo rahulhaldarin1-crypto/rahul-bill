@@ -3,6 +3,7 @@ import { ArrowLeft, RotateCcw, Upload, X } from 'lucide-react';
 import { COURIER_PRESETS, DEFAULT_STORE_SETTINGS } from '../data/defaults';
 import { Translations } from '../i18n/translations';
 import { StoreSettings } from '../types/invoice';
+import { uploadMediaToCloudinary } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import { GoldCrestLogo } from './GoldCrestLogo';
 
@@ -24,20 +25,40 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
     settings.minTableRows ? String(settings.minTableRows) : ''
   );
   const [savedNotice, setSavedNotice] = useState(false);
+  const [uploadingField, setUploadingField] = useState<
+    'customLogoDataUrl' | 'customQrDataUrl' | null
+  >(null);
+  const [uploadError, setUploadError] = useState('');
 
-  const handleImageUpload = (
+  const handleImageUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     field: 'customLogoDataUrl' | 'customQrDataUrl'
   ) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setDraft((prev) => ({ ...prev, [field]: reader.result as string }));
-      }
-    };
-    reader.readAsDataURL(file);
+    setUploadError('');
+    setUploadingField(field);
+    try {
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'admin',
+        appSource: 'ggadminpanel',
+        folder:
+          field === 'customLogoDataUrl'
+            ? 'ggadminpanel/admin/branding'
+            : 'ggadminpanel/admin/payment-qr',
+        relatedEntityType:
+          field === 'customLogoDataUrl' ? 'branding' : 'payment_qr',
+        allowedTypes: ['image'],
+      });
+      setDraft((prev) => ({ ...prev, [field]: record.secureUrl }));
+    } catch (err) {
+      setUploadError(
+        err instanceof Error ? err.message : 'Failed to upload image to Cloudinary.'
+      );
+    } finally {
+      setUploadingField(null);
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -115,10 +136,15 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
               <div className="flex items-center gap-2">
                 <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#DDD7CB] bg-[#FAF8F4] text-xs font-medium text-[#181613] hover:bg-[#F2ECE0] cursor-pointer">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>Upload Logo</span>
+                  <span>
+                    {uploadingField === 'customLogoDataUrl'
+                      ? 'Uploading...'
+                      : 'Upload Logo'}
+                  </span>
                   <input
                     type="file"
                     accept="image/*"
+                    disabled={uploadingField !== null}
                     onChange={(e) => handleImageUpload(e, 'customLogoDataUrl')}
                     className="sr-only"
                   />
@@ -243,10 +269,15 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
             <div className="sm:col-span-2 flex items-center gap-4 pt-1">
               <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#DDD7CB] bg-[#FAF8F4] text-xs font-medium text-[#181613] hover:bg-[#F2ECE0] cursor-pointer">
                 <Upload className="w-3.5 h-3.5" />
-                <span>Upload Custom UPI QR Image</span>
+                <span>
+                  {uploadingField === 'customQrDataUrl'
+                    ? 'Uploading...'
+                    : 'Upload Custom UPI QR Image'}
+                </span>
                 <input
                   type="file"
                   accept="image/*"
+                  disabled={uploadingField !== null}
                   onChange={(e) => handleImageUpload(e, 'customQrDataUrl')}
                   className="sr-only"
                 />
@@ -328,6 +359,9 @@ export const StoreSettingsView: React.FC<StoreSettingsViewProps> = ({
         </section>
 
         <div className="flex items-center justify-end gap-4">
+          {uploadError && (
+            <span className="text-xs font-medium text-[#B91C1C]">{uploadError}</span>
+          )}
           {savedNotice && (
             <span className="text-sm font-medium text-[#15803D]">{t.settingsSavedToast}</span>
           )}

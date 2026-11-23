@@ -29,17 +29,23 @@ import { SettingsView } from './components/SettingsView';
 import { StartPortal } from './components/StartPortal';
 import { ViewPanelControlView } from './components/ViewPanelControlView';
 import {
+  AdminPaymentSettings,
   AppRoute,
   BusinessSettings,
   Client,
   CustomerOrder,
   DeliveryStatus,
   ExpenseRecord,
+  HighlightConfig,
+  HighlightRequestStatus,
   Invoice,
   PaymentMethod,
   Product,
+  ProductReview,
   SellerAccountStatus,
   SellerApprovalStatus,
+  SellerFollowRecord,
+  SellerPublicPaymentProfile,
   ViewPanelConfig,
   WorkspaceData,
 } from './types/business';
@@ -53,8 +59,13 @@ import {
 import { isAdminOnlyAppMode } from './utils/appMode';
 import { api } from './utils/api';
 import {
-  createEmptyWorkspace,
+  DEFAULT_ADMIN_PAYMENT_SETTINGS,
+  DEFAULT_HIGHLIGHT_CONFIG,
   DEFAULT_VIEW_PANEL_CONFIG,
+  createEmptyWorkspace,
+  isAdminOtpWindowValid,
+  mergeAdminPaymentSettings,
+  mergeBusinessSettings,
 } from './utils/calculations';
 
 interface HistoryEntry {
@@ -70,8 +81,22 @@ export default function App() {
   const [customerSettings, setCustomerSettings] = useState<BusinessSettings>(
     () => createEmptyWorkspace().settings
   );
+  const [customerPaymentSettings, setCustomerPaymentSettings] =
+    useState<AdminPaymentSettings>(() => ({ ...DEFAULT_ADMIN_PAYMENT_SETTINGS }));
   const [customerProducts, setCustomerProducts] = useState<Product[]>([]);
   const [approvedSellerIds, setApprovedSellerIds] = useState<string[]>([]);
+  const [sellerPaymentProfiles, setSellerPaymentProfiles] = useState<
+    Record<string, SellerPublicPaymentProfile>
+  >({});
+  const [highlightSeatUsage, setHighlightSeatUsage] = useState<
+    Record<string, number>
+  >({});
+  const [customerSellerFollows, setCustomerSellerFollows] = useState<
+    SellerFollowRecord[]
+  >([]);
+  const [customerProductReviews, setCustomerProductReviews] = useState<
+    ProductReview[]
+  >([]);
   const [isolatedCustomer, setIsolatedCustomer] = useState<Client | null>(null);
   const [isolatedCustomerOrders, setIsolatedCustomerOrders] = useState<CustomerOrder[]>([]);
   const [isolatedCustomerBills, setIsolatedCustomerBills] = useState<Invoice[]>([]);
@@ -79,6 +104,20 @@ export default function App() {
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() =>
     adminOnlyMode ? isAdminUnlockedStored() : false
   );
+
+  // Enforce 24-hour Admin Email OTP window once workspace settings have loaded
+  useEffect(() => {
+    if (!adminOnlyMode || !workspaceLoaded || !adminUnlocked) return;
+    if (!isAdminOtpWindowValid(workspace.settings.lastAdminOtpVerifiedAt)) {
+      setAdminUnlockedStored(false);
+      setAdminUnlocked(false);
+    }
+  }, [
+    adminOnlyMode,
+    workspaceLoaded,
+    adminUnlocked,
+    workspace.settings.lastAdminOtpVerifiedAt,
+  ]);
   const [customerSessionId, setCustomerSessionIdState] = useState<string | null>(() =>
     getCustomerSessionId()
   );
@@ -162,18 +201,32 @@ export default function App() {
         .then((data) => {
           if (!active) return;
           setCustomerSettings(data.settings);
+          setCustomerPaymentSettings(data.paymentSettings);
           setCustomerProducts(data.products);
           setApprovedSellerIds(data.approvedSellerIds);
+          setSellerPaymentProfiles(data.sellerPaymentProfiles);
+          setHighlightSeatUsage(data.highlightSeatUsage);
+          setCustomerSellerFollows(data.sellerFollows);
+          setCustomerProductReviews(data.productReviews);
           setWorkspaceLoaded(true);
           unsubscribe = api.subscribeCustomerStorefront(
             (nextSettings) => {
               if (active) setCustomerSettings(nextSettings);
+            },
+            (nextPaymentSettings) => {
+              if (active) setCustomerPaymentSettings(nextPaymentSettings);
             },
             (nextProducts) => {
               if (active) setCustomerProducts(nextProducts);
             },
             (nextApprovedIds) => {
               if (active) setApprovedSellerIds(nextApprovedIds);
+            },
+            (nextProfiles) => {
+              if (active) setSellerPaymentProfiles(nextProfiles);
+            },
+            (nextSeatUsage) => {
+              if (active) setHighlightSeatUsage(nextSeatUsage);
             },
             (err) => {
               const msg = err.message || '';
@@ -183,6 +236,12 @@ export default function App() {
               ) {
                 showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
               }
+            },
+            (nextFollows) => {
+              if (active) setCustomerSellerFollows(nextFollows);
+            },
+            (nextReviews) => {
+              if (active) setCustomerProductReviews(nextReviews);
             }
           );
         })
@@ -510,10 +569,27 @@ export default function App() {
     const merged: BusinessSettings = {
       ...next,
       viewPanel: next.viewPanel ?? workspace.settings.viewPanel,
+      highlightConfig: next.highlightConfig ?? workspace.settings.highlightConfig,
+      lastAdminOtpVerifiedAt:
+        next.lastAdminOtpVerifiedAt ?? workspace.settings.lastAdminOtpVerifiedAt,
     };
     const saved = await api.updateSettings(merged);
-    setWorkspace((prev) => ({ ...prev, settings: saved }));
+    setWorkspace((prev) => ({
+      ...prev,
+      settings: saved,
+      paymentSettings: mergeAdminPaymentSettings(prev.paymentSettings, saved),
+    }));
     showToast('Settings saved.');
+  };
+
+  const handleSavePaymentSettings = async (next: AdminPaymentSettings) => {
+    const res = await api.updatePaymentSettings(next);
+    setWorkspace((prev) => ({
+      ...prev,
+      paymentSettings: res.paymentSettings,
+      settings: res.settings,
+    }));
+    showToast('Payment System updated & synced live across Admin, Seller Hub & Checkout.');
   };
 
   const handleSaveViewPanel = async (nextViewPanel: ViewPanelConfig) => {
@@ -524,6 +600,61 @@ export default function App() {
     const saved = await api.updateSettings(merged);
     setWorkspace((prev) => ({ ...prev, settings: saved }));
     showToast('View Panel updated & synced.');
+  };
+
+  const handleSaveHighlightConfig = async (nextConfig: HighlightConfig) => {
+    const merged = mergeBusinessSettings({
+      ...workspace.settings,
+      upiId: nextConfig.upiId || workspace.settings.upiId,
+      highlightConfig: {
+        ...nextConfig,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    const saved = await api.updateSettings(merged);
+    setWorkspace((prev) => ({
+      ...prev,
+      settings: saved,
+      paymentSettings: mergeAdminPaymentSettings(prev.paymentSettings, saved),
+    }));
+    showToast('Highlight plans & placement rules saved.');
+  };
+
+  const handleUpdateHighlightRequestStatus = async (
+    requestId: string,
+    status: HighlightRequestStatus,
+    adminRemarks?: string
+  ) => {
+    const res = await api.updateHighlightRequestStatus(
+      requestId,
+      status,
+      adminRemarks
+    );
+    setWorkspace((prev) => ({
+      ...prev,
+      highlightRequests: (prev.highlightRequests || []).map((r) =>
+        r.id === res.request.id ? res.request : r
+      ),
+      products: res.product
+        ? prev.products.map((p) => (p.id === res.product!.id ? res.product! : p))
+        : prev.products,
+    }));
+    showToast(
+      status === 'approved'
+        ? `Highlight activated for ${res.request.productName}!`
+        : `Highlight request marked as ${status}.`
+    );
+  };
+
+  const handleDeleteHighlightRequest = async (requestId: string) => {
+    await api.deleteHighlightRequest(requestId);
+    setWorkspace((prev) => ({
+      ...prev,
+      highlightRequests: (prev.highlightRequests || []).filter(
+        (r) => r.id !== requestId
+      ),
+    }));
+    showToast('Highlight request deleted.');
   };
 
   const handleRestoreBackup = async (backup: WorkspaceData) => {
@@ -679,6 +810,66 @@ export default function App() {
     setIsolatedCustomer(client);
   }, []);
 
+  const handleToggleFollowSeller = useCallback(
+    async (sellerId: string, client: Client) => {
+      const res = await api.toggleSellerFollow({
+        sellerId,
+        clientId: client.id,
+        customerName: client.name,
+      });
+      setCustomerSellerFollows((prev) => {
+        const filtered = prev.filter(
+          (f) => !(f.sellerId === sellerId && f.clientId === client.id)
+        );
+        return res.following && res.follow ? [res.follow, ...filtered] : filtered;
+      });
+      setSellerPaymentProfiles((prev) => {
+        const current = prev[sellerId];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [sellerId]: {
+            ...current,
+            followersCount: res.followersCount,
+          },
+        };
+      });
+      return res;
+    },
+    []
+  );
+
+  const handleSubmitProductReview = useCallback(
+    async (payload: {
+      productId: string;
+      sellerId?: string;
+      client: Client;
+      rating: number;
+      comment: string;
+      mediaUrl?: string;
+      mediaType?: 'image' | 'video';
+      mediaRecord?: import('./types/business').CloudinaryMediaRecord;
+    }) => {
+      const saved = await api.submitProductReview({
+        productId: payload.productId,
+        sellerId: payload.sellerId,
+        clientId: payload.client.id,
+        customerName: payload.client.name,
+        rating: payload.rating,
+        comment: payload.comment,
+        mediaUrl: payload.mediaUrl,
+        mediaType: payload.mediaType,
+        mediaRecord: payload.mediaRecord,
+      });
+      setCustomerProductReviews((prev) => [
+        saved,
+        ...prev.filter((r) => r.id !== saved.id),
+      ]);
+      return saved;
+    },
+    []
+  );
+
   const sanitizedCustomerProducts = useMemo(() => {
     return customerProducts.map((p) =>
       sellerSessionId && p.sellerId === sellerSessionId
@@ -704,8 +895,13 @@ export default function App() {
     return (
       <StartPortal
         settings={customerSettings}
+        paymentSettings={customerPaymentSettings}
         products={sanitizedCustomerProducts}
         approvedSellerIds={approvedSellerIds}
+        sellerPaymentProfiles={sellerPaymentProfiles}
+        highlightSeatUsage={highlightSeatUsage}
+        sellerFollows={customerSellerFollows}
+        productReviews={customerProductReviews}
         loggedInCustomer={isolatedCustomer}
         customerOrders={isolatedCustomerOrders}
         customerBills={isolatedCustomerBills}
@@ -714,6 +910,8 @@ export default function App() {
         onCustomerUpdated={handleCustomerUpdated}
         onSaveProduct={handleSaveProduct}
         onDeleteProduct={handleDeleteProduct}
+        onToggleFollowSeller={handleToggleFollowSeller}
+        onSubmitProductReview={handleSubmitProductReview}
       />
     );
   }
@@ -723,6 +921,15 @@ export default function App() {
       <>
         <AdminLockView
           settings={workspace.settings}
+          onAdminOtpRecorded={(verifiedAt) => {
+            setWorkspace((prev) => ({
+              ...prev,
+              settings: {
+                ...prev.settings,
+                lastAdminOtpVerifiedAt: verifiedAt,
+              },
+            }));
+          }}
           onUnlock={handleUnlockAdmin}
         />
         {toast && (
@@ -743,6 +950,9 @@ export default function App() {
         Boolean(p.sellerId) &&
         p.sellerApprovalStatus !== 'approved' &&
         p.sellerApprovalStatus !== 'rejected'
+    ).length +
+    (workspace.highlightRequests || []).filter(
+      (r) => r.status === 'pending_approval'
     ).length;
   const unreadHelpChatCount = (workspace.supportChats || []).reduce(
     (sum, t) => sum + Math.max(0, Number(t.unreadForAdmin) || 0),
@@ -972,8 +1182,10 @@ export default function App() {
         {route === 'settings' && (
           <SettingsView
             workspace={workspace}
+            paymentSettings={workspace.paymentSettings}
             onBack={goBack}
             onSaveSettings={handleSaveSettings}
+            onSavePaymentSettings={handleSavePaymentSettings}
             onRestoreBackup={handleRestoreBackup}
           />
         )}
@@ -1005,6 +1217,10 @@ export default function App() {
           <SellerHubManageView
             sellerApplications={workspace.sellerApplications || []}
             products={workspace.products}
+            highlightRequests={workspace.highlightRequests || []}
+            highlightConfig={
+              workspace.settings.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG
+            }
             currencySymbol={currencySymbol}
             defaultLowStock={workspace.settings.lowStockThreshold || 5}
             onBack={goBack}
@@ -1014,6 +1230,9 @@ export default function App() {
             onUpdateProductApproval={handleUpdateProductApproval}
             onSaveProduct={handleSaveProduct}
             onDeleteProduct={handleDeleteProduct}
+            onSaveHighlightConfig={handleSaveHighlightConfig}
+            onUpdateHighlightRequestStatus={handleUpdateHighlightRequestStatus}
+            onDeleteHighlightRequest={handleDeleteHighlightRequest}
           />
         )}
 

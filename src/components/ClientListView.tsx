@@ -283,7 +283,7 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
                 <div className="space-y-1">
                   <div className="text-xs font-bold text-[#1F122B] flex flex-wrap items-center gap-2">
                     <KeyRound className="w-3.5 h-3.5 text-[#7E22CE]" />
-                    <span>রানিং পাসওয়ার্ড (Running Password):</span>
+                    <span>Running Password:</span>
                     {activeRunningPassword ? (
                       <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E9D5FF] bg-[#FAF5FF] px-2.5 py-0.5 font-mono-num text-xs font-bold text-[#6D28D9]">
                         <span className="select-all">
@@ -663,7 +663,7 @@ export const ClientListView: React.FC<ClientListViewProps> = ({
                         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                           <span className="font-semibold text-[#4A3B59] inline-flex items-center gap-1">
                             <KeyRound className="w-3 h-3 text-[#7E22CE]" />
-                            <span>রানিং পাসওয়ার্ড:</span>
+                            <span>Running Password:</span>
                           </span>
                           {activeRunningPassword ? (
                             <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E9D5FF] bg-white px-2.5 py-0.5 font-mono-num text-xs font-bold text-[#6D28D9]">

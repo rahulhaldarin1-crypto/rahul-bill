@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { getOptimizedMediaUrl } from '../utils/cloudinary';
 
 export const DEFAULT_BACKGROUND_IMAGE_PATH =
   '/assets/aistudio/Messenger_creation_4C61AB5A-9F69-46BA-B060-FC045AA43C6F_480eb216.jpeg';
@@ -10,10 +11,7 @@ interface AppBackgroundProps {
 export const AppBackground: React.FC<AppBackgroundProps> = ({
   backgroundImageDataUrl,
 }) => {
-  const customSrc =
-    backgroundImageDataUrl && backgroundImageDataUrl.trim()
-      ? backgroundImageDataUrl
-      : '';
+  const customSrc = getOptimizedMediaUrl(backgroundImageDataUrl, 'image');
   const [customFailed, setCustomFailed] = useState(false);
 
   useEffect(() => {

@@ -567,26 +567,17 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
             </button>
 
             <div className="flex items-center gap-2.5">
-              <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[#1F1A15] border border-[#3B3123]">
-                <button
-                  type="button"
-                  onClick={() => onChangeLang('en')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                    lang === 'en' ? 'bg-[#D5AE52] text-[#14110E]' : 'text-[#BFB4A0]'
-                  }`}
-                >
-                  EN
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onChangeLang('bn')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                    lang === 'bn' ? 'bg-[#D5AE52] text-[#14110E]' : 'text-[#BFB4A0]'
-                  }`}
-                >
-                  বাংলা
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => onChangeLang('en')}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border border-[#3B3123] transition-colors cursor-pointer ${
+                  lang === 'en'
+                    ? 'bg-[#D5AE52] text-[#14110E]'
+                    : 'bg-[#1F1A15] text-[#BFB4A0]'
+                }`}
+              >
+                EN
+              </button>
 
               {onChangeFocusMode && (
                 <button
@@ -810,26 +801,17 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-3 shrink-0">
-          <div className="flex items-center gap-1 p-0.5 rounded-md bg-[#EAE5DA]">
-            <button
-              type="button"
-              onClick={() => onChangeLang('en')}
-              className={`px-2.5 py-1 text-xs font-medium rounded-xs transition-colors whitespace-nowrap cursor-pointer ${
-                lang === 'en' ? 'bg-white text-[#181613] shadow-xs' : 'text-[#5A5347]'
-              }`}
-            >
-              EN
-            </button>
-            <button
-              type="button"
-              onClick={() => onChangeLang('bn')}
-              className={`px-2.5 py-1 text-xs font-medium rounded-xs transition-colors whitespace-nowrap cursor-pointer ${
-                lang === 'bn' ? 'bg-white text-[#181613] shadow-xs' : 'text-[#5A5347]'
-              }`}
-            >
-              বাংলা
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => onChangeLang('en')}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#DDD7CB] transition-colors whitespace-nowrap cursor-pointer ${
+              lang === 'en'
+                ? 'bg-white text-[#181613] shadow-xs'
+                : 'bg-[#EAE5DA] text-[#5A5347]'
+            }`}
+          >
+            EN
+          </button>
 
           {onChangeFocusMode && (
             <button

@@ -55,28 +55,19 @@ export const HomeView: React.FC<HomeViewProps> = ({
             {settings.tagline}
           </p>
 
-          {/* Language Switcher + Live Totals Strip */}
+          {/* English Interface Indicator + Live Totals Strip */}
           <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-            <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[#1F1A15] border border-[#3B3123]">
-              <button
-                type="button"
-                onClick={() => onChangeLang('en')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  lang === 'en' ? 'bg-[#D5AE52] text-[#14110E]' : 'text-[#BFB4A0]'
-                }`}
-              >
-                EN
-              </button>
-              <button
-                type="button"
-                onClick={() => onChangeLang('bn')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  lang === 'bn' ? 'bg-[#D5AE52] text-[#14110E]' : 'text-[#BFB4A0]'
-                }`}
-              >
-                বাংলা
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => onChangeLang('en')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg border border-[#3B3123] transition-colors cursor-pointer ${
+                lang === 'en'
+                  ? 'bg-[#D5AE52] text-[#14110E]'
+                  : 'bg-[#1F1A15] text-[#BFB4A0]'
+              }`}
+            >
+              English
+            </button>
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-xs text-[#A59882] font-mono-num">

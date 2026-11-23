@@ -14,7 +14,22 @@ service cloud.firestore {
         && data.businessName is string && data.businessName.size() <= 120
         && data.currencySymbol is string && data.currencySymbol.size() <= 10
         && data.currencyCode is string && data.currencyCode.size() <= 10
-        && data.invoicePrefix is string && data.invoicePrefix.size() <= 20;
+        && data.invoicePrefix is string && data.invoicePrefix.size() <= 20
+        && (!('upiId' in data) || (data.upiId is string && data.upiId.size() <= 120))
+        && (!('paymentQrDataUrl' in data) || (data.paymentQrDataUrl is string && data.paymentQrDataUrl.size() <= 350000))
+        && (!('lastAdminOtpVerifiedAt' in data) || (data.lastAdminOtpVerifiedAt is string && data.lastAdminOtpVerifiedAt.size() <= 60));
+    }
+
+    function isValidPaymentSettings(data) {
+      return data.keys().hasAll(['upiId'])
+        && data.upiId is string && data.upiId.size() >= 3 && data.upiId.size() <= 120
+        && (!('upiNumber' in data) || (data.upiNumber is string && data.upiNumber.size() <= 40))
+        && (!('bankAccountName' in data) || (data.bankAccountName is string && data.bankAccountName.size() <= 120))
+        && (!('bankName' in data) || (data.bankName is string && data.bankName.size() <= 120))
+        && (!('bankAccountNo' in data) || (data.bankAccountNo is string && data.bankAccountNo.size() <= 60))
+        && (!('bankIfscBranch' in data) || (data.bankIfscBranch is string && data.bankIfscBranch.size() <= 160))
+        && (!('qrDataUrl' in data) || (data.qrDataUrl is string && data.qrDataUrl.size() <= 350000))
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 60));
     }
 
     function isValidClient(data) {
@@ -30,7 +45,8 @@ service cloud.firestore {
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
         && data.purchasePrice is number && data.purchasePrice >= 0
         && data.sellingPrice is number && data.sellingPrice >= 0
-        && data.stockQty is number && data.stockQty >= 0;
+        && data.stockQty is number && data.stockQty >= 0
+        && (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 1000));
     }
 
     function isValidInvoice(data) {
@@ -62,6 +78,12 @@ service cloud.firestore {
     match /settings/{settingId} {
       allow get: if isValidId(settingId);
       allow create, update: if isValidId(settingId) && isValidSettings(request.resource.data);
+    }
+
+    match /payment_settings/{settingId} {
+      allow list: if true;
+      allow get: if isValidId(settingId);
+      allow create, update: if isValidId(settingId) && isValidPaymentSettings(request.resource.data);
     }
 
     match /clients/{clientId} {
@@ -127,7 +149,9 @@ service cloud.firestore {
         && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 40
         && data.panNumber is string && data.panNumber.size() >= 1 && data.panNumber.size() <= 40
         && data.aadhaarNumber is string && data.aadhaarNumber.size() >= 1 && data.aadhaarNumber.size() <= 40
-        && data.status in ['pending', 'approved', 'rejected', 'suspended'];
+        && data.status in ['pending', 'approved', 'rejected', 'suspended']
+        && (!('sellerCoverPhotoDataUrl' in data) || (data.sellerCoverPhotoDataUrl is string && data.sellerCoverPhotoDataUrl.size() <= 350000))
+        && (!('followersCount' in data) || (data.followersCount is number && data.followersCount >= 0));
     }
 
     match /seller_applications/{applicationId} {
@@ -168,6 +192,81 @@ service cloud.firestore {
       allow get: if isValidId(chatId);
       allow create, update: if isValidId(chatId) && isValidSupportChat(request.resource.data);
       allow delete: if isValidId(chatId);
+    }
+
+    function isValidEmailOtp(data) {
+      return data.keys().hasAll(['id', 'email', 'purpose', 'otpHash', 'expiresAt', 'attempts', 'maxAttempts', 'verified', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.email is string && data.email.size() >= 10 && data.email.size() <= 160
+        && data.purpose in ['customer_register', 'seller_register', 'customer_forgot_password', 'seller_forgot_password', 'admin_login']
+        && data.otpHash is string && data.otpHash.size() >= 32 && data.otpHash.size() <= 128
+        && data.expiresAt is string && data.expiresAt.size() <= 60
+        && data.attempts is number && data.attempts >= 0 && data.attempts <= 20
+        && data.maxAttempts is number && data.maxAttempts >= 1 && data.maxAttempts <= 10
+        && data.verified is bool;
+    }
+
+    match /email_otps/{otpId} {
+      allow list: if true;
+      allow get: if isValidId(otpId);
+      allow create, update: if isValidId(otpId) && isValidEmailOtp(request.resource.data);
+      allow delete: if isValidId(otpId);
+    }
+
+    function isValidSellerFollow(data) {
+      return data.keys().hasAll(['id', 'sellerId', 'clientId', 'createdAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.sellerId is string && data.sellerId.size() > 0 && data.sellerId.size() <= 128
+        && data.clientId is string && data.clientId.size() > 0 && data.clientId.size() <= 128
+        && data.createdAt is string && data.createdAt.size() <= 60;
+    }
+
+    match /seller_follows/{followId} {
+      allow list: if true;
+      allow get: if isValidId(followId);
+      allow create, update: if isValidId(followId) && isValidSellerFollow(request.resource.data);
+      allow delete: if isValidId(followId);
+    }
+
+    function isValidProductReview(data) {
+      return data.keys().hasAll(['id', 'productId', 'clientId', 'customerName', 'rating', 'comment', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.productId is string && data.productId.size() > 0 && data.productId.size() <= 128
+        && data.clientId is string && data.clientId.size() > 0 && data.clientId.size() <= 128
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.comment is string && data.comment.size() <= 1000
+        && (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 1000))
+        && (!('mediaType' in data) || data.mediaType in ['image', 'video'])
+        && data.createdAt is string && data.createdAt.size() <= 60
+        && data.updatedAt is string && data.updatedAt.size() <= 60;
+    }
+
+    match /product_reviews/{reviewId} {
+      allow list: if true;
+      allow get: if isValidId(reviewId);
+      allow create, update: if isValidId(reviewId) && isValidProductReview(request.resource.data);
+      allow delete: if isValidId(reviewId);
+    }
+
+    function isValidMediaRecord(data) {
+      return data.keys().hasAll(['id', 'appSource', 'uploadedByRole', 'relatedEntityType', 'folder', 'publicId', 'secureUrl', 'resourceType', 'createdAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.appSource in ['glamour-galleria', 'ggadminpanel']
+        && data.uploadedByRole in ['customer', 'seller', 'admin']
+        && data.relatedEntityType is string && data.relatedEntityType.size() <= 60
+        && data.folder is string && data.folder.size() <= 200
+        && data.publicId is string && data.publicId.size() <= 300
+        && data.secureUrl is string && data.secureUrl.size() <= 1000
+        && data.resourceType in ['image', 'video']
+        && data.createdAt is string && data.createdAt.size() <= 60;
+    }
+
+    match /media_records/{recordId} {
+      allow list: if true;
+      allow get: if isValidId(recordId);
+      allow create, update: if isValidId(recordId) && isValidMediaRecord(request.resource.data);
+      allow delete: if isValidId(recordId);
     }
 
     match /test/connection {

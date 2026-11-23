@@ -18,13 +18,32 @@
         "upiId": { "type": "string", "maxLength": 120 },
         "upiNumber": { "type": "string", "maxLength": 40 },
         "bankAccountName": { "type": "string", "maxLength": 120 },
+        "bankName": { "type": "string", "maxLength": 120 },
         "bankAccountNo": { "type": "string", "maxLength": 60 },
         "bankIfscBranch": { "type": "string", "maxLength": 160 },
+        "paymentQrDataUrl": { "type": "string", "maxLength": 350000 },
         "invoiceFooterNote": { "type": "string", "maxLength": 600 },
         "socialTagLine": { "type": "string", "maxLength": 240 },
-        "lowStockThreshold": { "type": "number" }
+        "lowStockThreshold": { "type": "number" },
+        "lastAdminOtpVerifiedAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["businessName", "currencySymbol", "currencyCode", "invoicePrefix"]
+    },
+    "PaymentSettings": {
+      "title": "PaymentSettings",
+      "description": "Live Admin Payment System settings synced across checkout and Seller Hub.",
+      "type": "object",
+      "properties": {
+        "upiId": { "type": "string", "maxLength": 120 },
+        "upiNumber": { "type": "string", "maxLength": 40 },
+        "bankAccountName": { "type": "string", "maxLength": 120 },
+        "bankName": { "type": "string", "maxLength": 120 },
+        "bankAccountNo": { "type": "string", "maxLength": 60 },
+        "bankIfscBranch": { "type": "string", "maxLength": 160 },
+        "qrDataUrl": { "type": "string", "maxLength": 350000 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["upiId"]
     },
     "Client": {
       "title": "Client",
@@ -33,6 +52,7 @@
       "properties": {
         "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "email": { "type": "string", "maxLength": 160 },
         "mobile": { "type": "string", "minLength": 1, "maxLength": 40 },
         "whatsapp": { "type": "string", "maxLength": 40 },
         "address": { "type": "string", "maxLength": 400 },
@@ -52,6 +72,7 @@
         "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "name": { "type": "string", "minLength": 1, "maxLength": 200 },
         "imageDataUrl": { "type": "string", "maxLength": 500000 },
+        "videoUrl": { "type": "string", "maxLength": 1000 },
         "category": { "type": "string", "maxLength": 80 },
         "purchasePrice": { "type": "number" },
         "sellingPrice": { "type": "number" },
@@ -63,6 +84,12 @@
         "sellerName": { "type": "string", "maxLength": 160 },
         "sellerPhone": { "type": "string", "maxLength": 40 },
         "sellerApprovalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "sellerPaymentUpiId": { "type": "string", "maxLength": 120 },
+        "sellerPaymentBankAccountName": { "type": "string", "maxLength": 120 },
+        "sellerPaymentBankName": { "type": "string", "maxLength": 120 },
+        "sellerPaymentBankAccountNo": { "type": "string", "maxLength": 60 },
+        "sellerPaymentBankIfscBranch": { "type": "string", "maxLength": 160 },
+        "sellerPaymentQrDataUrl": { "type": "string", "maxLength": 350000 },
         "createdAt": { "type": "string", "maxLength": 40 },
         "updatedAt": { "type": "string", "maxLength": 40 }
       },
@@ -159,11 +186,19 @@
         "aadhaarNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
         "gstNumber": { "type": "string", "maxLength": 30 },
         "sellerPhotoDataUrl": { "type": "string", "maxLength": 320000 },
+        "sellerCoverPhotoDataUrl": { "type": "string", "maxLength": 320000 },
+        "followersCount": { "type": "number" },
         "panDocDataUrl": { "type": "string", "maxLength": 320000 },
         "aadhaarDocDataUrl": { "type": "string", "maxLength": 320000 },
         "gstDocDataUrl": { "type": "string", "maxLength": 320000 },
         "bankDocDataUrl": { "type": "string", "maxLength": 320000 },
         "bankAccountDetails": { "type": "string", "maxLength": 300 },
+        "sellerUpiId": { "type": "string", "maxLength": 120 },
+        "sellerBankAccountName": { "type": "string", "maxLength": 120 },
+        "sellerBankName": { "type": "string", "maxLength": 120 },
+        "sellerBankAccountNo": { "type": "string", "maxLength": 60 },
+        "sellerBankIfscBranch": { "type": "string", "maxLength": 160 },
+        "sellerQrDataUrl": { "type": "string", "maxLength": 350000 },
         "passwordSalt": { "type": "string", "maxLength": 80 },
         "passwordHash": { "type": "string", "maxLength": 160 },
         "runningPasswordEnc": { "type": "string", "maxLength": 240 },
@@ -224,12 +259,92 @@
         "updatedAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "customerName", "messages", "createdAt", "updatedAt"]
+    },
+    "EmailOtp": {
+      "title": "EmailOtp",
+      "description": "6-digit Email OTP verification records with 5-minute expiry, attempt limits, and verified status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 160 },
+        "purpose": { "type": "string", "enum": ["customer_register", "seller_register", "customer_forgot_password", "seller_forgot_password", "admin_login"] },
+        "otpHash": { "type": "string", "maxLength": 128 },
+        "expiresAt": { "type": "string", "maxLength": 40 },
+        "attempts": { "type": "number" },
+        "maxAttempts": { "type": "number" },
+        "verified": { "type": "boolean" },
+        "verifiedAt": { "type": "string", "maxLength": 40 },
+        "resendAvailableAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "email", "purpose", "otpHash", "expiresAt", "attempts", "maxAttempts", "verified", "createdAt", "updatedAt"]
+    },
+    "SellerFollow": {
+      "title": "SellerFollow",
+      "description": "Customer-to-Seller follow relationship records.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "sellerId": { "type": "string", "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "sellerId", "clientId", "createdAt"]
+    },
+    "ProductReview": {
+      "title": "ProductReview",
+      "description": "Customer product star ratings (1-5) and review comments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "sellerId": { "type": "string", "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "maxLength": 1000 },
+        "mediaUrl": { "type": "string", "maxLength": 1000 },
+        "mediaType": { "type": "string", "enum": ["image", "video"] },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "productId", "clientId", "customerName", "rating", "comment", "createdAt", "updatedAt"]
+    },
+    "MediaRecord": {
+      "title": "MediaRecord",
+      "description": "Cloudinary uploaded image and video metadata records across Glamour Galleria and GG Admin Panel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "appSource": { "type": "string", "enum": ["glamour-galleria", "ggadminpanel"] },
+        "uploadedByRole": { "type": "string", "enum": ["customer", "seller", "admin"] },
+        "uploadedByUid": { "type": "string", "maxLength": 128 },
+        "relatedEntityType": { "type": "string", "maxLength": 60 },
+        "relatedEntityId": { "type": "string", "maxLength": 128 },
+        "folder": { "type": "string", "maxLength": 200 },
+        "publicId": { "type": "string", "maxLength": 300 },
+        "secureUrl": { "type": "string", "maxLength": 1000 },
+        "resourceType": { "type": "string", "enum": ["image", "video"] },
+        "format": { "type": "string", "maxLength": 30 },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "bytes": { "type": "number" },
+        "duration": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "appSource", "uploadedByRole", "relatedEntityType", "folder", "publicId", "secureUrl", "resourceType", "createdAt"]
     }
   },
   "firestore": {
     "/settings/business": {
       "schema": { "$ref": "#/entities/BusinessSettings" },
       "description": "Primary business settings document."
+    },
+    "/payment_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PaymentSettings" },
+      "description": "Admin dynamic payment system settings (UPI, bank, QR)."
     },
     "/clients/{clientId}": {
       "schema": { "$ref": "#/entities/Client" },
@@ -262,6 +377,22 @@
     "/support_chats/{chatId}": {
       "schema": { "$ref": "#/entities/SupportChatThread" },
       "description": "Help Center real-time customer support chat threads."
+    },
+    "/email_otps/{otpId}": {
+      "schema": { "$ref": "#/entities/EmailOtp" },
+      "description": "Email OTP verification records."
+    },
+    "/seller_follows/{followId}": {
+      "schema": { "$ref": "#/entities/SellerFollow" },
+      "description": "Customer follow relationships for Seller storefronts."
+    },
+    "/product_reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/ProductReview" },
+      "description": "Customer 1-5 star ratings and comments for products."
+    },
+    "/media_records/{recordId}": {
+      "schema": { "$ref": "#/entities/MediaRecord" },
+      "description": "Cloudinary uploaded media records across Seller Hub, Customer Hub, and Admin Panel."
     }
   }
 }

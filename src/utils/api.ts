@@ -1,20 +1,27 @@
 import {
+  AdminPaymentSettings,
   BusinessSettings,
   Client,
+  CloudinaryMediaRecord,
   CustomerCartItem,
   CustomerOrder,
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
   DeliveryStatus,
+  EmailOtpPurpose,
   ExpenseRecord,
   HighlightRequest,
   HighlightRequestStatus,
   Invoice,
+  MediaResourceType,
   PaymentMethod,
   Product,
+  ProductReview,
   SellerAccountStatus,
   SellerApplication,
   SellerApprovalStatus,
+  SellerFollowRecord,
+  SellerPublicPaymentProfile,
   SupportChatThread,
   SupportSenderRole,
   WorkspaceData,
@@ -36,6 +43,10 @@ export function formatApiError(err: unknown, fallback: string): string {
 }
 
 export const api = {
+  saveMediaRecord(record: CloudinaryMediaRecord) {
+    return firestoreService.saveMediaRecord(record);
+  },
+
   fetchWorkspace() {
     return firestoreService.fetchWorkspace();
   },
@@ -49,6 +60,10 @@ export const api = {
 
   updateSettings(settings: BusinessSettings) {
     return firestoreService.updateSettings(settings);
+  },
+
+  updatePaymentSettings(paymentSettings: AdminPaymentSettings) {
+    return firestoreService.updatePaymentSettings(paymentSettings);
   },
 
   createClient(payload: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>) {
@@ -72,6 +87,8 @@ export const api = {
 
   registerCustomerAccount(payload: {
     name: string;
+    email: string;
+    otpId: string;
     phone: string;
     address: string;
     city?: string;
@@ -183,6 +200,10 @@ export const api = {
     quantity: number;
     unitPrice: number;
     paymentMethod: CustomerOrderPaymentMethod;
+    upiIdUsed?: string;
+    sellerId?: string;
+    paymentRecipientType?: 'admin' | 'seller' | 'mixed';
+    paymentRecipientName?: string;
     paymentScreenshotDataUrl?: string;
     customerNote?: string;
   }) {
@@ -210,6 +231,7 @@ export const api = {
     clientId?: string;
     name: string;
     email?: string;
+    otpId?: string;
     dateOfBirth: string;
     fullAddress: string;
     phone: string;
@@ -218,6 +240,7 @@ export const api = {
     gstNumber?: string;
     password?: string;
     sellerPhotoDataUrl: string;
+    sellerCoverPhotoDataUrl?: string;
     panDocDataUrl: string;
     aadhaarDocDataUrl: string;
     gstDocDataUrl?: string;
@@ -255,6 +278,53 @@ export const api = {
 
   deleteSellerApplication(applicationId: string) {
     return firestoreService.deleteSellerApplication(applicationId);
+  },
+
+  updateSellerPaymentDetails(
+    sellerId: string,
+    payload: {
+      sellerUpiId?: string;
+      sellerBankAccountName?: string;
+      sellerBankName?: string;
+      sellerBankAccountNo?: string;
+      sellerBankIfscBranch?: string;
+      sellerQrDataUrl?: string;
+    }
+  ) {
+    return firestoreService.updateSellerPaymentDetails(sellerId, payload);
+  },
+
+  updateSellerStoreProfile(
+    sellerId: string,
+    payload: {
+      name: string;
+      sellerPhotoDataUrl?: string;
+      sellerCoverPhotoDataUrl?: string;
+    }
+  ) {
+    return firestoreService.updateSellerStoreProfile(sellerId, payload);
+  },
+
+  toggleSellerFollow(payload: {
+    sellerId: string;
+    clientId: string;
+    customerName?: string;
+  }) {
+    return firestoreService.toggleSellerFollow(payload);
+  },
+
+  submitProductReview(payload: {
+    productId: string;
+    sellerId?: string;
+    clientId: string;
+    customerName: string;
+    rating: number;
+    comment: string;
+    mediaUrl?: string;
+    mediaType?: MediaResourceType;
+    mediaRecord?: CloudinaryMediaRecord;
+  }) {
+    return firestoreService.submitProductReview(payload);
   },
 
   updateProductApproval(
@@ -325,17 +395,27 @@ export const api = {
 
   subscribeCustomerStorefront(
     onSettings: (settings: BusinessSettings) => void,
+    onPaymentSettings: (paymentSettings: AdminPaymentSettings) => void,
     onProducts: (products: Product[]) => void,
     onApprovedSellerIds: (sellerIds: string[]) => void,
+    onSellerPaymentProfiles: (
+      profiles: Record<string, SellerPublicPaymentProfile>
+    ) => void,
     onHighlightSeatUsage: (usage: Record<string, number>) => void,
-    onError: (err: Error) => void
+    onError: (err: Error) => void,
+    onSellerFollows?: (follows: SellerFollowRecord[]) => void,
+    onProductReviews?: (reviews: ProductReview[]) => void
   ) {
     return firestoreService.subscribeCustomerStorefront(
       onSettings,
+      onPaymentSettings,
       onProducts,
       onApprovedSellerIds,
+      onSellerPaymentProfiles,
       onHighlightSeatUsage,
-      onError
+      onError,
+      onSellerFollows,
+      onProductReviews
     );
   },
 
@@ -385,5 +465,39 @@ export const api = {
       onThread,
       onError
     );
+  },
+
+  sendEmailOtp(email: string, purpose: EmailOtpPurpose) {
+    return firestoreService.sendEmailOtp(email, purpose);
+  },
+
+  verifyEmailOtp(params: {
+    otpId: string;
+    email: string;
+    purpose: EmailOtpPurpose;
+    code: string;
+    challengeToken: string;
+  }) {
+    return firestoreService.verifyEmailOtp(params);
+  },
+
+  resetCustomerPasswordWithOtp(payload: {
+    email: string;
+    otpId: string;
+    newPassword: string;
+  }) {
+    return firestoreService.resetCustomerPasswordWithOtp(payload);
+  },
+
+  resetSellerPasswordWithOtp(payload: {
+    email: string;
+    otpId: string;
+    newPassword: string;
+  }) {
+    return firestoreService.resetSellerPasswordWithOtp(payload);
+  },
+
+  recordAdminOtpVerified(otpId: string) {
+    return firestoreService.recordAdminOtpVerified(otpId);
   },
 };
