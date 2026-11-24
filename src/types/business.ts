@@ -254,6 +254,7 @@ export interface Client {
   runningPasswordEnc?: string;
   passwordUpdatedAt?: string;
   cart?: CustomerCartItem[];
+  favoriteProductIds?: string[];
   referralCode?: string;
   referredBy?: string;
   categoryInterests?: Record<string, CategoryInterestEntry>;

@@ -8,14 +8,17 @@ import {
   ChevronRight,
   Copy,
   CreditCard,
-  ExternalLink,
   Gift,
+  Heart,
+  Home,
   Image as ImageIcon,
+  LayoutGrid,
   LifeBuoy,
   MapPin,
+  Menu,
   MessageSquare,
   Minus,
-  MoreVertical,
+  Package,
   Plus,
   QrCode,
   Search,
@@ -163,45 +166,24 @@ type PendingAuthAction =
     }
   | null;
 
+const FAVORITES_STORAGE_KEY = 'gg_customer_favorites_v1';
+
 function isSafeHttpUrl(url?: string): boolean {
   const trimmed = (url || '').trim();
   return /^https?:\/\//i.test(trimmed);
 }
 
-function buildProductWhatsAppUrl(
-  item: PublicShopProduct,
-  settings?: BusinessSettings
-): string {
-  const sym = settings?.currencySymbol || '₹';
-  const businessName = settings?.businessName || 'Glamour Galleria';
-  const details = [
-    item.category,
-    item.size ? `Size: ${item.size}` : '',
-    item.color ? `Color: ${item.color}` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
-
-  const message = [
-    `Hello ${businessName}!`,
-    `I would like to inquire about:`,
-    `*${item.name}*`,
-    details ? details : '',
-    `Price: ${formatCurrency(item.price, sym)}`,
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  const rawPhone = (settings?.whatsapp || settings?.mobile || '').replace(
-    /[^\d]/g,
-    ''
-  );
-  const phoneWithCountry =
-    rawPhone.length === 10 ? `91${rawPhone}` : rawPhone;
-
-  return phoneWithCountry
-    ? `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(message)}`
-    : `https://wa.me/?text=${encodeURIComponent(message)}`;
+function readStoredFavoriteIds(): string[] {
+  try {
+    const raw = localStorage.getItem(FAVORITES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export const StartPortal: React.FC<StartPortalProps> = ({
@@ -224,7 +206,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   onToggleFollowSeller,
   onSubmitProductReview,
 }) => {
-  // Active View inside Storefront ('shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn' | 'seller-profile')
+  // Active View inside Storefront ('shop' | 'account' | 'seller-hub' | 'help-center' | 'refer-earn' | 'seller-profile' | 'favorites')
   const [portalView, setPortalView] = useState<
     | 'shop'
     | 'account'
@@ -232,11 +214,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     | 'help-center'
     | 'refer-earn'
     | 'seller-profile'
+    | 'favorites'
   >('shop');
   const [viewingSellerId, setViewingSellerId] = useState<string | null>(null);
   const [accountTab, setAccountTab] = useState<CustomerDashboardTab>('cart');
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuContainerRef = useRef<HTMLDivElement | null>(null);
+  const [menuSheetOpen, setMenuSheetOpen] = useState(false);
+  const [categoriesSheetOpen, setCategoriesSheetOpen] = useState(false);
+  const categoriesSectionRef = useRef<HTMLDivElement | null>(null);
+  const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>(
+    readStoredFavoriteIds
+  );
 
   // Follow & Product Review UI state
   const [followBusySellerId, setFollowBusySellerId] = useState<string | null>(null);
@@ -265,24 +252,39 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [storeNotice, setStoreNotice] = useState('');
 
   useEffect(() => {
-    const handleOutside = (e: MouseEvent) => {
-      if (
-        menuContainerRef.current &&
-        !menuContainerRef.current.contains(e.target as Node)
-      ) {
-        setMenuOpen(false);
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMenuSheetOpen(false);
+        setCategoriesSheetOpen(false);
       }
     };
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handleOutside);
     document.addEventListener('keydown', handleEsc);
     return () => {
-      document.removeEventListener('mousedown', handleOutside);
       document.removeEventListener('keydown', handleEsc);
     };
   }, []);
+
+  // Sync favorites from signed-in customer profile (merging any locally saved favorites)
+  useEffect(() => {
+    if (!loggedInCustomer) return;
+    const remoteFavs = Array.isArray(loggedInCustomer.favoriteProductIds)
+      ? loggedInCustomer.favoriteProductIds.filter(Boolean)
+      : [];
+    const localFavs = readStoredFavoriteIds();
+    const merged = Array.from(new Set([...remoteFavs, ...localFavs]));
+    setFavoriteProductIds(merged);
+    try {
+      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(merged));
+    } catch {
+      // ignore storage errors
+    }
+    if (merged.length > remoteFavs.length) {
+      void api
+        .updateCustomerFavorites(loggedInCustomer.id, merged)
+        .then((updated) => onCustomerUpdated?.(updated))
+        .catch(() => undefined);
+    }
+  }, [loggedInCustomer?.id]);
 
   useEffect(() => {
     try {
@@ -512,6 +514,63 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       0
     );
   }, [loggedInCustomer]);
+
+  const favoriteIdsSet = useMemo(
+    () => new Set(favoriteProductIds),
+    [favoriteProductIds]
+  );
+
+  const isProductFavorited = (item: PublicShopProduct): boolean => {
+    const canonical = item.catalogProductId || item.id;
+    return favoriteIdsSet.has(canonical) || favoriteIdsSet.has(item.id);
+  };
+
+  const favoriteItems = useMemo(
+    () =>
+      shoppingItems.filter((item) => {
+        const canonical = item.catalogProductId || item.id;
+        return favoriteIdsSet.has(canonical) || favoriteIdsSet.has(item.id);
+      }),
+    [shoppingItems, favoriteIdsSet]
+  );
+
+  const toggleFavoriteProduct = async (
+    item: PublicShopProduct,
+    e?: React.MouseEvent
+  ) => {
+    e?.stopPropagation();
+    const canonical = item.catalogProductId || item.id;
+    const currentlyFav =
+      favoriteIdsSet.has(canonical) || favoriteIdsSet.has(item.id);
+    const nextIds = currentlyFav
+      ? favoriteProductIds.filter((id) => id !== canonical && id !== item.id)
+      : [canonical, ...favoriteProductIds.filter((id) => id !== canonical && id !== item.id)];
+
+    setFavoriteProductIds(nextIds);
+    try {
+      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(nextIds));
+    } catch {
+      // ignore storage errors
+    }
+
+    triggerStoreNotice(
+      currentlyFav
+        ? `Removed "${item.name}" from Favorites.`
+        : `Saved "${item.name}" to Favorites!`
+    );
+
+    if (loggedInCustomer) {
+      try {
+        const updated = await api.updateCustomerFavorites(
+          loggedInCustomer.id,
+          nextIds
+        );
+        onCustomerUpdated?.(updated);
+      } catch {
+        // local state already updated
+      }
+    }
+  };
 
   const followerCountsBySeller = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -990,6 +1049,21 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
+  const scrollToCategoriesSection = () => {
+    if (sectionTab === 'discount') {
+      setSectionTab('all');
+    }
+    setPortalView('shop');
+    setTimeout(() => {
+      const el =
+        categoriesSectionRef.current ||
+        document.getElementById('shop-categories-section');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 80);
+  };
+
   // --- Product Detail & Checkout Modal ---
   const handledQueryProductRef = useRef(false);
 
@@ -1349,21 +1423,26 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         backgroundImageDataUrl={settings?.backgroundImageDataUrl}
       />
 
-      {/* Top Portal Header: Brand, Customer Cart & Account / Sign In */}
-      <header className="no-print sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-[#EFE2F5]">
-        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4">
+      {/* Top Portal Header: Brand Logo + Top-Right Favorites Heart & Profile Avatar */}
+      <header className="no-print sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#EFE2F5]">
+        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => setPortalView('shop')}
+            onClick={() => {
+              setPortalView('shop');
+              setMenuSheetOpen(false);
+              setCategoriesSheetOpen(false);
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer"
           >
             <BrandLogo
               logoDataUrl={settings?.logoDataUrl}
               businessName={settings?.businessName}
-              size={36}
+              size={34}
             />
             <div className="min-w-0">
-              <div className="font-display-serif text-sm sm:text-lg font-bold text-[#6D28D9] truncate">
+              <div className="font-display-serif text-base sm:text-lg font-bold text-[#6D28D9] truncate">
                 {settings?.businessName || 'Glamour Galleria'}
               </div>
               <div className="text-[11px] font-medium text-[#9D174D] truncate hidden sm:block">
@@ -1372,159 +1451,234 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             </div>
           </button>
 
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            {portalView !== 'shop' && (
-              <button
-                type="button"
-                onClick={() => setPortalView('shop')}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-2.5 sm:px-3 py-1.5 text-xs font-bold text-[#4A3B59] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <ShoppingBag className="w-3.5 h-3.5 text-[#7E22CE]" />
-                <span className="hidden sm:inline">Shop</span>
-              </button>
-            )}
-
-            {/* Cart Button */}
+          {/* Top-Right Action Icons: Favorites (Heart) & Profile Avatar */}
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => handleOpenAccount('cart')}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                portalView === 'account' && accountTab === 'cart'
+              onClick={() => {
+                setMenuSheetOpen(false);
+                setCategoriesSheetOpen(false);
+                setPortalView((prev) =>
+                  prev === 'favorites' ? 'shop' : 'favorites'
+                );
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              aria-label="Favorites"
+              title="Saved Favorites"
+              className={`relative inline-flex items-center justify-center w-10 h-10 rounded-full border transition-colors cursor-pointer ${
+                portalView === 'favorites'
                   ? 'border-[#DB2777] bg-[#FDF2F8] text-[#DB2777]'
-                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
+                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#DB2777] hover:text-[#DB2777]'
               }`}
             >
-              <ShoppingCart className="w-3.5 h-3.5 text-[#DB2777]" />
-              <span className="hidden sm:inline">Cart</span>
-              <span className="font-mono-num text-[#7E22CE]">
-                ({cartItemCount})
-              </span>
+              <Heart
+                className={`w-5 h-5 ${
+                  portalView === 'favorites' || favoriteItems.length > 0
+                    ? 'fill-[#DB2777] text-[#DB2777]'
+                    : ''
+                }`}
+              />
+              {favoriteItems.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#DB2777] text-white text-[10px] font-mono-num font-bold flex items-center justify-center border-2 border-white">
+                  {favoriteItems.length > 99 ? '99+' : favoriteItems.length}
+                </span>
+              )}
             </button>
 
-            {/* Three-Dot Menu right next to Cart */}
-            <div ref={menuContainerRef} className="relative shrink-0">
-              <button
-                type="button"
-                onClick={() => setMenuOpen((prev) => !prev)}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                aria-label="More options"
-                className={`inline-flex items-center justify-center rounded-xl border p-1.5 sm:p-2 transition-colors cursor-pointer ${
-                  menuOpen ||
-                  portalView === 'seller-hub' ||
-                  portalView === 'help-center' ||
-                  portalView === 'refer-earn'
-                    ? 'border-[#9333EA] bg-[#FAF5FF] text-[#6D28D9]'
-                    : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
-                }`}
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
-
-              {menuOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 mt-2 w-60 rounded-2xl border border-[#EFE2F5] bg-white shadow-xl p-1.5 z-50 space-y-0.5"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setPortalView('seller-hub');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors cursor-pointer ${
-                      portalView === 'seller-hub'
-                        ? 'bg-[#FAF5FF] text-[#6D28D9]'
-                        : 'text-[#1F122B] hover:bg-[#FDF8FC]'
-                    }`}
-                  >
-                    <Store className="w-4 h-4 text-[#DB2777] shrink-0" />
-                    <span>Seller Hub</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setPortalView('help-center');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors cursor-pointer ${
-                      portalView === 'help-center'
-                        ? 'bg-[#FAF5FF] text-[#6D28D9]'
-                        : 'text-[#1F122B] hover:bg-[#FDF8FC]'
-                    }`}
-                  >
-                    <LifeBuoy className="w-4 h-4 text-[#7E22CE] shrink-0" />
-                    <span>Help Center</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setPortalView('refer-earn');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors cursor-pointer ${
-                      portalView === 'refer-earn'
-                        ? 'bg-[#FAF5FF] text-[#6D28D9]'
-                        : 'text-[#1F122B] hover:bg-[#FDF8FC]'
-                    }`}
-                  >
-                    <Gift className="w-4 h-4 text-[#15803D] shrink-0" />
-                    <span>Refer &amp; Earn</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Customer Account / Sign In Button */}
-            {loggedInCustomer ? (
-              <button
-                type="button"
-                onClick={() => handleOpenAccount('orders')}
-                className={`inline-flex items-center gap-1.5 rounded-xl border px-2 sm:px-3 py-1 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  portalView === 'account'
-                    ? 'border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
-                    : 'border-[#E6D9EE] bg-white text-[#1F122B] hover:border-[#9333EA]'
-                }`}
-              >
-                <CustomerAvatar
-                  photoDataUrl={loggedInCustomer.profilePhotoDataUrl}
-                  name={loggedInCustomer.name}
-                  size={24}
-                />
-                <span className="max-w-[78px] sm:max-w-[120px] truncate">
-                  {loggedInCustomer.name.split(' ')[0]}
-                </span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() =>
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSheetOpen(false);
+                setCategoriesSheetOpen(false);
+                if (loggedInCustomer) {
+                  handleOpenAccount('orders');
+                } else {
                   openAuthForAction(
                     { type: 'account', tab: 'orders' },
                     '',
                     'login'
-                  )
+                  );
                 }
-                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-2.5 sm:px-3 py-1.5 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <User className="w-3.5 h-3.5" />
-                <span>Sign In</span>
-              </button>
-            )}
+              }}
+              aria-label={
+                loggedInCustomer
+                  ? `Profile (${loggedInCustomer.name})`
+                  : 'Sign in or create account'
+              }
+              title={
+                loggedInCustomer
+                  ? loggedInCustomer.name
+                  : 'Sign In / Create Account'
+              }
+              className={`inline-flex items-center justify-center rounded-full border transition-all cursor-pointer shrink-0 ${
+                loggedInCustomer
+                  ? `p-0.5 ${
+                      portalView === 'account'
+                        ? 'border-[#7E22CE] ring-2 ring-[#7E22CE]/25'
+                        : 'border-[#E6D9EE] hover:border-[#9333EA]'
+                    }`
+                  : 'w-10 h-10 border-[#E6D9EE] bg-white text-[#6D28D9] hover:border-[#9333EA] hover:bg-[#FAF5FF]'
+              }`}
+            >
+              {loggedInCustomer ? (
+                <CustomerAvatar
+                  photoDataUrl={loggedInCustomer.profilePhotoDataUrl}
+                  name={loggedInCustomer.name}
+                  size={36}
+                  className="border-0"
+                />
+              ) : (
+                <User className="w-5 h-5" />
+              )}
+            </button>
           </div>
         </div>
       </header>
 
-      <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-5 sm:py-7 space-y-5">
-        {portalView === 'account' && loggedInCustomer ? (
+      <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-3 sm:px-6 pt-4 pb-24 sm:pt-6 sm:pb-24 space-y-5">
+        {portalView === 'favorites' ? (
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setPortalView('shop')}
+                  aria-label="Back to home"
+                  className="inline-flex items-center justify-center w-10 h-10 rounded-full border border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <div>
+                  <h1 className="font-display-serif text-xl sm:text-2xl font-bold text-[#1F122B]">
+                    Saved Favorites
+                  </h1>
+                  <p className="text-xs text-[#6B5B7B] font-mono-num">
+                    {favoriteItems.length}{' '}
+                    {favoriteItems.length === 1 ? 'item saved' : 'items saved'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPortalView('shop')}
+                className="rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] whitespace-nowrap cursor-pointer"
+              >
+                Continue Shopping
+              </button>
+            </div>
+
+            {favoriteItems.length === 0 ? (
+              <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 p-8 sm:p-12 text-center space-y-3">
+                <div className="w-14 h-14 rounded-full bg-[#FDF2F8] border border-[#FBCFE8] text-[#DB2777] flex items-center justify-center mx-auto">
+                  <Heart className="w-7 h-7" />
+                </div>
+                <h2 className="font-display-serif text-lg font-bold text-[#1F122B]">
+                  Your Favorites list is empty
+                </h2>
+                <p className="text-xs sm:text-sm text-[#6B5B7B] max-w-sm mx-auto">
+                  Tap the heart icon on any product to save items here for quick access later.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setPortalView('shop')}
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-bold text-white hover:opacity-95 cursor-pointer"
+                >
+                  <ShoppingBag className="w-4 h-4" />
+                  <span>Explore Products</span>
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3.5">
+                {favoriteItems.map((item) => {
+                  const mainImg = item.imageDataUrls[0] || item.imageDataUrl || '';
+                  const discountPercent =
+                    item.originalPrice && item.originalPrice > item.price
+                      ? Math.round(
+                          ((item.originalPrice - item.price) /
+                            item.originalPrice) *
+                            100
+                        )
+                      : 0;
+                  return (
+                    <div
+                      key={`fav-${item.id}`}
+                      className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
+                    >
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openProductDetail(item)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            openProductDetail(item);
+                          }
+                        }}
+                        className="cursor-pointer"
+                      >
+                        <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                          {mainImg ? (
+                            <img
+                              src={getOptimizedMediaUrl(mainImg, 'image')}
+                              alt={item.name}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            />
+                          ) : (
+                            <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => toggleFavoriteProduct(item, e)}
+                            aria-label={`Remove ${item.name} from favorites`}
+                            className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/95 border border-[#FBCFE8] text-[#DB2777] flex items-center justify-center shadow-xs hover:scale-105 transition-transform cursor-pointer"
+                          >
+                            <Heart className="w-4 h-4 fill-[#DB2777]" />
+                          </button>
+                          {discountPercent > 0 && (
+                            <span className="absolute top-2 left-2 rounded-md bg-[#15803D] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num">
+                              {discountPercent}% OFF
+                            </span>
+                          )}
+                        </div>
+                        <div className="p-2.5 sm:p-3 space-y-1">
+                          <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
+                            {item.category}
+                          </div>
+                          <h3 className="text-xs sm:text-sm font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2.25rem]">
+                            {item.name}
+                          </h3>
+                        </div>
+                      </div>
+                      <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
+                        <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
+                          <span className="text-sm sm:text-base font-bold text-[#1F122B]">
+                            {formatCurrency(item.price, sym)}
+                          </span>
+                          {item.originalPrice &&
+                            item.originalPrice > item.price && (
+                              <span className="text-[11px] text-[#8E7C9E] line-through">
+                                {formatCurrency(item.originalPrice, sym)}
+                              </span>
+                            )}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={addingToCart}
+                          onClick={() => handleAddToCartAction(item, 1)}
+                          className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#7E22CE] bg-white py-2 px-2 text-[11px] font-bold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer whitespace-nowrap"
+                        >
+                          <ShoppingCart className="w-3.5 h-3.5" />
+                          <span>Add to Cart</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        ) : portalView === 'account' && loggedInCustomer ? (
           <CustomerDashboardView
             client={loggedInCustomer}
             orders={customerOrders}
@@ -1738,6 +1892,24 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             ) : (
                               <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
                             )}
+                            <button
+                              type="button"
+                              onClick={(e) => toggleFavoriteProduct(item, e)}
+                              aria-label={
+                                isProductFavorited(item)
+                                  ? `Remove ${item.name} from favorites`
+                                  : `Save ${item.name} to favorites`
+                              }
+                              className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/95 border border-[#E6D9EE] flex items-center justify-center shadow-xs hover:scale-105 transition-transform cursor-pointer"
+                            >
+                              <Heart
+                                className={`w-4 h-4 ${
+                                  isProductFavorited(item)
+                                    ? 'fill-[#DB2777] text-[#DB2777]'
+                                    : 'text-[#6B5B7B]'
+                                }`}
+                              />
+                            </button>
                             {item.videoUrl && (
                               <span className="absolute bottom-1.5 left-1.5 inline-flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                                 <Video className="w-3 h-3" />
@@ -2007,40 +2179,42 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     </section>
                   )}
 
-                {/* COMPACT FLIPKART/AMAZON STYLE SHOPPING GRID */}
+                {/* COMPACT MEESHO-STYLE SHOPPING GRID */}
                 {hasShoppingContent &&
                   (sectionTab === 'all' || sectionTab === 'shopping') && (
                     <section
+                      id="shop-categories-section"
+                      ref={categoriesSectionRef}
                       aria-label="Shopping Collection"
-                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-3.5 sm:p-5 space-y-4"
+                      className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-3 sm:p-5 space-y-4 scroll-mt-20"
                     >
-                      {/* Compact Fixed/Sticky Search Bar & Category Chips */}
-                      <div className="sticky top-16 z-20 -mx-1 px-2 py-2 bg-white/95 backdrop-blur-md border-b border-[#F4ECF8] rounded-xl space-y-2">
+                      {/* Clean Search Bar & Scrollable Category Chips */}
+                      <div className="space-y-2.5 border-b border-[#F4ECF8] pb-3">
                         <div className="relative">
-                          <Search className="w-3.5 h-3.5 text-[#9333EA] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <Search className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                           <input
                             type="search"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder="Search products or categories (e.g. Perfumes, Jewellery, Clothing)..."
-                            className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-8 pr-8 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                            placeholder="Search by product or category (Perfumes, Jewellery, Clothing...)"
+                            className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-9 py-2.5 text-xs sm:text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                           />
                           {searchQuery && (
                             <button
                               type="button"
                               onClick={() => setSearchQuery('')}
                               aria-label="Clear search"
-                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
                             >
-                              <X className="w-3.5 h-3.5" />
+                              <X className="w-4 h-4" />
                             </button>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 overflow-x-auto sm:flex-wrap">
+                        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap">
                           <button
                             type="button"
                             onClick={() => handleSelectShoppingCategory('ALL')}
-                            className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            className={`rounded-xl px-3 py-1.5 text-xs font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                               shoppingCategory === 'ALL'
                                 ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
                                 : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
@@ -2053,7 +2227,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                               key={cat}
                               type="button"
                               onClick={() => handleSelectShoppingCategory(cat)}
-                              className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                              className={`rounded-xl px-3 py-1.5 text-xs font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                                 shoppingCategory === cat
                                   ? 'border-[#DB2777] bg-[#DB2777] text-white'
                                   : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
@@ -2070,7 +2244,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           No shopping items found in this category.
                         </div>
                       ) : (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3.5">
                           {filteredShoppingItems.map((item) => {
                             const discountPercent =
                               item.originalPrice &&
@@ -2083,6 +2257,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 : 0;
                             const mainImg =
                               item.imageDataUrls[0] || item.imageDataUrl || '';
+                            const isFav = isProductFavorited(item);
 
                             return (
                               <div
@@ -2130,12 +2305,26 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     </div>
                                     <button
                                       type="button"
-                                      onClick={(e) => handleShareProduct(item, e)}
-                                      title="Share product link"
-                                      aria-label={`Share ${item.name}`}
-                                      className="absolute top-2 right-2 rounded-lg bg-white/90 border border-[#E6D9EE] p-1.5 text-[#6D28D9] hover:text-[#DB2777] hover:bg-white shadow-xs cursor-pointer"
+                                      onClick={(e) => toggleFavoriteProduct(item, e)}
+                                      title={
+                                        isFav
+                                          ? 'Remove from Favorites'
+                                          : 'Save to Favorites'
+                                      }
+                                      aria-label={
+                                        isFav
+                                          ? `Remove ${item.name} from favorites`
+                                          : `Save ${item.name} to favorites`
+                                      }
+                                      className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/95 border border-[#E6D9EE] flex items-center justify-center shadow-xs hover:scale-105 transition-transform cursor-pointer"
                                     >
-                                      <Share2 className="w-3.5 h-3.5" />
+                                      <Heart
+                                        className={`w-4 h-4 ${
+                                          isFav
+                                            ? 'fill-[#DB2777] text-[#DB2777]'
+                                            : 'text-[#6B5B7B]'
+                                        }`}
+                                      />
                                     </button>
                                     {(item.imageDataUrls.length > 1 || item.videoUrl) && (
                                       <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
@@ -2238,30 +2427,40 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         )}
       </main>
 
-      {/* PRODUCT DETAIL + AUTH-GATED ORDER CHECKOUT MODAL */}
+      {/* FULL-SCREEN PRODUCT DETAIL + AUTH-GATED ORDER CHECKOUT VIEW */}
       {selectedProduct && (
         <div
-          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-5"
+          className="no-print fixed inset-0 z-50 bg-[#FDFBFE] flex flex-col overflow-hidden"
           role="dialog"
           aria-modal="true"
+          aria-label={
+            modalStep === 'detail'
+              ? selectedProduct.name
+              : modalStep === 'checkout'
+                ? 'Complete Your Order'
+                : 'Order Placed Successfully'
+          }
         >
-          <div className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-3xl border border-[#EFE2F5] bg-white shadow-2xl">
-            {/* Modal Header */}
-            <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-md border-b border-[#F4ECF8] px-5 py-3.5 flex items-center justify-between gap-3">
+          {/* Full-Screen Top Header with Back Button (←) & Cart Icon */}
+          <header className="shrink-0 sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-[#EFE2F5]">
+            <div className="max-w-5xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 min-w-0">
-                {modalStep === 'checkout' && (
-                  <button
-                    type="button"
-                    onClick={() => {
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (modalStep === 'checkout') {
                       setModalStep('detail');
                       setOrderError('');
-                    }}
-                    className="p-1.5 rounded-lg border border-[#E6D9EE] text-[#4A3B59] hover:border-[#9333EA] cursor-pointer"
-                  >
-                    <ArrowLeft className="w-4 h-4" />
-                  </button>
-                )}
-                <div className="text-sm font-bold text-[#1F122B] truncate">
+                    } else {
+                      closeProductModal();
+                    }
+                  }}
+                  aria-label="Back"
+                  className="inline-flex items-center justify-center w-10 h-10 -ml-1.5 rounded-full text-[#1F122B] hover:bg-[#FAF5FF] transition-colors cursor-pointer shrink-0"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="text-sm sm:text-base font-bold text-[#1F122B] truncate">
                   {modalStep === 'detail'
                     ? 'Product Details'
                     : modalStep === 'checkout'
@@ -2269,19 +2468,36 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       : 'Order Placed Successfully'}
                 </div>
               </div>
+
               <button
                 type="button"
-                onClick={closeProductModal}
-                aria-label="Close"
-                className="p-1.5 rounded-lg text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
+                onClick={() => {
+                  closeProductModal();
+                  handleOpenAccount('cart');
+                }}
+                aria-label={`Open cart (${cartItemCount} items)`}
+                className="relative inline-flex items-center justify-center w-10 h-10 rounded-full border border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA] hover:text-[#6D28D9] transition-colors cursor-pointer shrink-0"
               >
-                <X className="w-4 h-4" />
+                <ShoppingCart className="w-5 h-5" />
+                {cartItemCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#DB2777] text-white text-[10px] font-mono-num font-bold flex items-center justify-center border-2 border-white">
+                    {cartItemCount > 99 ? '99+' : cartItemCount}
+                  </span>
+                )}
               </button>
             </div>
+          </header>
 
-            {/* STEP 1: PRODUCT DETAIL VIEW WITH MULTI-IMAGE & VIDEO GALLERY */}
-            {modalStep === 'detail' && (
-              <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+          {/* Scrollable Body */}
+          <div
+            className={`flex-1 overflow-y-auto ${
+              modalStep === 'detail' ? 'pb-24 sm:pb-24' : 'pb-10'
+            }`}
+          >
+            <div className="max-w-5xl mx-auto">
+              {/* STEP 1: PRODUCT DETAIL VIEW WITH MULTI-IMAGE & VIDEO GALLERY */}
+              {modalStep === 'detail' && (
+                <div className="p-4 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                 {(() => {
                   const mediaSlides: Array<{ type: 'image' | 'video'; url: string }> = [
                     ...selectedProduct.imageDataUrls.map((url) => ({
@@ -2391,13 +2607,77 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 })()}
 
                 <div className="space-y-4">
-                  <div className="space-y-1.5">
+                  <div className="space-y-2 rounded-2xl border border-[#EFE2F5] bg-white p-4">
                     <div className="text-xs font-semibold text-[#7E22CE]">
                       {selectedProduct.category}
                     </div>
-                    <h2 className="font-display-serif text-2xl font-bold text-[#1F122B] leading-snug">
-                      {selectedProduct.name}
-                    </h2>
+                    <div className="flex items-start justify-between gap-3">
+                      <h2 className="font-display-serif text-xl sm:text-2xl font-bold text-[#1F122B] leading-snug flex-1">
+                        {selectedProduct.name}
+                      </h2>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => toggleFavoriteProduct(selectedProduct, e)}
+                          aria-label={
+                            isProductFavorited(selectedProduct)
+                              ? 'Remove from Favorites'
+                              : 'Save to Favorites'
+                          }
+                          title={
+                            isProductFavorited(selectedProduct)
+                              ? 'Saved in Favorites'
+                              : 'Save to Favorites'
+                          }
+                          className={`inline-flex items-center justify-center w-10 h-10 rounded-full border transition-colors cursor-pointer ${
+                            isProductFavorited(selectedProduct)
+                              ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
+                              : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777] hover:text-[#DB2777]'
+                          }`}
+                        >
+                          <Heart
+                            className={`w-4 h-4 ${
+                              isProductFavorited(selectedProduct)
+                                ? 'fill-[#DB2777] text-[#DB2777]'
+                                : ''
+                            }`}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleShareProduct(selectedProduct)}
+                          aria-label="Share product link"
+                          title="Share"
+                          className="inline-flex items-center justify-center w-10 h-10 rounded-full border border-[#E6D9EE] bg-[#FDFBFE] text-[#6D28D9] hover:border-[#9333EA] hover:bg-[#FAF5FF] transition-colors cursor-pointer"
+                        >
+                          <Share2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-baseline gap-2.5 flex-wrap font-mono-num pt-1">
+                      <span className="text-2xl font-bold text-[#1F122B]">
+                        {formatCurrency(selectedProduct.price, sym)}
+                      </span>
+                      {selectedProduct.originalPrice &&
+                        selectedProduct.originalPrice > selectedProduct.price && (
+                          <>
+                            <span className="text-sm text-[#8E7C9E] line-through">
+                              {formatCurrency(selectedProduct.originalPrice, sym)}
+                            </span>
+                            <span className="text-xs font-bold text-[#15803D]">
+                              {Math.round(
+                                ((selectedProduct.originalPrice -
+                                  selectedProduct.price) /
+                                  selectedProduct.originalPrice) *
+                                  100
+                              )}
+                              % OFF
+                            </span>
+                          </>
+                        )}
+                    </div>
+
                     {(() => {
                       const canonicalId =
                         selectedProduct.catalogProductId || selectedProduct.id;
@@ -2424,13 +2704,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       const isFollowing = followedSellerIdsSet.has(sid);
                       const followers = followerCountsBySeller[sid] || 0;
                       return (
-                        <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-3 flex flex-wrap items-center justify-between gap-2.5">
+                        <div className="rounded-2xl border border-[#EFE2F5] bg-white p-3.5 flex flex-wrap items-center justify-between gap-2.5">
                           <button
                             type="button"
                             onClick={(e) => openSellerProfile(sid, e)}
                             className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
                           >
-                            <div className="w-10 h-10 rounded-xl border border-[#D8B4FE] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                            <div className="w-10 h-10 rounded-xl border border-[#D8B4FE] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
                               {sellerProf?.sellerPhotoDataUrl ? (
                                 <img
                                   src={getOptimizedMediaUrl(
@@ -2493,33 +2773,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       );
                     })()}
 
-                  <div className="flex items-baseline gap-2.5 flex-wrap font-mono-num">
-                    <span className="text-2xl font-bold text-[#1F122B]">
-                      {formatCurrency(selectedProduct.price, sym)}
-                    </span>
-                    {selectedProduct.originalPrice &&
-                      selectedProduct.originalPrice > selectedProduct.price && (
-                        <>
-                          <span className="text-sm text-[#8E7C9E] line-through">
-                            {formatCurrency(selectedProduct.originalPrice, sym)}
-                          </span>
-                          <span className="text-xs font-bold text-[#15803D]">
-                            {Math.round(
-                              ((selectedProduct.originalPrice -
-                                selectedProduct.price) /
-                                selectedProduct.originalPrice) *
-                                100
-                            )}
-                            % OFF
-                          </span>
-                        </>
-                      )}
-                  </div>
-
                   {(selectedProduct.size ||
                     selectedProduct.color ||
                     selectedProduct.stockQty !== undefined) && (
-                    <div className="rounded-xl border border-[#F4ECF8] bg-[#FDFBFE] p-3 space-y-1 text-xs text-[#4A3B59]">
+                    <div className="rounded-2xl border border-[#EFE2F5] bg-white p-3.5 space-y-1 text-xs text-[#4A3B59]">
                       {selectedProduct.size && (
                         <div>
                           Size: <strong>{selectedProduct.size}</strong>
@@ -2547,7 +2804,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   )}
 
                   {selectedProduct.description && (
-                    <div className="space-y-1">
+                    <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 space-y-1.5">
                       <div className="text-xs font-bold text-[#4A3B59]">
                         Product Information
                       </div>
@@ -2558,9 +2815,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   )}
 
                   {/* Quantity Selector */}
-                  <div className="flex items-center gap-3 pt-1">
+                  <div className="rounded-2xl border border-[#EFE2F5] bg-white px-4 py-3 flex items-center justify-between gap-3">
                     <span className="text-xs font-semibold text-[#4A3B59]">
-                      Quantity:
+                      Select Quantity
                     </span>
                     <div className="inline-flex items-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE]">
                       <button
@@ -2568,6 +2825,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         onClick={() =>
                           setOrderQty(String(Math.max(1, parsedQty - 1)))
                         }
+                        aria-label="Decrease quantity"
                         className="p-2 text-[#5B4B6B] hover:text-[#1F122B] cursor-pointer"
                       >
                         <Minus className="w-3.5 h-3.5" />
@@ -2588,6 +2846,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       <button
                         type="button"
                         onClick={() => setOrderQty(String(parsedQty + 1))}
+                        aria-label="Increase quantity"
                         className="p-2 text-[#5B4B6B] hover:text-[#1F122B] cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" />
@@ -2600,54 +2859,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       {orderError}
                     </div>
                   )}
-
-                  <div className="pt-2 space-y-2.5">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <button
-                        type="button"
-                        disabled={addingToCart}
-                        onClick={() =>
-                          handleAddToCartAction(selectedProduct, parsedQty)
-                        }
-                        className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-[#7E22CE] bg-white py-3 px-4 text-xs sm:text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer disabled:opacity-60"
-                      >
-                        <ShoppingCart className="w-4 h-4" />
-                        <span>Add to Cart</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={openCheckoutStep}
-                        className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 cursor-pointer"
-                      >
-                        <ShoppingBag className="w-4 h-4" />
-                        <span>
-                          Order Now · {formatCurrency(checkoutSubtotal, sym)}
-                        </span>
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <button
-                        type="button"
-                        onClick={() => handleShareProduct(selectedProduct)}
-                        className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] py-2.5 px-4 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
-                      >
-                        <Share2 className="w-3.5 h-3.5" />
-                        <span>Share Product Link</span>
-                      </button>
-
-                      <a
-                        href={buildProductWhatsAppUrl(selectedProduct, settings)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white py-2.5 px-4 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA]"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5 text-[#7E22CE]" />
-                        <span>Ask on WhatsApp</span>
-                      </a>
-                    </div>
-                  </div>
                 </div>
 
                 {/* Product Ratings & Customer Reviews Section */}
@@ -3442,9 +3653,336 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 </div>
               </div>
             )}
+            </div>
+          </div>
+
+          {/* Sticky Bottom Action Bar on Product Details View (Equal-Width Add to Cart | Buy Now) */}
+          {modalStep === 'detail' && (
+            <div className="shrink-0 sticky bottom-0 z-30 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.08)] px-3 sm:px-6 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+              <div className="max-w-5xl mx-auto grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  disabled={addingToCart}
+                  onClick={() =>
+                    handleAddToCartAction(selectedProduct, parsedQty)
+                  }
+                  className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl border-2 border-[#7E22CE] bg-white px-4 text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                >
+                  <ShoppingCart className="w-4 h-4 shrink-0" />
+                  <span>{addingToCart ? 'Adding...' : 'Add to Cart'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={openCheckoutStep}
+                  className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+                >
+                  <ShoppingBag className="w-4 h-4 shrink-0" />
+                  <span>Buy Now</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Menu Sheet Drawer (Seller Hub, Help Center, Refer & Earn) */}
+      {menuSheetOpen && (
+        <div
+          className="no-print fixed inset-0 z-[45] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Store Menu"
+          onClick={() => setMenuSheetOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl border border-[#EFE2F5] bg-white shadow-2xl p-4 pb-24 sm:p-5 space-y-2"
+          >
+            <div className="w-10 h-1 rounded-full bg-[#D6C9E0] mx-auto mb-2 sm:hidden" />
+            <div className="flex items-center justify-between px-1 pb-2 border-b border-[#F4ECF8]">
+              <h2 className="font-display-serif text-base font-bold text-[#1F122B]">
+                Menu
+              </h2>
+              <button
+                type="button"
+                onClick={() => setMenuSheetOpen(false)}
+                aria-label="Close menu"
+                className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSheetOpen(false);
+                setPortalView('seller-hub');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className={`w-full min-h-[52px] flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3 text-left transition-colors cursor-pointer ${
+                portalView === 'seller-hub'
+                  ? 'bg-[#FAF5FF] text-[#6D28D9]'
+                  : 'hover:bg-[#FDF8FC] text-[#1F122B]'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#FDF2F8] text-[#DB2777] flex items-center justify-center shrink-0">
+                  <Store className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-bold">Seller Hub</div>
+                  <div className="text-[11px] text-[#6B5B7B]">
+                    Become a seller or manage your storefront products
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-[#8E7C9E]" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSheetOpen(false);
+                setPortalView('help-center');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className={`w-full min-h-[52px] flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3 text-left transition-colors cursor-pointer ${
+                portalView === 'help-center'
+                  ? 'bg-[#FAF5FF] text-[#6D28D9]'
+                  : 'hover:bg-[#FDF8FC] text-[#1F122B]'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#F3E8FF] text-[#7E22CE] flex items-center justify-center shrink-0">
+                  <LifeBuoy className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-bold">Help Center</div>
+                  <div className="text-[11px] text-[#6B5B7B]">
+                    Chat with customer support &amp; track inquiries
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-[#8E7C9E]" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSheetOpen(false);
+                setPortalView('refer-earn');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className={`w-full min-h-[52px] flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3 text-left transition-colors cursor-pointer ${
+                portalView === 'refer-earn'
+                  ? 'bg-[#FAF5FF] text-[#6D28D9]'
+                  : 'hover:bg-[#FDF8FC] text-[#1F122B]'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#F0FDF4] text-[#15803D] flex items-center justify-center shrink-0">
+                  <Gift className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-bold">Refer &amp; Earn</div>
+                  <div className="text-[11px] text-[#6B5B7B]">
+                    Share your personal referral code and earn rewards
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-[#8E7C9E]" />
+            </button>
           </div>
         </div>
       )}
+
+      {/* Categories Sheet Drawer */}
+      {categoriesSheetOpen && (
+        <div
+          className="no-print fixed inset-0 z-[45] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Browse Categories"
+          onClick={() => setCategoriesSheetOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl border border-[#EFE2F5] bg-white shadow-2xl p-4 pb-24 sm:p-5 space-y-3 max-h-[82vh] overflow-y-auto"
+          >
+            <div className="w-10 h-1 rounded-full bg-[#D6C9E0] mx-auto sm:hidden" />
+            <div className="flex items-center justify-between px-1 pb-2 border-b border-[#F4ECF8]">
+              <h2 className="font-display-serif text-base font-bold text-[#1F122B]">
+                Product Categories
+              </h2>
+              <button
+                type="button"
+                onClick={() => setCategoriesSheetOpen(false)}
+                aria-label="Close categories"
+                className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setCategoriesSheetOpen(false);
+                  handleSelectShoppingCategory('ALL');
+                  scrollToCategoriesSection();
+                }}
+                className={`min-h-[48px] rounded-2xl border px-3.5 py-2.5 text-left transition-colors cursor-pointer flex items-center justify-between gap-2 ${
+                  shoppingCategory === 'ALL'
+                    ? 'border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                    : 'border-[#EFE2F5] bg-[#FDFBFE] text-[#1F122B] hover:border-[#9333EA]'
+                }`}
+              >
+                <span className="text-xs font-bold truncate">All Categories</span>
+                <span className="text-[11px] font-mono-num text-[#6B5B7B]">
+                  {shoppingItems.length}
+                </span>
+              </button>
+
+              {PRODUCT_CATEGORIES.map((cat) => {
+                const count = shoppingItems.filter((i) => i.category === cat).length;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => {
+                      setCategoriesSheetOpen(false);
+                      handleSelectShoppingCategory(cat);
+                      scrollToCategoriesSection();
+                    }}
+                    className={`min-h-[48px] rounded-2xl border px-3.5 py-2.5 text-left transition-colors cursor-pointer flex items-center justify-between gap-2 ${
+                      shoppingCategory === cat
+                        ? 'border-[#DB2777] bg-[#FDF2F8] text-[#DB2777]'
+                        : 'border-[#EFE2F5] bg-[#FDFBFE] text-[#1F122B] hover:border-[#DB2777]'
+                    }`}
+                  >
+                    <span className="text-xs font-bold truncate">{cat}</span>
+                    <span className="text-[11px] font-mono-num text-[#6B5B7B]">
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fixed 5-Tab Bottom Navigation Bar (Always Sticky While Scrolling) */}
+      <nav
+        aria-label="Primary Customer Navigation"
+        className="no-print fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.06)] pb-[env(safe-area-inset-bottom)]"
+      >
+        <div className="max-w-6xl mx-auto grid grid-cols-5 items-center h-16">
+          {/* 1. Menu */}
+          <button
+            type="button"
+            onClick={() => {
+              setCategoriesSheetOpen(false);
+              setMenuSheetOpen((prev) => !prev);
+            }}
+            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+              menuSheetOpen ||
+              portalView === 'seller-hub' ||
+              portalView === 'help-center' ||
+              portalView === 'refer-earn'
+                ? 'text-[#7E22CE]'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <Menu className="w-5 h-5" />
+            <span className="whitespace-nowrap">Menu</span>
+          </button>
+
+          {/* 2. Home */}
+          <button
+            type="button"
+            onClick={() => {
+              setMenuSheetOpen(false);
+              setCategoriesSheetOpen(false);
+              setPortalView('shop');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+              portalView === 'shop' && !menuSheetOpen && !categoriesSheetOpen
+                ? 'text-[#DB2777]'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <Home className="w-5 h-5" />
+            <span className="whitespace-nowrap">Home</span>
+          </button>
+
+          {/* 3. Categories */}
+          <button
+            type="button"
+            onClick={() => {
+              setMenuSheetOpen(false);
+              setCategoriesSheetOpen((prev) => !prev);
+              scrollToCategoriesSection();
+            }}
+            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+              categoriesSheetOpen
+                ? 'text-[#DB2777]'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <LayoutGrid className="w-5 h-5" />
+            <span className="whitespace-nowrap">Categories</span>
+          </button>
+
+          {/* 4. Cart */}
+          <button
+            type="button"
+            onClick={() => {
+              setMenuSheetOpen(false);
+              setCategoriesSheetOpen(false);
+              handleOpenAccount('cart');
+            }}
+            className={`relative h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+              portalView === 'account' && accountTab === 'cart'
+                ? 'text-[#DB2777]'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <div className="relative">
+              <ShoppingCart className="w-5 h-5" />
+              {cartItemCount > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[#DB2777] text-white text-[9px] font-mono-num font-bold flex items-center justify-center">
+                  {cartItemCount > 99 ? '99+' : cartItemCount}
+                </span>
+              )}
+            </div>
+            <span className="whitespace-nowrap">Cart</span>
+          </button>
+
+          {/* 5. My Orders */}
+          <button
+            type="button"
+            onClick={() => {
+              setMenuSheetOpen(false);
+              setCategoriesSheetOpen(false);
+              handleOpenAccount('orders');
+            }}
+            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+              portalView === 'account' &&
+              (accountTab === 'orders' || accountTab === 'bills')
+                ? 'text-[#7E22CE]'
+                : 'text-[#5B4B6B] hover:text-[#1F122B]'
+            }`}
+          >
+            <Package className="w-5 h-5" />
+            <span className="whitespace-nowrap">My Orders</span>
+          </button>
+        </div>
+      </nav>
 
       {/* Customer Google Sign-In & Quick Onboarding Modal */}
       <CustomerAuthModal
@@ -3462,7 +4000,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
       {/* Storefront Notification Toast */}
       {storeNotice && (
-        <div className="no-print fixed bottom-5 right-4 z-50 rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
+        <div className="no-print fixed bottom-20 right-4 z-[55] rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
           {storeNotice}
         </div>
       )}

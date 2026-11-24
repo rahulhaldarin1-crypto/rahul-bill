@@ -123,6 +123,10 @@ export const api = {
     return firestoreService.updateCustomerCart(clientId, cart);
   },
 
+  updateCustomerFavorites(clientId: string, favoriteProductIds: string[]) {
+    return firestoreService.updateCustomerFavorites(clientId, favoriteProductIds);
+  },
+
   resolveGoogleCustomerAccount(payload: {
     uid: string;
     email?: string | null;

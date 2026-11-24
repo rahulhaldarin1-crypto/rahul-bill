@@ -2291,6 +2291,9 @@ export const firestoreService = {
           : matched?.profilePhotoDataUrl || ''
       ),
       cart: Array.isArray(matched?.cart) ? matched.cart : [],
+      favoriteProductIds: Array.isArray(matched?.favoriteProductIds)
+        ? matched.favoriteProductIds
+        : [],
       referralCode: resolvedReferralCode,
       referredBy: finalReferredBy,
       categoryInterests: matched?.categoryInterests || {},
@@ -2304,6 +2307,38 @@ export const firestoreService = {
       return client;
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${CLIENTS_COL}/${client.id}`);
+    }
+  },
+
+  async updateCustomerFavorites(
+    clientId: string,
+    favoriteProductIds: string[]
+  ): Promise<Client> {
+    const ref = doc(db, CLIENTS_COL, clientId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Customer account not found.');
+      const existing = snap.data() as Client;
+      const cleanIds = Array.from(
+        new Set(
+          (Array.isArray(favoriteProductIds) ? favoriteProductIds : [])
+            .map((id) => String(id || '').trim())
+            .filter(Boolean)
+        )
+      ).slice(0, 200);
+      const now = new Date().toISOString();
+      const updated: Client = stripUndefinedDeep({
+        ...existing,
+        favoriteProductIds: cleanIds,
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Customer account not found.') {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.UPDATE, `${CLIENTS_COL}/${clientId}`);
     }
   },
 

@@ -61,6 +61,7 @@
         "state": { "type": "string", "maxLength": 80 },
         "city": { "type": "string", "maxLength": 80 },
         "pinCode": { "type": "string", "maxLength": 20 },
+        "favoriteProductIds": { "type": "array" },
         "categoryInterests": { "type": "object" },
         "totalCategoryOrders": { "type": "number" },
         "createdAt": { "type": "string", "maxLength": 40 },
