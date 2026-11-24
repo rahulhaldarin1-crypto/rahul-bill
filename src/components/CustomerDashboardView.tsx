@@ -718,9 +718,6 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     Remove Photo
                   </button>
                 )}
-                <span className="text-[10px] text-[#6B5B7B]">
-                  Saved to Cloudinary
-                </span>
                 <button
                   type="button"
                   onClick={() => {

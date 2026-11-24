@@ -86,6 +86,7 @@ import {
   CustomerDashboardView,
 } from './CustomerDashboardView';
 import { HelpCenterChatView } from './HelpCenterChatView';
+import { OfflineIndicator, PWAInstallButton } from './PWAInstallButton';
 import { ReferEarnView } from './ReferEarnView';
 import { SellerHubView } from './SellerHubView';
 
@@ -1134,6 +1135,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
     getRedirectResult(auth)
       .then(async (result) => {
+        try {
+          sessionStorage.removeItem('gg_google_auth_intent');
+        } catch {
+          // ignore storage errors
+        }
         if (!active || !result?.user) return;
         const user = result.user;
         const resolved = await api.resolveGoogleCustomerAccount({
@@ -1158,7 +1164,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         setAuthNotice('Complete your 10-second profile setup to continue.');
         setAuthModalOpen(true);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        try {
+          sessionStorage.removeItem('gg_google_auth_intent');
+        } catch {
+          // ignore storage errors
+        }
+      });
 
     return () => {
       active = false;
@@ -1607,8 +1619,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             </div>
           </button>
 
-          {/* Top-Right Action Icons: Favorites (Heart) & Profile Avatar */}
+          {/* Top-Right Action Icons: Install App (when available), Favorites (Heart) & Profile Avatar */}
           <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton variant="header-chip" />
             <button
               type="button"
               onClick={() => {
@@ -4080,6 +4093,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </div>
               <ChevronRight className="w-4 h-4 text-[#8E7C9E]" />
             </button>
+
+            <PWAInstallButton
+              variant="menu-card"
+              onActionComplete={() => setMenuSheetOpen(false)}
+            />
           </div>
         </div>
       )}
@@ -4527,7 +4545,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         onSuccess={handleCustomerAuthSuccess}
       />
 
-      {/* Storefront Notification Toast */}
+      {/* Offline Status Indicator & Storefront Notification Toast */}
+      <OfflineIndicator />
       {storeNotice && (
         <div className="no-print fixed bottom-20 right-4 z-[55] rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
           {storeNotice}

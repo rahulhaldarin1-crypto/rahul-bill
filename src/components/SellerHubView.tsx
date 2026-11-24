@@ -404,7 +404,13 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       photoURL: cleanPhoto,
     });
     if (cleanEmail) setEmail(cleanEmail);
-    if (cleanName) setName((prev) => prev || cleanName);
+    if (cleanName) {
+      setName((prev) =>
+        googleSellerAuth && googleSellerAuth.email !== cleanEmail
+          ? cleanName
+          : prev || cleanName
+      );
+    }
     setEditingRejected(false);
     setHubTab('apply');
     setError('');

@@ -74,9 +74,19 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     setError('');
     setSigningIn(true);
     try {
+      try {
+        sessionStorage.setItem('gg_google_auth_intent', 'customer');
+      } catch {
+        // ignore storage errors
+      }
       const result = await signInWithGoogleWithFallback();
       if (result.redirected || !result.user) {
         return;
+      }
+      try {
+        sessionStorage.removeItem('gg_google_auth_intent');
+      } catch {
+        // ignore storage errors
       }
       const user = result.user;
       const resolved = await api.resolveGoogleCustomerAccount({
@@ -107,6 +117,11 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       );
       setStep('onboarding');
     } catch (err: unknown) {
+      try {
+        sessionStorage.removeItem('gg_google_auth_intent');
+      } catch {
+        // ignore storage errors
+      }
       const code =
         err && typeof err === 'object' && 'code' in err
           ? String((err as { code?: unknown }).code || '')
@@ -299,7 +314,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-semibold text-[#1F122B]">
-                    Profile Photo (Optional · Saved to Cloudinary)
+                    Profile Photo
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
