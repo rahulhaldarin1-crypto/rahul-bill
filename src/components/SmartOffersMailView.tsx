@@ -47,6 +47,11 @@ interface RankedCategoryCustomer {
   lastActivityAt: string;
 }
 
+const DEFAULT_WELCOME_SUBJECT =
+  "Welcome to Glamour Galleria — You're Invited to Shop!";
+const DEFAULT_WELCOME_MESSAGE =
+  'You are warmly invited to shop our latest collections at Glamour Galleria! Explore exclusive fashion, cosmetics, and winter wear.';
+
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim().toLowerCase());
 }
@@ -315,6 +320,9 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
     e.preventDefault();
     setError('');
     const cleanEmail = extraEmail.trim().toLowerCase();
+    if (!cleanEmail) {
+      return;
+    }
     if (!isValidEmail(cleanEmail)) {
       setError('Please enter a valid extra email address.');
       return;
@@ -339,6 +347,7 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
   };
 
   const handleUseOfferTemplate = () => {
+    setError('');
     const label = selectedCategory === 'ALL' ? 'Featured Collections' : selectedCategory;
     if (!subject.trim()) {
       setSubject(`Exclusive Offer on ${label} — Glamour Galleria`);
@@ -355,27 +364,52 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
     setError('');
     setDeliveryResult(null);
 
-    if (recipients.length === 0) {
+    let recipientsToSend = [...recipients];
+    const pendingExtraEmail = extraEmail.trim().toLowerCase();
+    if (pendingExtraEmail) {
+      if (!isValidEmail(pendingExtraEmail)) {
+        setError('Please enter a valid extra email address or leave it empty.');
+        return;
+      }
+      const alreadyIncluded = recipientsToSend.some(
+        (r) => r.email.toLowerCase() === pendingExtraEmail
+      );
+      if (!alreadyIncluded) {
+        if (recipientsToSend.length >= 50) {
+          setError('Maximum 50 recipients can be included in a single send batch.');
+          return;
+        }
+        recipientsToSend = [
+          ...recipientsToSend,
+          {
+            email: pendingExtraEmail,
+            name: extraName.trim() || 'Valued Customer',
+          },
+        ];
+      }
+    }
+
+    if (recipientsToSend.length === 0) {
       setError('Please select or add at least one customer email address.');
       return;
     }
-    if (!subject.trim()) {
-      setError('Please enter an Email Subject.');
-      return;
-    }
-    if (!message.trim()) {
-      setError('Please enter the Offer / Notice Message body.');
-      return;
-    }
+
+    const resolvedSubject = subject.trim() || DEFAULT_WELCOME_SUBJECT;
+    const resolvedMessage = message.trim() || DEFAULT_WELCOME_MESSAGE;
 
     setSending(true);
     try {
       const result = await api.sendSmartOffersMail({
         category: selectedCategory === 'ALL' ? 'All Categories' : selectedCategory,
-        subject: subject.trim(),
-        message: message.trim(),
-        recipients,
+        subject: resolvedSubject,
+        message: resolvedMessage,
+        recipients: recipientsToSend,
       });
+      if (pendingExtraEmail) {
+        setRecipients(recipientsToSend);
+        setExtraEmail('');
+        setExtraName('');
+      }
       setDeliveryResult(result);
     } catch (err) {
       setError(
@@ -498,7 +532,7 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
                   <span className="font-semibold text-[#1F122B] max-w-[120px] truncate">
                     {rec.name || 'Customer'}
                   </span>
-                  <span className="text-[#6B5B7B] font-mono-num text-[11px]">
+                  <span className="text-[#6B5B7B] font-mono-num text-[11px] truncate max-w-[160px] sm:max-w-none">
                     ({rec.email})
                   </span>
                   {typeof rec.orderCount === 'number' && rec.orderCount > 0 && (
@@ -521,11 +555,12 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
 
           {/* Add Extra Email Address */}
           <form
+            noValidate
             onSubmit={handleAddExtraEmail}
             className="rounded-2xl border border-[#F4ECF8] bg-[#FDF9FC] p-3.5 space-y-2.5"
           >
             <div className="text-xs font-bold text-[#4A3B59]">
-              Add Extra Email Address Manually
+              Add Extra Email Address Manually (Optional)
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-[1fr_0.8fr_auto] gap-2">
               <input
@@ -533,14 +568,14 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
                 value={extraEmail}
                 onChange={(e) => setExtraEmail(e.target.value)}
                 placeholder="customer@gmail.com"
-                className="rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                className="min-w-0 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
               />
               <input
                 type="text"
                 value={extraName}
                 onChange={(e) => setExtraName(e.target.value)}
                 placeholder="Name (optional)"
-                className="rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                className="min-w-0 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
               />
               <button
                 type="submit"
@@ -622,14 +657,16 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
             </div>
           )}
 
-          <form onSubmit={handleSendMail} className="space-y-4">
+          <form noValidate onSubmit={handleSendMail} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Email Subject <span className="text-[#DB2777]">*</span>
+                Email Subject{' '}
+                <span className="font-normal text-[#6B5B7B]">
+                  (leave blank for default welcome invitation)
+                </span>
               </label>
               <input
                 type="text"
-                required
                 maxLength={200}
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
@@ -640,11 +677,13 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Offer / Notice Message <span className="text-[#DB2777]">*</span>
+                Offer / Notice Message{' '}
+                <span className="font-normal text-[#6B5B7B]">
+                  (leave blank for default welcome invitation)
+                </span>
               </label>
               <textarea
                 rows={6}
-                required
                 maxLength={6000}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
@@ -655,7 +694,7 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
 
             {/* Live Email Preview */}
             <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-4 space-y-3">
-              <div className="flex items-center justify-between text-[11px] font-bold text-[#6D28D9] uppercase tracking-wider">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-[#6D28D9] uppercase tracking-wider">
                 <span className="inline-flex items-center gap-1.5">
                   <Eye className="w-3.5 h-3.5" />
                   Live Email Preview
@@ -668,18 +707,18 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
                   <div className="font-bold text-[#6D28D9] text-sm">
                     {businessName || 'Glamour Galleria'}
                   </div>
-                  <div className="text-[11px] text-[#6B5B7B] mt-0.5">
+                  <div className="text-[11px] text-[#6B5B7B] mt-0.5 break-words">
                     Subject:{' '}
                     <strong className="text-[#1F122B]">
-                      {subject.trim() || '(Your email subject)'}
+                      {subject.trim() || DEFAULT_WELCOME_SUBJECT}
                     </strong>
                   </div>
                 </div>
                 <p className="text-[#4A3B59]">
                   Hello <strong>{recipients[0]?.name || 'Valued Customer'}</strong>,
                 </p>
-                <div className="whitespace-pre-wrap text-[#2E1F3D] leading-relaxed">
-                  {message.trim() || 'Your offer or notice message preview will appear here...'}
+                <div className="whitespace-pre-wrap text-[#2E1F3D] leading-relaxed break-words">
+                  {message.trim() || DEFAULT_WELCOME_MESSAGE}
                 </div>
                 <p className="text-[11px] text-[#6B5B7B] pt-1">
                   Warm regards, <br />
@@ -690,13 +729,13 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
 
             <button
               type="submit"
-              disabled={sending || recipients.length === 0}
+              disabled={sending || (recipients.length === 0 && !extraEmail.trim())}
               className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-5 text-sm font-bold text-white hover:opacity-95 transition-opacity cursor-pointer disabled:opacity-60"
             >
               <Send className="w-4 h-4" />
               <span>
                 {sending
-                  ? `Sending to ${recipients.length} Customers...`
+                  ? `Sending to ${recipients.length || 1} Customers...`
                   : `Send Smart Offers Mail (${recipients.length} Recipients)`}
               </span>
             </button>

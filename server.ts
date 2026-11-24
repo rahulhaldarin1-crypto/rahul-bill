@@ -711,17 +711,22 @@ async function startServer(): Promise<void> {
         recipients?: Array<{ email?: unknown; name?: unknown }>;
       };
 
-      const subject = String(body.subject || '').trim();
-      const message = String(body.message || '').trim();
+      const DEFAULT_WELCOME_SUBJECT =
+        "Welcome to Glamour Galleria — You're Invited to Shop!";
+      const DEFAULT_WELCOME_MESSAGE =
+        'You are warmly invited to shop our latest collections at Glamour Galleria! Explore exclusive fashion, cosmetics, and winter wear.';
+
+      const subject = String(body.subject || '').trim() || DEFAULT_WELCOME_SUBJECT;
+      const message = String(body.message || '').trim() || DEFAULT_WELCOME_MESSAGE;
       const category = String(body.category || '').trim();
       const rawRecipients = Array.isArray(body.recipients) ? body.recipients : [];
 
-      if (!subject || subject.length > 200) {
-        res.status(400).json({ error: 'Please enter a valid email subject (1-200 characters).' });
+      if (subject.length > 200) {
+        res.status(400).json({ error: 'Email subject cannot exceed 200 characters.' });
         return;
       }
-      if (!message || message.length > 6000) {
-        res.status(400).json({ error: 'Please enter a valid offer or notice message.' });
+      if (message.length > 6000) {
+        res.status(400).json({ error: 'Offer or notice message cannot exceed 6000 characters.' });
         return;
       }
 

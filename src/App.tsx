@@ -1022,7 +1022,7 @@ export default function App() {
   );
 
   return (
-    <div className="relative min-h-screen flex flex-col text-[#1F122B]">
+    <div className="relative min-h-screen w-full max-w-full overflow-x-clip flex flex-col text-[#1F122B]">
       <AppBackground backgroundImageDataUrl={workspace.settings.backgroundImageDataUrl} />
 
       {/* TOP NAVIGATION BAR (Strict 3-zone contract) */}
@@ -1148,7 +1148,7 @@ export default function App() {
       </header>
 
       {/* ACTIVE VIEW */}
-      <main className="relative z-10 flex-1">
+      <main className="relative z-10 flex-1 w-full max-w-full pb-20">
         {route === 'dashboard' && (
           <DashboardView
             workspace={workspace}
@@ -1336,7 +1336,7 @@ export default function App() {
       </main>
 
       {/* MOBILE BOTTOM NAVIGATION DOCK */}
-      <nav className="no-print md:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] grid grid-cols-5 items-center px-1">
+      <nav className="no-print lg:hidden fixed bottom-0 left-0 right-0 z-50 w-full max-w-full overflow-hidden overscroll-none bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.06)] grid grid-cols-5 items-center min-h-14 px-1 pb-[env(safe-area-inset-bottom)]">
         {(
           [
             { id: 'dashboard', label: 'Home', icon: Home },
@@ -1353,11 +1353,11 @@ export default function App() {
               key={tab.id}
               type="button"
               onClick={() => navigateTo(tab.id)}
-              className={`flex flex-col items-center justify-center py-1 text-[10px] font-semibold cursor-pointer ${
+              className={`min-w-0 w-full flex flex-col items-center justify-center py-1.5 text-[10px] font-semibold cursor-pointer touch-manipulation select-none ${
                 active ? 'text-[#DB2777]' : 'text-[#6B5B7B]'
               }`}
             >
-              <Icon className="w-4 h-4 mb-0.5" />
+              <Icon className="w-4 h-4 mb-0.5 shrink-0" />
               <span className="truncate max-w-full px-0.5">{tab.label}</span>
             </button>
           );
@@ -1366,7 +1366,7 @@ export default function App() {
 
       {/* Toast Notification */}
       {toast && (
-        <div className="no-print fixed bottom-16 md:bottom-5 right-4 z-50 rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
+        <div className="no-print fixed bottom-20 lg:bottom-5 right-4 z-[60] rounded-xl bg-[#1F122B] text-white px-4 py-2.5 text-xs font-semibold shadow-lg border border-[#A855F7]/40">
           {toast}
         </div>
       )}
