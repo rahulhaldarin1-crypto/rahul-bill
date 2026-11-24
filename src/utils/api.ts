@@ -567,30 +567,152 @@ export const api = {
   },
 
   async sendSmartOffersMail(payload: {
-    category: string;
-    subject: string;
-    message: string;
-    recipients: SmartOfferRecipient[];
+    category?: string;
+    to?: string | string[] | Array<{ email?: string; name?: string }>;
+    subject?: string;
+    message?: string;
+    html?: string;
+    recipients?: SmartOfferRecipient[];
   }): Promise<SmartOffersSendResult> {
     const currentUser = auth.currentUser;
     if (!currentUser) {
       throw new Error('Please sign in with an authorized Admin Google account first.');
     }
-    const idToken = await currentUser.getIdToken();
-    const res = await fetch('/api/offers/send', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${idToken}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = (await res.json().catch(() => ({}))) as Partial<SmartOffersSendResult> & {
-      error?: string;
+
+    const DEFAULT_WELCOME_SUBJECT =
+      "Welcome to Glamour Galleria — You're Invited to Shop!";
+    const DEFAULT_WELCOME_MESSAGE =
+      'You are warmly invited to shop our latest collections at Glamour Galleria! Explore exclusive fashion, cosmetics, and winter wear.';
+
+    const normalizedSubject =
+      String(payload.subject || '').trim() || DEFAULT_WELCOME_SUBJECT;
+    const normalizedMessage =
+      String(payload.message || '').trim() || DEFAULT_WELCOME_MESSAGE;
+    const normalizedCategory = String(payload.category || '').trim() || 'All Categories';
+
+    const escapeHtml = (val: string) =>
+      val
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const normalizedHtml =
+      String(payload.html || '').trim() ||
+      normalizedMessage
+        .split(/\r?\n/)
+        .map((line) =>
+          line.trim()
+            ? `<p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(line)}</p>`
+            : '<div style="height:8px;"></div>'
+        )
+        .join('');
+
+    const recipientMap = new Map<string, SmartOfferRecipient>();
+    const addCandidate = (
+      rawEmail: unknown,
+      rawName?: unknown,
+      meta?: Partial<SmartOfferRecipient>
+    ) => {
+      const email = String(rawEmail || '').trim().toLowerCase();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
+      if (!recipientMap.has(email)) {
+        recipientMap.set(email, {
+          email,
+          name: String(rawName || 'Valued Customer').trim() || 'Valued Customer',
+          ...(meta?.clientId ? { clientId: meta.clientId } : {}),
+          ...(typeof meta?.orderCount === 'number' ? { orderCount: meta.orderCount } : {}),
+          ...(typeof meta?.interestScore === 'number'
+            ? { interestScore: meta.interestScore }
+            : {}),
+        });
+      }
     };
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to send Smart Offers Mail.');
+
+    if (Array.isArray(payload.recipients)) {
+      for (const item of payload.recipients) {
+        if (typeof item === 'string') {
+          addCandidate(item);
+        } else if (item && typeof item === 'object') {
+          addCandidate(item.email, item.name, item);
+        }
+      }
     }
+
+    if (typeof payload.to === 'string') {
+      for (const part of payload.to.split(/[,;]+/)) {
+        addCandidate(part);
+      }
+    } else if (Array.isArray(payload.to)) {
+      for (const item of payload.to) {
+        if (typeof item === 'string') {
+          addCandidate(item);
+        } else if (item && typeof item === 'object') {
+          addCandidate(item.email, item.name);
+        }
+      }
+    }
+
+    const normalizedRecipients = Array.from(recipientMap.values()).slice(0, 50);
+    const normalizedTo = normalizedRecipients.map((r) => r.email);
+
+    const requestBody = JSON.stringify({
+      category: normalizedCategory,
+      to: normalizedTo,
+      recipients: normalizedRecipients,
+      subject: normalizedSubject,
+      message: normalizedMessage,
+      html: normalizedHtml,
+    });
+
+    const executeRequest = async (forceTokenRefresh: boolean) => {
+      const idToken = await currentUser.getIdToken(forceTokenRefresh);
+      const res = await fetch('/api/offers/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: requestBody,
+      });
+      const rawText = await res.text().catch(() => '');
+      let data: Partial<SmartOffersSendResult> & { error?: string } = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as Partial<SmartOffersSendResult> & {
+            error?: string;
+          };
+        } catch {
+          // non-JSON response (e.g. gateway/proxy HTML)
+        }
+      }
+      return { res, rawText, data };
+    };
+
+    let responseBundle: Awaited<ReturnType<typeof executeRequest>>;
+    try {
+      responseBundle = await executeRequest(false);
+      if (responseBundle.res.status === 401) {
+        responseBundle = await executeRequest(true);
+      }
+    } catch (networkErr) {
+      throw new Error(
+        networkErr instanceof Error && networkErr.message
+          ? `Network error while sending offers email: ${networkErr.message}`
+          : 'Network error while reaching the email delivery server.'
+      );
+    }
+
+    const { res, rawText, data } = responseBundle;
+    if (!res.ok) {
+      const detailedError =
+        data.error ||
+        (rawText && !rawText.trim().startsWith('<') ? rawText.trim().slice(0, 180) : '') ||
+        `Email service returned HTTP ${res.status}. Please check server and SMTP configuration.`;
+      throw new Error(detailedError);
+    }
+
     return {
       totalRequested: Number(data.totalRequested || 0),
       sentCount: Number(data.sentCount || 0),

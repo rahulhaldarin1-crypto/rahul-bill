@@ -705,10 +705,12 @@ async function startServer(): Promise<void> {
       }
 
       const body = (req.body || {}) as {
+        to?: unknown;
         subject?: unknown;
         message?: unknown;
+        html?: unknown;
         category?: unknown;
-        recipients?: Array<{ email?: unknown; name?: unknown }>;
+        recipients?: unknown;
       };
 
       const DEFAULT_WELCOME_SUBJECT =
@@ -716,10 +718,15 @@ async function startServer(): Promise<void> {
       const DEFAULT_WELCOME_MESSAGE =
         'You are warmly invited to shop our latest collections at Glamour Galleria! Explore exclusive fashion, cosmetics, and winter wear.';
 
+      const rawMessage = String(body.message || '').trim();
+      const rawHtml = String(body.html || '').trim();
+      const fallbackPlainFromHtml = rawHtml
+        ? rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+        : '';
+
       const subject = String(body.subject || '').trim() || DEFAULT_WELCOME_SUBJECT;
-      const message = String(body.message || '').trim() || DEFAULT_WELCOME_MESSAGE;
-      const category = String(body.category || '').trim();
-      const rawRecipients = Array.isArray(body.recipients) ? body.recipients : [];
+      const message = rawMessage || fallbackPlainFromHtml || DEFAULT_WELCOME_MESSAGE;
+      const category = String(body.category || '').trim() || 'All Categories';
 
       if (subject.length > 200) {
         res.status(400).json({ error: 'Email subject cannot exceed 200 characters.' });
@@ -731,20 +738,46 @@ async function startServer(): Promise<void> {
       }
 
       const uniqueRecipients = new Map<string, { email: string; name: string }>();
-      for (const item of rawRecipients) {
-        const email = String(item?.email || '').trim().toLowerCase();
-        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+      const addNormalizedRecipient = (rawEmail: unknown, rawName?: unknown) => {
+        const email = String(rawEmail || '').trim().toLowerCase();
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
         if (!uniqueRecipients.has(email)) {
           uniqueRecipients.set(email, {
             email,
-            name: String(item?.name || 'Valued Customer').trim() || 'Valued Customer',
+            name: String(rawName || 'Valued Customer').trim() || 'Valued Customer',
           });
+        }
+      };
+
+      if (Array.isArray(body.recipients)) {
+        for (const item of body.recipients) {
+          if (typeof item === 'string') {
+            addNormalizedRecipient(item);
+          } else if (item && typeof item === 'object') {
+            const recObj = item as { email?: unknown; name?: unknown };
+            addNormalizedRecipient(recObj.email, recObj.name);
+          }
+        }
+      }
+
+      if (typeof body.to === 'string') {
+        for (const part of body.to.split(/[,;]+/)) {
+          addNormalizedRecipient(part);
+        }
+      } else if (Array.isArray(body.to)) {
+        for (const item of body.to) {
+          if (typeof item === 'string') {
+            addNormalizedRecipient(item);
+          } else if (item && typeof item === 'object') {
+            const toObj = item as { email?: unknown; name?: unknown };
+            addNormalizedRecipient(toObj.email, toObj.name);
+          }
         }
       }
 
       const recipientList = Array.from(uniqueRecipients.values()).slice(0, 50);
       if (recipientList.length === 0) {
-        res.status(400).json({ error: 'Please select at least one valid customer email address.' });
+        res.status(400).json({ error: 'No valid recipient email address was provided.' });
         return;
       }
 
@@ -782,10 +815,24 @@ async function startServer(): Promise<void> {
       let sentCount = 0;
       let failedCount = 0;
 
-      const formattedParagraphs = message
-        .split(/\r?\n/)
-        .map((line) => (line.trim() ? `<p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(line)}</p>` : '<div style="height:8px;"></div>'))
-        .join('');
+      const formattedParagraphs = rawMessage
+        ? rawMessage
+            .split(/\r?\n/)
+            .map((line) =>
+              line.trim()
+                ? `<p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(line)}</p>`
+                : '<div style="height:8px;"></div>'
+            )
+            .join('')
+        : rawHtml ||
+          message
+            .split(/\r?\n/)
+            .map((line) =>
+              line.trim()
+                ? `<p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(line)}</p>`
+                : '<div style="height:8px;"></div>'
+            )
+            .join('');
 
       for (const recipient of recipientList) {
         try {
@@ -833,8 +880,9 @@ async function startServer(): Promise<void> {
       });
     } catch (err) {
       console.error('Smart offers mail error:', err);
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : '';
       res.status(500).json({
-        error: 'Could not send Smart Offers Mail. Please verify your SMTP configuration and try again.',
+        error: `Could not send Smart Offers Mail. Please verify your SMTP configuration and try again.${detail}`,
       });
     }
   });

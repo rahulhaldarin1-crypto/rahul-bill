@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -56,6 +56,19 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim().toLowerCase());
 }
 
+function pickTopRecipients(
+  rankedPool: RankedCategoryCustomer[],
+  maxCount = 20
+): SmartOfferRecipient[] {
+  return rankedPool.slice(0, maxCount).map((c) => ({
+    email: c.email,
+    name: c.name,
+    clientId: c.clientId,
+    orderCount: c.orderCount,
+    interestScore: c.score,
+  }));
+}
+
 function pickRandomTopRecipients(
   rankedPool: RankedCategoryCustomer[],
   maxCount = 20
@@ -98,10 +111,9 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
     return Array.from(set);
   }, [products, clients]);
 
-  const [selectedCategory, setSelectedCategory] = useState<string>(
-    availableCategories[0] || PRODUCT_CATEGORIES[0]
-  );
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [recipients, setRecipients] = useState<SmartOfferRecipient[]>([]);
+  const autoSelectedCategoryRef = useRef<string | null>(null);
   const [extraEmail, setExtraEmail] = useState('');
   const [extraName, setExtraName] = useState('');
   const [subject, setSubject] = useState('');
@@ -125,7 +137,7 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
   }, [products]);
 
   // Combine tracked categoryInterests + legacy orders/invoices per customer
-  const rankedCustomersForCategory = useMemo(() => {
+  const { rankedCustomersForCategory, allEligibleCustomers } = useMemo(() => {
     const historicalStats = new Map<
       string,
       Map<string, number>
@@ -193,89 +205,120 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
       }
     }
 
-    const candidates: RankedCategoryCustomer[] = [];
-    const seenEmails = new Set<string>();
+    const overallPool: RankedCategoryCustomer[] = [];
+    const seenOverallEmails = new Set<string>();
+    const categoryCandidates: RankedCategoryCustomer[] = [];
+    const seenCategoryEmails = new Set<string>();
 
     for (const c of clients) {
       const email = String(c.email || '').trim().toLowerCase();
-      if (!email || !isValidEmail(email) || seenEmails.has(email)) continue;
+      if (!email || !isValidEmail(email)) continue;
 
       const histMap = historicalStats.get(c.id);
-      if (selectedCategory === 'ALL') {
-        const trackedEntries = Object.values(c.categoryInterests || {});
-        const trackedOrders = trackedEntries.reduce(
-          (sum, e) => sum + Math.max(0, Number(e?.orders) || 0),
-          0
-        );
-        const histOrders = histMap
-          ? Array.from(histMap.values()).reduce((sum, n) => sum + n, 0)
-          : 0;
-        const orderCount = Math.max(trackedOrders, histOrders);
-        const searches = trackedEntries.reduce(
-          (sum, e) => sum + Math.max(0, Number(e?.searches) || 0),
-          0
-        );
-        const views = trackedEntries.reduce(
-          (sum, e) => sum + Math.max(0, Number(e?.views) || 0),
-          0
-        );
-        const score = Math.max(
-          trackedEntries.reduce((sum, e) => sum + Math.max(0, Number(e?.score) || 0), 0),
-          computeCategoryScore(searches, views, orderCount)
-        );
-        if (orderCount === 0 && score === 0) continue;
-        seenEmails.add(email);
-        candidates.push({
+      const trackedEntries = Object.values(c.categoryInterests || {});
+      const trackedOrders = trackedEntries.reduce(
+        (sum, e) => sum + Math.max(0, Number(e?.orders) || 0),
+        0
+      );
+      const histOrders = histMap
+        ? Array.from(histMap.values()).reduce((sum, n) => sum + n, 0)
+        : 0;
+      const overallOrderCount = Math.max(
+        trackedOrders,
+        histOrders,
+        Math.max(0, Number(c.totalCategoryOrders) || 0)
+      );
+      const overallSearches = trackedEntries.reduce(
+        (sum, e) => sum + Math.max(0, Number(e?.searches) || 0),
+        0
+      );
+      const overallViews = trackedEntries.reduce(
+        (sum, e) => sum + Math.max(0, Number(e?.views) || 0),
+        0
+      );
+      const overallScore = Math.max(
+        trackedEntries.reduce((sum, e) => sum + Math.max(0, Number(e?.score) || 0), 0),
+        computeCategoryScore(overallSearches, overallViews, overallOrderCount)
+      );
+
+      if (!seenOverallEmails.has(email)) {
+        seenOverallEmails.add(email);
+        overallPool.push({
           clientId: c.id,
           name: c.name,
           email,
-          orderCount,
-          searches,
-          views,
-          score,
+          orderCount: overallOrderCount,
+          searches: overallSearches,
+          views: overallViews,
+          score: overallScore,
           lastActivityAt: c.updatedAt || c.createdAt || '',
         });
-      } else {
+      }
+
+      if (selectedCategory !== 'ALL' && !seenCategoryEmails.has(email)) {
         const entry = c.categoryInterests?.[selectedCategory];
-        const histOrders = histMap?.get(selectedCategory) || 0;
-        const orderCount = Math.max(Number(entry?.orders) || 0, histOrders);
-        const searches = Math.max(0, Number(entry?.searches) || 0);
-        const views = Math.max(0, Number(entry?.views) || 0);
-        const score = Math.max(
+        const catHistOrders = histMap?.get(selectedCategory) || 0;
+        const catOrderCount = Math.max(Number(entry?.orders) || 0, catHistOrders);
+        const catSearches = Math.max(0, Number(entry?.searches) || 0);
+        const catViews = Math.max(0, Number(entry?.views) || 0);
+        const catScore = Math.max(
           Number(entry?.score) || 0,
-          computeCategoryScore(searches, views, orderCount)
+          computeCategoryScore(catSearches, catViews, catOrderCount)
         );
-        if (orderCount === 0 && searches === 0 && views === 0) continue;
-        seenEmails.add(email);
-        candidates.push({
-          clientId: c.id,
-          name: c.name,
-          email,
-          orderCount,
-          searches,
-          views,
-          score,
-          lastActivityAt: entry?.lastActivityAt || c.updatedAt || '',
-        });
+        if (catOrderCount > 0 || catSearches > 0 || catViews > 0) {
+          seenCategoryEmails.add(email);
+          categoryCandidates.push({
+            clientId: c.id,
+            name: c.name,
+            email,
+            orderCount: catOrderCount,
+            searches: catSearches,
+            views: catViews,
+            score: catScore,
+            lastActivityAt: entry?.lastActivityAt || c.updatedAt || '',
+          });
+        }
       }
     }
 
-    // Sort highest ordering first, then engagement score, then recency
-    candidates.sort((a, b) => {
-      if (b.orderCount !== a.orderCount) return b.orderCount - a.orderCount;
-      if (b.score !== a.score) return b.score - a.score;
-      return String(b.lastActivityAt).localeCompare(String(a.lastActivityAt));
-    });
+    const sortRanked = (list: RankedCategoryCustomer[]) =>
+      list.sort((a, b) => {
+        if (b.orderCount !== a.orderCount) return b.orderCount - a.orderCount;
+        if (b.score !== a.score) return b.score - a.score;
+        return String(b.lastActivityAt).localeCompare(String(a.lastActivityAt));
+      });
 
-    return candidates;
+    sortRanked(overallPool);
+    sortRanked(categoryCandidates);
+
+    return {
+      allEligibleCustomers: overallPool,
+      rankedCustomersForCategory:
+        selectedCategory === 'ALL' ? overallPool : categoryCandidates,
+    };
   }, [clients, orders, invoices, selectedCategory, productCategoryLookup]);
 
-  // Auto-select random up to 20 highest-ordering customers whenever category changes
-  useEffect(() => {
-    setRecipients(pickRandomTopRecipients(rankedCustomersForCategory, 20));
+  const handleSelectCategory = (cat: string) => {
+    autoSelectedCategoryRef.current = null;
+    setSelectedCategory(cat);
     setDeliveryResult(null);
     setError('');
-  }, [selectedCategory, rankedCustomersForCategory]);
+  };
+
+  // Auto-select top highest-ordering customers once per category without resetting manual toggles
+  useEffect(() => {
+    if (autoSelectedCategoryRef.current === selectedCategory) return;
+    if (rankedCustomersForCategory.length > 0) {
+      setRecipients(pickTopRecipients(rankedCustomersForCategory, 20));
+      autoSelectedCategoryRef.current = selectedCategory;
+    } else if (clients.length > 0) {
+      setRecipients([]);
+      autoSelectedCategoryRef.current = selectedCategory;
+    }
+  }, [selectedCategory, rankedCustomersForCategory, clients.length]);
+
+  const fallbackTopCustomer =
+    rankedCustomersForCategory[0] || allEligibleCustomers[0] || null;
 
   const selectedEmailSet = useMemo(
     () => new Set(recipients.map((r) => r.email.toLowerCase())),
@@ -389,8 +432,20 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
       }
     }
 
+    if (recipientsToSend.length === 0 && fallbackTopCustomer) {
+      recipientsToSend = [
+        {
+          email: fallbackTopCustomer.email,
+          name: fallbackTopCustomer.name,
+          clientId: fallbackTopCustomer.clientId,
+          orderCount: fallbackTopCustomer.orderCount,
+          interestScore: fallbackTopCustomer.score,
+        },
+      ];
+    }
+
     if (recipientsToSend.length === 0) {
-      setError('Please select or add at least one customer email address.');
+      setError('No customer email address is available yet. Enter an email address in the Extra Email field to send.');
       return;
     }
 
@@ -401,19 +456,22 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
     try {
       const result = await api.sendSmartOffersMail({
         category: selectedCategory === 'ALL' ? 'All Categories' : selectedCategory,
+        to: recipientsToSend.map((r) => r.email),
         subject: resolvedSubject,
         message: resolvedMessage,
         recipients: recipientsToSend,
       });
-      if (pendingExtraEmail) {
+      if (pendingExtraEmail || recipients.length === 0) {
         setRecipients(recipientsToSend);
+      }
+      if (pendingExtraEmail) {
         setExtraEmail('');
         setExtraName('');
       }
       setDeliveryResult(result);
     } catch (err) {
       setError(
-        formatApiError(err, 'Could not send Smart Offers Mail. Please try again.')
+        formatApiError(err, 'Could not send Smart Offers Mail. Please verify your SMTP configuration and try again.')
       );
     } finally {
       setSending(false);
@@ -473,7 +531,7 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <button
             type="button"
-            onClick={() => setSelectedCategory('ALL')}
+            onClick={() => handleSelectCategory('ALL')}
             className={`rounded-xl px-3.5 py-2 text-xs font-bold border transition-colors cursor-pointer ${
               selectedCategory === 'ALL'
                 ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
@@ -486,7 +544,7 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
             <button
               key={cat}
               type="button"
-              onClick={() => setSelectedCategory(cat)}
+              onClick={() => handleSelectCategory(cat)}
               className={`rounded-xl px-3.5 py-2 text-xs font-bold border transition-colors cursor-pointer ${
                 selectedCategory === cat
                   ? 'border-[#DB2777] bg-[#DB2777] text-white'
@@ -520,7 +578,16 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
           {/* Selected Recipients Chips */}
           {recipients.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-[#E6D9EE] bg-[#FDF9FC] p-5 text-center text-xs text-[#6B5B7B]">
-              No customers with verified emails detected yet for <strong>{displayCategoryName}</strong>. Select another category or add email addresses manually below.
+              {fallbackTopCustomer ? (
+                <>
+                  No customers manually selected for <strong>{displayCategoryName}</strong>. Clicking Send will automatically fall back to your top customer{' '}
+                  <strong>{fallbackTopCustomer.name}</strong> ({fallbackTopCustomer.email}), or you can toggle customers below.
+                </>
+              ) : (
+                <>
+                  No customers with verified emails detected yet for <strong>{displayCategoryName}</strong>. Select another category or add an email address manually below.
+                </>
+              )}
             </div>
           ) : (
             <div className="flex flex-wrap gap-2 max-h-56 overflow-y-auto pr-1">
@@ -715,7 +782,14 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
                   </div>
                 </div>
                 <p className="text-[#4A3B59]">
-                  Hello <strong>{recipients[0]?.name || 'Valued Customer'}</strong>,
+                  Hello{' '}
+                  <strong>
+                    {recipients[0]?.name ||
+                      extraName.trim() ||
+                      fallbackTopCustomer?.name ||
+                      'Valued Customer'}
+                  </strong>
+                  ,
                 </p>
                 <div className="whitespace-pre-wrap text-[#2E1F3D] leading-relaxed break-words">
                   {message.trim() || DEFAULT_WELCOME_MESSAGE}
@@ -729,27 +803,58 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
 
             <button
               type="submit"
-              disabled={sending || (recipients.length === 0 && !extraEmail.trim())}
+              disabled={
+                sending ||
+                (recipients.length === 0 &&
+                  !extraEmail.trim() &&
+                  !fallbackTopCustomer)
+              }
               className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-5 text-sm font-bold text-white hover:opacity-95 transition-opacity cursor-pointer disabled:opacity-60"
             >
               <Send className="w-4 h-4" />
               <span>
                 {sending
-                  ? `Sending to ${recipients.length || 1} Customers...`
-                  : `Send Smart Offers Mail (${recipients.length} Recipients)`}
+                  ? `Sending to ${recipients.length || 1} Customer(s)...`
+                  : recipients.length > 0
+                  ? `Send Smart Offers Mail (${recipients.length} Recipients)`
+                  : extraEmail.trim()
+                  ? 'Send Smart Offers Mail (1 Extra Recipient)'
+                  : fallbackTopCustomer
+                  ? `Send Smart Offers Mail (Auto: ${fallbackTopCustomer.name})`
+                  : 'Send Smart Offers Mail'}
               </span>
             </button>
           </form>
 
           {/* Delivery Summary */}
           {deliveryResult && (
-            <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] p-4 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-bold text-[#15803D] flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>Delivery Summary</span>
+            <div
+              className={`rounded-2xl border p-4 space-y-3 ${
+                deliveryResult.sentCount > 0 && deliveryResult.failedCount === 0
+                  ? 'border-[#BBF7D0] bg-[#F0FDF4]'
+                  : deliveryResult.sentCount > 0
+                  ? 'border-[#FDE68A] bg-[#FFFBEB]'
+                  : 'border-[#FECDD3] bg-[#FFF1F2]'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div
+                  className={`text-xs font-bold flex items-center gap-1.5 ${
+                    deliveryResult.sentCount > 0 ? 'text-[#15803D]' : 'text-[#BE123C]'
+                  }`}
+                >
+                  {deliveryResult.sentCount > 0 ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <XCircle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>
+                    {deliveryResult.sentCount > 0
+                      ? 'Delivery Summary'
+                      : 'Delivery Failed'}
+                  </span>
                 </div>
-                <span className="text-[11px] font-mono-num text-[#166534]">
+                <span className="text-[11px] font-mono-num text-[#4A3B59]">
                   From: {deliveryResult.senderDisplay}
                 </span>
               </div>
@@ -775,28 +880,27 @@ export const SmartOffersMailView: React.FC<SmartOffersMailViewProps> = ({
                 </div>
               </div>
 
-              <div className="max-h-44 overflow-y-auto rounded-xl border border-[#DCFCE7] bg-white divide-y divide-[#F4ECF8]">
+              <div className="max-h-48 overflow-y-auto rounded-xl border border-[#EFE2F5] bg-white divide-y divide-[#F4ECF8]">
                 {deliveryResult.logs.map((item) => (
-                  <div
-                    key={item.email}
-                    className="flex items-center justify-between gap-2 px-3 py-1.5 text-[11px]"
-                  >
-                    <span className="truncate text-[#1F122B]">
-                      {item.email}
-                    </span>
-                    {item.status === 'sent' ? (
-                      <span className="inline-flex items-center gap-1 font-bold text-[#15803D] shrink-0">
-                        <CheckCircle2 className="w-3 h-3" />
-                        Sent
-                      </span>
-                    ) : (
-                      <span
-                        title={item.error || 'Delivery failed'}
-                        className="inline-flex items-center gap-1 font-bold text-[#BE123C] shrink-0"
-                      >
-                        <XCircle className="w-3 h-3" />
-                        Failed
-                      </span>
+                  <div key={item.email} className="px-3 py-2 text-[11px] space-y-0.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-[#1F122B]">{item.email}</span>
+                      {item.status === 'sent' ? (
+                        <span className="inline-flex items-center gap-1 font-bold text-[#15803D] shrink-0">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Sent
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 font-bold text-[#BE123C] shrink-0">
+                          <XCircle className="w-3 h-3" />
+                          Failed
+                        </span>
+                      )}
+                    </div>
+                    {item.status === 'failed' && item.error && (
+                      <div className="text-[10px] text-[#BE123C] break-words">
+                        {item.error}
+                      </div>
                     )}
                   </div>
                 ))}
