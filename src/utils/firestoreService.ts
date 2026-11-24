@@ -41,6 +41,7 @@ import {
   SellerApprovalStatus,
   SellerFollowRecord,
   SellerPublicPaymentProfile,
+  SentMailRecord,
   SupportChatMessage,
   SupportChatThread,
   SupportSenderRole,
@@ -95,6 +96,45 @@ const HIGHLIGHT_REQUESTS_COL = 'highlight_requests';
 const SUPPORT_CHATS_COL = 'support_chats';
 const EMAIL_OTPS_COL = 'email_otps';
 const MEDIA_RECORDS_COL = 'media_records';
+const SENT_MAIL_BOX_DOC = 'sent_mail_box';
+const SENT_MAIL_LOCAL_KEY = 'gg_admin_sent_mail_box_v1';
+
+function readLocalSentMails(): SentMailRecord[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(SENT_MAIL_LOCAL_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as SentMailRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalSentMails(records: SentMailRecord[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SENT_MAIL_LOCAL_KEY, JSON.stringify(records.slice(0, 150)));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function mergeSentMailRecords(
+  primary: SentMailRecord[],
+  secondary: SentMailRecord[]
+): SentMailRecord[] {
+  const map = new Map<string, SentMailRecord>();
+  for (const item of [...primary, ...secondary]) {
+    if (!item || !item.id || !item.recipientEmail) continue;
+    if (!map.has(item.id)) {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values())
+    .sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')))
+    .slice(0, 150);
+}
 
 function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -5018,6 +5058,55 @@ export const firestoreService = {
       return { verifiedAt: now };
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `${SETTINGS_COL}/${SETTINGS_DOC}`);
+    }
+  },
+
+  async fetchSentMailHistory(): Promise<SentMailRecord[]> {
+    const local = readLocalSentMails();
+    try {
+      const snap = await getDoc(doc(db, SETTINGS_COL, SENT_MAIL_BOX_DOC));
+      const remoteRaw = snap.exists() ? (snap.data() as { items?: unknown }).items : [];
+      const remote = Array.isArray(remoteRaw) ? (remoteRaw as SentMailRecord[]) : [];
+      const merged = mergeSentMailRecords(remote, local);
+      writeLocalSentMails(merged);
+      return merged;
+    } catch {
+      return local;
+    }
+  },
+
+  async appendSentMailHistory(entries: SentMailRecord[]): Promise<SentMailRecord[]> {
+    const cleanEntries = entries.map((e) =>
+      stripUndefinedDeep({
+        ...e,
+        messagePreview: String(e.messagePreview || '').slice(0, 400),
+      })
+    );
+    const local = readLocalSentMails();
+    const optimistic = mergeSentMailRecords(cleanEntries, local);
+    writeLocalSentMails(optimistic);
+
+    try {
+      const ref = doc(db, SETTINGS_COL, SENT_MAIL_BOX_DOC);
+      const snap = await getDoc(ref);
+      const remoteRaw = snap.exists() ? (snap.data() as { items?: unknown }).items : [];
+      const remote = Array.isArray(remoteRaw) ? (remoteRaw as SentMailRecord[]) : [];
+      const merged = mergeSentMailRecords(optimistic, remote);
+      writeLocalSentMails(merged);
+      await setDoc(
+        ref,
+        stripUndefinedDeep({
+          businessName: 'Glamour Galleria',
+          currencySymbol: '₹',
+          currencyCode: 'INR',
+          invoicePrefix: 'GG-',
+          items: merged,
+          updatedAt: new Date().toISOString(),
+        })
+      );
+      return merged;
+    } catch {
+      return optimistic;
     }
   },
 };

@@ -761,7 +761,7 @@ async function startServer(): Promise<void> {
       }
 
       if (typeof body.to === 'string') {
-        for (const part of body.to.split(/[,;]+/)) {
+        for (const part of body.to.split(/[\s,;]+/)) {
           addNormalizedRecipient(part);
         }
       } else if (Array.isArray(body.to)) {
@@ -775,7 +775,7 @@ async function startServer(): Promise<void> {
         }
       }
 
-      const recipientList = Array.from(uniqueRecipients.values()).slice(0, 50);
+      const recipientList = Array.from(uniqueRecipients.values()).slice(0, 100);
       if (recipientList.length === 0) {
         res.status(400).json({ error: 'No valid recipient email address was provided.' });
         return;
@@ -834,7 +834,8 @@ async function startServer(): Promise<void> {
             )
             .join('');
 
-      for (const recipient of recipientList) {
+      const CUSTOMER_PANEL_URL = 'https://glamour-galleria.vercel.app';
+      const sendSingleRecipient = async (recipient: { email: string; name: string }) => {
         try {
           const personalizedHtml = `
             <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; border: 1px solid #EFE2F5; border-radius: 16px; background: #FDF9FC; color: #1F122B;">
@@ -846,10 +847,16 @@ async function startServer(): Promise<void> {
               <div style="font-size: 14px; color: #2E1F3D; background: #FFFFFF; border: 1px solid #EFE2F5; border-radius: 12px; padding: 18px;">
                 ${formattedParagraphs}
               </div>
+              <div style="margin: 20px 0 8px; text-align: center;">
+                <a href="${CUSTOMER_PANEL_URL}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 12px 24px; border-radius: 10px; background-color: #7E22CE; background: linear-gradient(135deg, #DB2777, #7E22CE); color: #FFFFFF; text-decoration: none; font-weight: bold; font-size: 14px;">Visit Glamour Galleria</a>
+                <div style="margin-top: 8px; font-size: 11px; color: #6B5B7B;">
+                  Shop now: <a href="${CUSTOMER_PANEL_URL}" target="_blank" rel="noopener noreferrer" style="color: #7E22CE; text-decoration: underline;">${CUSTOMER_PANEL_URL}</a>
+                </div>
+              </div>
               <p style="margin: 18px 0 0; font-size: 12px; color: #6B5B7B;">Warm regards,<br/><strong>Glamour Galleria</strong></p>
             </div>
           `;
-          const personalizedText = `Hello ${recipient.name},\n\n${message}\n\nWarm regards,\nGlamour Galleria`;
+          const personalizedText = `Hello ${recipient.name},\n\n${message}\n\nVisit Glamour Galleria: ${CUSTOMER_PANEL_URL}\n\nWarm regards,\nGlamour Galleria`;
 
           await transporter.sendMail({
             from: senderDisplay,
@@ -859,16 +866,23 @@ async function startServer(): Promise<void> {
             html: personalizedHtml,
           });
           sentCount += 1;
-          logs.push({ email: recipient.email, name: recipient.name, status: 'sent' });
+          return { email: recipient.email, name: recipient.name, status: 'sent' as const };
         } catch (sendErr) {
           failedCount += 1;
-          logs.push({
+          return {
             email: recipient.email,
             name: recipient.name,
-            status: 'failed',
+            status: 'failed' as const,
             error: sendErr instanceof Error ? sendErr.message : 'Delivery failed',
-          });
+          };
         }
+      };
+
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < recipientList.length; i += CHUNK_SIZE) {
+        const chunk = recipientList.slice(i, i + CHUNK_SIZE);
+        const chunkLogs = await Promise.all(chunk.map((r) => sendSingleRecipient(r)));
+        logs.push(...chunkLogs);
       }
 
       res.json({

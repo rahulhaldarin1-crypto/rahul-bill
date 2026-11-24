@@ -22,6 +22,7 @@ import {
   SellerApprovalStatus,
   SellerFollowRecord,
   SellerPublicPaymentProfile,
+  SentMailRecord,
   SmartOfferRecipient,
   SmartOffersSendResult,
   SupportChatThread,
@@ -598,16 +599,17 @@ export const api = {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 
+    const CUSTOMER_PANEL_URL = 'https://glamour-galleria.vercel.app';
     const normalizedHtml =
       String(payload.html || '').trim() ||
-      normalizedMessage
+      `${normalizedMessage
         .split(/\r?\n/)
         .map((line) =>
           line.trim()
             ? `<p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(line)}</p>`
             : '<div style="height:8px;"></div>'
         )
-        .join('');
+        .join('')}<div style="margin:18px 0 6px;text-align:center;"><a href="${CUSTOMER_PANEL_URL}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 20px;border-radius:10px;background-color:#7E22CE;color:#FFFFFF;text-decoration:none;font-weight:bold;font-size:13px;">Visit Glamour Galleria</a></div>`;
 
     const recipientMap = new Map<string, SmartOfferRecipient>();
     const addCandidate = (
@@ -641,7 +643,7 @@ export const api = {
     }
 
     if (typeof payload.to === 'string') {
-      for (const part of payload.to.split(/[,;]+/)) {
+      for (const part of payload.to.split(/[\s,;]+/)) {
         addCandidate(part);
       }
     } else if (Array.isArray(payload.to)) {
@@ -654,7 +656,7 @@ export const api = {
       }
     }
 
-    const normalizedRecipients = Array.from(recipientMap.values()).slice(0, 50);
+    const normalizedRecipients = Array.from(recipientMap.values()).slice(0, 100);
     const normalizedTo = normalizedRecipients.map((r) => r.email);
 
     const requestBody = JSON.stringify({
@@ -720,5 +722,13 @@ export const api = {
       senderDisplay: String(data.senderDisplay || '"Glamour Galleria"'),
       logs: Array.isArray(data.logs) ? data.logs : [],
     };
+  },
+
+  fetchSentMailHistory() {
+    return firestoreService.fetchSentMailHistory();
+  },
+
+  appendSentMailHistory(entries: SentMailRecord[]) {
+    return firestoreService.appendSentMailHistory(entries);
   },
 };

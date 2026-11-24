@@ -603,12 +603,18 @@ export interface WorkspaceData {
   productReviews?: ProductReview[];
 }
 
+export type SentMailRecipientType =
+  | 'Customer'
+  | 'Direct Client'
+  | 'Random / External';
+
 export interface SmartOfferRecipient {
   email: string;
   name?: string;
   clientId?: string;
   orderCount?: number;
   interestScore?: number;
+  recipientType?: SentMailRecipientType;
 }
 
 export interface SmartOffersSendDeliveryItem {
@@ -624,4 +630,17 @@ export interface SmartOffersSendResult {
   failedCount: number;
   senderDisplay: string;
   logs: SmartOffersSendDeliveryItem[];
+}
+
+export interface SentMailRecord {
+  id: string;
+  recipientEmail: string;
+  recipientName: string;
+  recipientType: SentMailRecipientType;
+  subject: string;
+  messagePreview: string;
+  category?: string;
+  status: 'sent' | 'failed';
+  error?: string;
+  sentAt: string;
 }

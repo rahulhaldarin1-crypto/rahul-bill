@@ -177,6 +177,12 @@ export default function App() {
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [billClientId, setBillClientId] = useState<string | null>(null);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+  const [directMailTarget, setDirectMailTarget] = useState<{
+    email: string;
+    name: string;
+    clientId?: string;
+    nonce: number;
+  } | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
 
@@ -403,6 +409,10 @@ export default function App() {
         setEditingInvoice(null);
       }
 
+      if (nextRoute !== 'smart-offers-mail') {
+        setDirectMailTarget(null);
+      }
+
       setSelectedClientId(nextClientId);
       setRoute(nextRoute);
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -411,6 +421,7 @@ export default function App() {
   );
 
   const goBack = useCallback(() => {
+    setDirectMailTarget(null);
     if (history.length > 0) {
       const prev = history[history.length - 1];
       setHistory((h) => h.slice(0, -1));
@@ -1096,7 +1107,10 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => navigateTo('smart-offers-mail')}
+              onClick={() => {
+                setDirectMailTarget(null);
+                navigateTo('smart-offers-mail');
+              }}
               className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 route === 'smart-offers-mail'
                   ? 'border-[#DB2777] bg-[#FDF2F8] text-[#9D174D]'
@@ -1184,6 +1198,15 @@ export default function App() {
                 editInvoice: null,
               })
             }
+            onMailClient={(client) => {
+              setDirectMailTarget({
+                email: String(client.email || '').trim().toLowerCase(),
+                name: client.name,
+                clientId: client.id,
+                nonce: Date.now(),
+              });
+              navigateTo('smart-offers-mail');
+            }}
             onOpenInvoice={(inv) =>
               navigateTo('client-bill', { editInvoice: inv })
             }
@@ -1330,6 +1353,8 @@ export default function App() {
             invoices={workspace.invoices}
             products={workspace.products}
             businessName={workspace.settings.businessName || 'Glamour Galleria'}
+            directTarget={directMailTarget}
+            onClearDirectTarget={() => setDirectMailTarget(null)}
             onBack={goBack}
           />
         )}
