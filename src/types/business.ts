@@ -445,6 +445,7 @@ export type SellerAccountStatus = 'pending' | 'approved' | 'rejected' | 'suspend
 export interface SellerApplication {
   id: string;
   clientId?: string;
+  authUid?: string;
   sellerCode?: string;
   name: string;
   email?: string;

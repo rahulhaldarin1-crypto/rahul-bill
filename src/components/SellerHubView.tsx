@@ -15,7 +15,6 @@ import {
   EyeOff,
   FileText,
   Image as ImageIcon,
-  KeyRound,
   LifeBuoy,
   LogIn,
   LogOut,
@@ -45,6 +44,7 @@ import {
   SellerApplication,
   SellerFollowRecord,
 } from '../types/business';
+import { auth, getRedirectResult, signInWithGoogleWithFallback } from '../firebase';
 import { getSellerSessionId, setSellerSessionId } from '../utils/adminAuth';
 import { api, formatApiError } from '../utils/api';
 import {
@@ -115,7 +115,15 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   // Strict Privacy: Unauthenticated visitors only see 'login' or 'apply' — never any status lookup tab.
   const [hubTab, setHubTab] = useState<'login' | 'apply'>('login');
 
-  // Seller Login State
+  // Seller Google Auth & Legacy Login State
+  const [googleSellerAuth, setGoogleSellerAuth] = useState<{
+    uid: string;
+    email: string;
+    displayName: string;
+    photoURL: string;
+  } | null>(null);
+  const [googleSigningIn, setGoogleSigningIn] = useState(false);
+  const [showLegacyPasswordLogin, setShowLegacyPasswordLogin] = useState(false);
   const [loginIdent, setLoginIdent] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
@@ -197,8 +205,6 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [panNumber, setPanNumber] = useState('');
   const [aadhaarNumber, setAadhaarNumber] = useState('');
   const [gstNumber, setGstNumber] = useState('');
-  const [regPassword, setRegPassword] = useState('');
-  const [showRegPassword, setShowRegPassword] = useState(false);
   const [bankAccountDetails, setBankAccountDetails] = useState('');
 
   const [sellerPhotoDataUrl, setSellerPhotoDataUrl] = useState('');
@@ -365,24 +371,130 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     return enabledPlans.find((p) => p.id === selectedChoiceId) || null;
   }, [selectedChoiceType, selectedChoiceId, enabledOfferSeats, enabledPlans]);
 
-  // Soft (non-blocking) hints for PAN & Aadhaar typos
-  const panFormatHint = useMemo(() => {
-    const clean = panNumber.trim().toUpperCase();
-    if (!clean) return '';
-    if (!/^[A-Z]{5}\d{4}[A-Z]$/.test(clean)) {
-      return 'Optional hint: Standard PAN is 10 chars like ABCDE1234F (you can still submit).';
-    }
-    return '';
-  }, [panNumber]);
+  const applyResolvedGoogleSellerUser = async (user: {
+    uid: string;
+    email: string | null;
+    displayName: string | null;
+    photoURL: string | null;
+  }) => {
+    const resolved = await api.resolveGoogleSellerAccount({
+      uid: user.uid,
+      email: user.email,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+    });
 
-  const aadhaarFormatHint = useMemo(() => {
-    const clean = aadhaarNumber.trim();
-    if (!clean) return '';
-    if (!/^\d{12}$/.test(clean)) {
-      return 'Optional hint: Standard Aadhaar has 12 digits (you can still submit).';
+    if (!resolved.needsKyc && resolved.seller) {
+      setLoggedInSeller(resolved.seller);
+      setSellerSessionId(resolved.seller.id);
+      setSellerSessionIdState(resolved.seller.id);
+      setGoogleSellerAuth(null);
+      setEditingRejected(false);
+      setLoginPassword('');
+      return;
     }
-    return '';
-  }, [aadhaarNumber]);
+
+    const cleanEmail = String(user.email || '').trim().toLowerCase();
+    const cleanName = String(user.displayName || '').trim();
+    const cleanPhoto = String(user.photoURL || '').trim();
+    setGoogleSellerAuth({
+      uid: user.uid,
+      email: cleanEmail,
+      displayName: cleanName,
+      photoURL: cleanPhoto,
+    });
+    if (cleanEmail) setEmail(cleanEmail);
+    if (cleanName) setName((prev) => prev || cleanName);
+    setEditingRejected(false);
+    setHubTab('apply');
+    setError('');
+    setLoginError('');
+  };
+
+  // Recover mobile browser Google Sign-In redirect result for Seller Hub
+  useEffect(() => {
+    let active = true;
+    const intent = (() => {
+      try {
+        return sessionStorage.getItem('gg_google_auth_intent');
+      } catch {
+        return null;
+      }
+    })();
+    if (intent !== 'seller') return;
+
+    setGoogleSigningIn(true);
+    getRedirectResult(auth)
+      .then(async (result) => {
+        try {
+          sessionStorage.removeItem('gg_google_auth_intent');
+        } catch {
+          // ignore storage errors
+        }
+        if (!active || !result?.user) return;
+        await applyResolvedGoogleSellerUser(result.user);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setLoginError(
+          formatApiError(err, 'Could not complete Google Sign-In for Seller Hub.')
+        );
+      })
+      .finally(() => {
+        if (active) setGoogleSigningIn(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSellerGoogleSignIn = async () => {
+    setLoginError('');
+    setError('');
+    setForgotSuccessMsg('');
+    setSuccessMsg('');
+    setGoogleSigningIn(true);
+    try {
+      try {
+        sessionStorage.setItem('gg_google_auth_intent', 'seller');
+      } catch {
+        // ignore storage errors
+      }
+      const result = await signInWithGoogleWithFallback();
+      if (result.redirected || !result.user) {
+        return;
+      }
+      try {
+        sessionStorage.removeItem('gg_google_auth_intent');
+      } catch {
+        // ignore storage errors
+      }
+      await applyResolvedGoogleSellerUser(result.user);
+    } catch (err: unknown) {
+      try {
+        sessionStorage.removeItem('gg_google_auth_intent');
+      } catch {
+        // ignore storage errors
+      }
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
+      const msg =
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
+          ? 'Google sign-in was cancelled. Please try again.'
+          : formatApiError(
+              err,
+              'Could not complete Google Sign-In. Please try again.'
+            );
+      setLoginError(msg);
+      setError(msg);
+    } finally {
+      setGoogleSigningIn(false);
+    }
+  };
 
   const handleSellerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -409,7 +521,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const handleSellerForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(
-      'Email OTP reset is temporarily disabled. Please contact Admin Support in Help Center to reset your Seller password.'
+      'Email OTP reset is temporarily disabled. You can sign in directly with your linked Google account or contact Admin Support in Help Center.'
     );
   };
 
@@ -417,6 +529,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     setSellerSessionId(null);
     setSellerSessionIdState(null);
     setLoggedInSeller(null);
+    setGoogleSellerAuth(null);
     setEditingRejected(false);
     setHighlightTargetProduct(null);
     setSuccessMsg('');
@@ -482,7 +595,6 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     setAadhaarDocDataUrl(loggedInSeller.aadhaarDocDataUrl);
     setGstDocDataUrl(loggedInSeller.gstDocDataUrl || '');
     setBankDocDataUrl(loggedInSeller.bankDocDataUrl);
-    setRegPassword('');
     setError('');
     setSuccessMsg('');
     setEditingRejected(true);
@@ -501,12 +613,9 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       return;
     }
 
-    // Email OTP verification is temporarily disabled during Seller Registration.
-
-    if (!editingRejected && regPassword.trim().length < 4) {
-      setError(
-        'Please create a Seller Login Password (minimum 4 characters).'
-      );
+    // Email OTP verification is temporarily disabled during Seller Registration; Google Sign-In replaces separate password creation.
+    if (!editingRejected && !googleSellerAuth) {
+      setError('Please sign in with Google first to link your Seller account.');
       return;
     }
 
@@ -515,8 +624,9 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       const saved = await api.submitSellerApplication({
         existingId: editingRejected ? loggedInSeller?.id : undefined,
         clientId: loggedInCustomer?.id,
+        authUid: googleSellerAuth?.uid || loggedInSeller?.authUid,
         name,
-        email,
+        email: googleSellerAuth?.email || email,
         otpId: undefined,
         dateOfBirth: dobCheck.dob,
         fullAddress,
@@ -524,7 +634,6 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         panNumber,
         aadhaarNumber,
         gstNumber,
-        password: regPassword,
         sellerPhotoDataUrl,
         sellerCoverPhotoDataUrl,
         panDocDataUrl,
@@ -538,6 +647,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       setSellerSessionId(saved.id);
       setSellerSessionIdState(saved.id);
       setLoggedInSeller(saved);
+      setGoogleSellerAuth(null);
       setEditingRejected(false);
       setSuccessMsg(
         `Application submitted! Your Seller ID is ${saved.sellerCode || 'Pending'} (Status: Pending Admin Approval).`
@@ -2252,24 +2362,18 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         </div>
       </div>
 
-      {/* TAB A: FLEXIBLE SELLER LOGIN (ALL STATUSES PRIVATE AFTER AUTH) */}
+      {/* TAB A: SELLER SIGN IN WITH GOOGLE (WITH OPTIONAL LEGACY PASSWORD SIGN-IN) */}
       {hubTab === 'login' && !editingRejected && (
         <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-8 max-w-lg mx-auto space-y-5 shadow-sm">
           <div className="space-y-1 text-center">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#DB2777] to-[#7E22CE] text-white flex items-center justify-center mx-auto">
-              <KeyRound className="w-6 h-6" />
+              <Store className="w-6 h-6" />
             </div>
             <h1 className="font-display-serif text-2xl font-bold text-[#1F122B] pt-1">
-              {loginForgotMode ? 'Reset Seller Password' : 'Seller Hub Sign In'}
+              Seller Hub Sign In
             </h1>
             <p className="text-xs text-[#6B5B7B]">
-              {loginForgotMode
-                ? 'Verify your registered Gmail with a 6-digit OTP to set a new Seller password.'
-                : (
-                  <>
-                    Sign in with your <strong>Seller ID</strong>, <strong>Email</strong>, or <strong>10-digit Phone Number</strong> (without +91) and Password to access your Seller Dashboard or check your private application status.
-                  </>
-                )}
+              Sign in with Google to open a Seller account, continue KYC onboarding, or access your private Seller Dashboard.
             </p>
           </div>
 
@@ -2286,101 +2390,148 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             </div>
           )}
 
-          {loginForgotMode ? (
-            <form onSubmit={handleSellerForgotSubmit} className="space-y-4">
-              <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-4 text-xs text-[#4A3B59] leading-relaxed">
-                <p className="font-bold text-[#1F122B] mb-1">
-                  Password Reset Assistance
-                </p>
-                <p>
-                  Email OTP verification is temporarily unavailable. To reset your Seller password, please message the store administrator through <strong>Help Center</strong> with your Seller ID or registered phone number.
-                </p>
-              </div>
+          <button
+            type="button"
+            disabled={googleSigningIn}
+            onClick={handleSellerGoogleSignIn}
+            className="w-full inline-flex items-center justify-center gap-3 rounded-xl border border-[#E6D9EE] bg-white hover:bg-[#FDF9FC] hover:border-[#9333EA] py-3 px-5 text-sm font-bold text-[#1F122B] shadow-xs transition-all cursor-pointer disabled:opacity-60"
+          >
+            <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="#4285F4"
+                d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+              />
+            </svg>
+            <span>
+              {googleSigningIn ? 'Signing in with Google...' : 'Sign in with Google'}
+            </span>
+          </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setLoginForgotMode(false);
-                  setLoginError('');
-                }}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Seller Login</span>
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleSellerLogin} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Seller ID / Email / Phone (without +91){' '}
-                  <span className="text-[#DB2777]">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={loginIdent}
-                  onChange={(e) => setLoginIdent(e.target.value)}
-                  placeholder="e.g. GGS-54321045, seller@gmail.com, or 9876543210"
-                  className={inputClass}
-                />
-              </div>
+          <div className="pt-2 border-t border-[#F4ECF8] space-y-3">
+            <button
+              type="button"
+              onClick={() => {
+                setShowLegacyPasswordLogin((prev) => !prev);
+                setLoginForgotMode(false);
+                setLoginError('');
+              }}
+              className="w-full text-center text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
+            >
+              {showLegacyPasswordLogin
+                ? 'Hide Seller ID / Password Sign-In'
+                : 'Existing Seller? Sign in with Seller ID & Password'}
+            </button>
 
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <label className="block text-xs font-semibold text-[#4A3B59]">
-                    Seller Password <span className="text-[#DB2777]">*</span>
-                  </label>
+            {showLegacyPasswordLogin && (
+              loginForgotMode ? (
+                <form onSubmit={handleSellerForgotSubmit} className="space-y-4 pt-1">
+                  <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-4 text-xs text-[#4A3B59] leading-relaxed">
+                    <p className="font-bold text-[#1F122B] mb-1">
+                      Password Reset Assistance
+                    </p>
+                    <p>
+                      Email OTP verification is temporarily unavailable. You can sign in directly with your Google account above, or message the store administrator through <strong>Help Center</strong> with your Seller ID or registered phone number.
+                    </p>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => {
-                      setLoginForgotMode(true);
+                      setLoginForgotMode(false);
                       setLoginError('');
-                      setForgotSuccessMsg('');
                     }}
-                    className="text-[11px] font-semibold text-[#7E22CE] hover:text-[#DB2777] hover:underline cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
                   >
-                    Forgot Password?
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Back to Seller Login</span>
                   </button>
-                </div>
-                <div className="relative">
-                  <input
-                    type={showLoginPassword ? 'text' : 'password'}
-                    required
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="Enter your seller password"
-                    className={`${inputClass} pr-10`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowLoginPassword((prev) => !prev)}
-                    aria-label={
-                      showLoginPassword ? 'Hide password' : 'Show password'
-                    }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                  >
-                    {showLoginPassword ? (
-                      <EyeOff className="w-4 h-4" />
-                    ) : (
-                      <Eye className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
+                </form>
+              ) : (
+                <form onSubmit={handleSellerLogin} className="space-y-4 pt-1">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Seller ID / Email / Phone (without +91){' '}
+                      <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={loginIdent}
+                      onChange={(e) => setLoginIdent(e.target.value)}
+                      placeholder="e.g. GGS-54321045, seller@gmail.com, or 9876543210"
+                      className={inputClass}
+                    />
+                  </div>
 
-              <button
-                type="submit"
-                disabled={loginBusy}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-sm font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
-              >
-                <LogIn className="w-4 h-4" />
-                <span>
-                  {loginBusy ? 'Signing In...' : 'Sign In to Seller Hub'}
-                </span>
-              </button>
-            </form>
-          )}
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="block text-xs font-semibold text-[#4A3B59]">
+                        Seller Password <span className="text-[#DB2777]">*</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoginForgotMode(true);
+                          setLoginError('');
+                          setForgotSuccessMsg('');
+                        }}
+                        className="text-[11px] font-semibold text-[#7E22CE] hover:text-[#DB2777] hover:underline cursor-pointer"
+                      >
+                        Forgot Password?
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showLoginPassword ? 'text' : 'password'}
+                        required
+                        value={loginPassword}
+                        onChange={(e) => setLoginPassword(e.target.value)}
+                        placeholder="Enter your seller password"
+                        className={`${inputClass} pr-10`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowLoginPassword((prev) => !prev)}
+                        aria-label={
+                          showLoginPassword ? 'Hide password' : 'Show password'
+                        }
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
+                      >
+                        {showLoginPassword ? (
+                          <EyeOff className="w-4 h-4" />
+                        ) : (
+                          <Eye className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loginBusy}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-sm font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>
+                      {loginBusy ? 'Signing In...' : 'Sign In to Seller Hub'}
+                    </span>
+                  </button>
+                </form>
+              )
+            )}
+          </div>
 
           <div className="pt-3 border-t border-[#F4ECF8] flex flex-wrap items-center justify-between gap-2 text-xs text-[#6B5B7B]">
             <span>New to Seller Hub?</span>
@@ -2392,225 +2543,259 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               }}
               className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
             >
-              Apply as Seller Now
+              Open Seller Account
             </button>
           </div>
         </div>
       )}
 
-      {/* TAB B: SELLER APPLICATION FORM */}
+      {/* TAB B: SELLER GOOGLE SIGN-IN GATE + KYC APPLICATION FORM */}
       {(hubTab === 'apply' || editingRejected) && (
         <>
           <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-2 shadow-sm">
             <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7E22CE]">
               <Store className="w-4 h-4 text-[#DB2777]" />
-              <span>Seller Hub · Seller Registration</span>
+              <span>Seller Hub · Seller Onboarding &amp; KYC</span>
             </div>
             <h1 className="font-display-serif text-2xl sm:text-3xl font-bold text-[#1F122B]">
               {editingRejected
                 ? 'Update & Re-submit Seller Application'
-                : 'Apply for a Verified Seller Account'}
+                : 'Open a Verified Seller Account'}
             </h1>
             <p className="text-xs sm:text-sm text-[#6B5B7B]">
-              Must be at least 18 years old. Once submitted, you will receive your private <strong>Pending Seller ID</strong> and can sign in to view your status privately.
+              {!editingRejected && !googleSellerAuth
+                ? 'Connect with Google first — no separate password or Email OTP required. Then complete your Seller KYC details.'
+                : 'Must be at least 18 years old. Once submitted, you will receive your private Pending Seller ID and can sign in anytime with Google.'}
             </p>
           </div>
 
-          <form
-            onSubmit={handleSubmitApplication}
-            className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-6 shadow-sm"
-          >
-            {error && (
-              <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C]">
-                {error}
+          {!editingRejected && !googleSellerAuth ? (
+            <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-8 max-w-lg mx-auto space-y-4 shadow-sm text-center">
+              {error && (
+                <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C] text-left">
+                  {error}
+                </div>
+              )}
+
+              <div className="w-12 h-12 rounded-2xl bg-[#FAF5FF] border border-[#E9D5FF] text-[#7E22CE] flex items-center justify-center mx-auto">
+                <UserCheck className="w-6 h-6" />
               </div>
-            )}
-
-            {/* Section 1: Business / Personal Details + Login Credentials */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B] border-b border-[#F4ECF8] pb-2.5">
-                <Building2 className="w-4 h-4 text-[#7E22CE]" />
-                <span>1. Seller, KYC &amp; Login Details</span>
+              <div className="space-y-1">
+                <h2 className="font-display-serif text-lg font-bold text-[#1F122B]">
+                  Step 1: Sign in with Google
+                </h2>
+                <p className="text-xs text-[#6B5B7B] leading-relaxed">
+                  Sign in with your Google account to automatically verify your email and proceed to the Seller KYC form. If you already applied earlier, you will go straight to your Seller account.
+                </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Full Name <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Seller / Business Owner Full Name"
-                    className={inputClass}
+              <button
+                type="button"
+                disabled={googleSigningIn}
+                onClick={handleSellerGoogleSignIn}
+                className="w-full inline-flex items-center justify-center gap-3 rounded-xl border border-[#E6D9EE] bg-white hover:bg-[#FDF9FC] hover:border-[#9333EA] py-3 px-5 text-sm font-bold text-[#1F122B] shadow-xs transition-all cursor-pointer disabled:opacity-60"
+              >
+                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
                   />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Phone Number (type 10 digits without +91){' '}
-                    <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
-                    <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
-                      +91
-                    </span>
-                    <input
-                      type="tel"
-                      inputMode="tel"
-                      required
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="9876543210"
-                      className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Date of Birth (18+ Mandatory){' '}
-                    <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <div className="relative">
-                    <Calendar className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type="date"
-                      required
-                      max={maxAdultDob}
-                      value={dateOfBirth}
-                      onChange={(e) => setDateOfBirth(e.target.value)}
-                      className={`${inputClass} pl-10 font-mono-num`}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Email Address (Optional · for Seller Login)
-                  </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="seller@gmail.com"
-                      className={`${inputClass} pl-10`}
-                    />
-                  </div>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Create Seller Login Password{' '}
-                    {!editingRejected && (
-                      <span className="text-[#DB2777]">*</span>
-                    )}
-                  </label>
-                  <div className="relative">
-                    <KeyRound className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type={showRegPassword ? 'text' : 'password'}
-                      required={!editingRejected}
-                      minLength={4}
-                      value={regPassword}
-                      onChange={(e) => setRegPassword(e.target.value)}
-                      placeholder={
-                        editingRejected
-                          ? 'Leave blank to keep previous password'
-                          : 'Minimum 4 characters'
-                      }
-                      className={`${inputClass} pl-10 pr-10`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowRegPassword((prev) => !prev)}
-                      aria-label={
-                        showRegPassword ? 'Hide password' : 'Show password'
-                      }
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                    >
-                      {showRegPassword ? (
-                        <EyeOff className="w-4 h-4" />
-                      ) : (
-                        <Eye className="w-4 h-4" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Full Address <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <textarea
-                    rows={2}
-                    required
-                    value={fullAddress}
-                    onChange={(e) => setFullAddress(e.target.value)}
-                    placeholder="Shop / Building, Street, City, State, PIN Code"
-                    className={inputClass}
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
                   />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    PAN Number <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={20}
-                    value={panNumber}
-                    onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
-                    placeholder="ABCDE1234F"
-                    className={`${inputClass} font-mono-num uppercase`}
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
                   />
-                  {panFormatHint && (
-                    <p className="text-[11px] text-[#B45309] mt-1">
-                      {panFormatHint}
-                    </p>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    Aadhaar Number <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={20}
-                    value={aadhaarNumber}
-                    onChange={(e) => setAadhaarNumber(e.target.value)}
-                    placeholder="12-digit Aadhaar Number"
-                    className={`${inputClass} font-mono-num`}
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
                   />
-                  {aadhaarFormatHint && (
-                    <p className="text-[11px] text-[#B45309] mt-1">
-                      {aadhaarFormatHint}
-                    </p>
-                  )}
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                    GST Number (optional)
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={20}
-                    value={gstNumber}
-                    onChange={(e) => setGstNumber(e.target.value.toUpperCase())}
-                    placeholder="15-character GSTIN (if registered)"
-                    className={`${inputClass} font-mono-num uppercase`}
-                  />
-                </div>
-              </div>
+                </svg>
+                <span>
+                  {googleSigningIn
+                    ? 'Connecting Google Account...'
+                    : 'Sign in with Google'}
+                </span>
+              </button>
             </div>
+          ) : (
+            <form
+              onSubmit={handleSubmitApplication}
+              className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-7 space-y-6 shadow-sm"
+            >
+              {error && (
+                <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C]">
+                  {error}
+                </div>
+              )}
+
+              {googleSellerAuth && (
+                <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#15803D]">
+                  <div className="inline-flex items-center gap-2 font-semibold min-w-0">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span className="truncate">
+                      Google verified: <strong>{googleSellerAuth.email}</strong>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={googleSigningIn}
+                    onClick={handleSellerGoogleSignIn}
+                    className="font-bold text-[#6D28D9] hover:underline cursor-pointer shrink-0"
+                  >
+                    Switch Google Account
+                  </button>
+                </div>
+              )}
+
+              {/* Section 1: Business / Personal KYC Details */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B] border-b border-[#F4ECF8] pb-2.5">
+                  <Building2 className="w-4 h-4 text-[#7E22CE]" />
+                  <span>1. Seller Personal &amp; KYC Details</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Full Name <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Seller / Business Owner Full Name"
+                      className={inputClass}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Phone Number (type 10 digits without +91){' '}
+                      <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
+                      <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                        +91
+                      </span>
+                      <input
+                        type="tel"
+                        inputMode="tel"
+                        required
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="9876543210"
+                        className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Date of Birth (18+ Mandatory){' '}
+                      <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <div className="relative">
+                      <Calendar className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="date"
+                        required
+                        max={maxAdultDob}
+                        value={dateOfBirth}
+                        onChange={(e) => setDateOfBirth(e.target.value)}
+                        className={`${inputClass} pl-10 font-mono-num`}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Email Address{' '}
+                      {googleSellerAuth?.email && (
+                        <span className="text-[11px] font-semibold text-[#15803D]">
+                          (Pre-filled from Google)
+                        </span>
+                      )}
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="email"
+                        readOnly={Boolean(googleSellerAuth?.email)}
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="seller@gmail.com"
+                        className={`${inputClass} pl-10 ${
+                          googleSellerAuth?.email
+                            ? 'bg-[#F3F4F6] text-[#4A3B59] cursor-not-allowed'
+                            : ''
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Full Address <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      required
+                      value={fullAddress}
+                      onChange={(e) => setFullAddress(e.target.value)}
+                      placeholder="Shop / Building, Street, City, State, PIN Code"
+                      className={inputClass}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      PAN Number <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={40}
+                      value={panNumber}
+                      onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
+                      placeholder="Enter PAN Number"
+                      className={`${inputClass} font-mono-num uppercase`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Aadhaar Number <span className="text-[#DB2777]">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={40}
+                      value={aadhaarNumber}
+                      onChange={(e) => setAadhaarNumber(e.target.value)}
+                      placeholder="Enter 12-digit or any Aadhaar Number"
+                      className={`${inputClass} font-mono-num`}
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      GST Number (optional)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={30}
+                      value={gstNumber}
+                      onChange={(e) => setGstNumber(e.target.value.toUpperCase())}
+                      placeholder="15-character GSTIN (if registered)"
+                      className={`${inputClass} font-mono-num uppercase`}
+                    />
+                  </div>
+                </div>
+              </div>
 
             {/* Section 2: Identity & KYC Document Uploads */}
             <div className="space-y-4">
@@ -2728,6 +2913,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               </div>
             </div>
           </form>
+          )}
         </>
       )}
     </div>

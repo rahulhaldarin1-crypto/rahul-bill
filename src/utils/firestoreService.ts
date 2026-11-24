@@ -3139,9 +3139,73 @@ export const firestoreService = {
     };
   },
 
+  async resolveGoogleSellerAccount(payload: {
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }): Promise<{ seller: SellerApplication | null; needsKyc: boolean }> {
+    const cleanUid = String(payload.uid || '').trim();
+    const cleanEmail = String(payload.email || '').trim().toLowerCase();
+    if (!cleanUid) {
+      throw new Error('Google authentication account ID is missing.');
+    }
+
+    let matched: SellerApplication | undefined;
+    try {
+      const byUidSnap = await getDocs(
+        query(collection(db, SELLER_APPLICATIONS_COL), where('authUid', '==', cleanUid))
+      );
+      if (!byUidSnap.empty) {
+        matched = byUidSnap.docs[0].data() as SellerApplication;
+      }
+
+      if (!matched && cleanEmail) {
+        const allSnap = await getDocs(collection(db, SELLER_APPLICATIONS_COL));
+        const allSellers = allSnap.docs.map((d) => d.data() as SellerApplication);
+        matched = allSellers.find(
+          (s) => String(s.email || '').trim().toLowerCase() === cleanEmail
+        );
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, SELLER_APPLICATIONS_COL);
+    }
+
+    if (!matched) {
+      return { seller: null, needsKyc: true };
+    }
+
+    const needsSync =
+      matched.authUid !== cleanUid ||
+      (cleanEmail && String(matched.email || '').trim().toLowerCase() !== cleanEmail);
+
+    if (needsSync) {
+      const now = new Date().toISOString();
+      const updated: SellerApplication = stripUndefinedDeep({
+        ...matched,
+        authUid: cleanUid,
+        email: cleanEmail || matched.email || '',
+        updatedAt: now,
+      });
+      try {
+        await setDoc(doc(db, SELLER_APPLICATIONS_COL, matched.id), updated);
+        return { seller: sanitizePublicSeller(updated), needsKyc: false };
+      } catch (error) {
+        handleFirestoreError(
+          error,
+          OperationType.UPDATE,
+          `${SELLER_APPLICATIONS_COL}/${matched.id}`
+        );
+      }
+    }
+
+    return { seller: sanitizePublicSeller(matched), needsKyc: false };
+  },
+
   async submitSellerApplication(payload: {
     existingId?: string;
     clientId?: string;
+    authUid?: string;
     name: string;
     email?: string;
     otpId?: string;
@@ -3160,15 +3224,16 @@ export const firestoreService = {
     bankDocDataUrl: string;
     bankAccountDetails?: string;
   }): Promise<SellerApplication> {
+    const cleanAuthUid = String(payload.authUid || '').trim();
     const cleanName = String(payload.name || '').trim();
     const cleanEmail = String(payload.email || '').trim().toLowerCase();
     const dobCheck = validateAdultDateOfBirth(payload.dateOfBirth);
     const cleanAddress = String(payload.fullAddress || '').trim();
     const phoneCheck = normalizeIndianPhone(payload.phone);
-    // Soft validation for PAN & Aadhaar: trim cleanly without blocking typos/format mistakes
-    const cleanPan = String(payload.panNumber || '').trim().toUpperCase();
-    const cleanAadhaar = String(payload.aadhaarNumber || '').trim();
-    const cleanGst = String(payload.gstNumber || '').trim().toUpperCase();
+    // Flexible validation for PAN & Aadhaar: trim cleanly and accept any non-empty value without format/checksum rejection
+    const cleanPan = String(payload.panNumber || '').trim().toUpperCase().slice(0, 40);
+    const cleanAadhaar = String(payload.aadhaarNumber || '').trim().slice(0, 40);
+    const cleanGst = String(payload.gstNumber || '').trim().toUpperCase().slice(0, 30);
     const cleanPassword = String(payload.password || '').trim();
 
     if (cleanName.length < 2) {
@@ -3222,6 +3287,17 @@ export const firestoreService = {
           matchedExisting = exactSnap.data() as SellerApplication;
         }
       }
+      if (!matchedExisting && cleanAuthUid) {
+        const authSnap = await getDocs(
+          query(
+            collection(db, SELLER_APPLICATIONS_COL),
+            where('authUid', '==', cleanAuthUid)
+          )
+        );
+        if (!authSnap.empty) {
+          matchedExisting = authSnap.docs[0].data() as SellerApplication;
+        }
+      }
       if (!matchedExisting && payload.clientId) {
         const cliSnap = await getDocs(
           query(
@@ -3260,13 +3336,12 @@ export const firestoreService = {
     }
 
     if (matchedExisting && matchedExisting.status === 'approved') {
-      throw new Error('Your seller account is already approved. Please use Seller Login.');
+      throw new Error('Your seller account is already approved. Please sign in to Seller Hub.');
     }
 
-    // Email OTP verification is temporarily disabled on Seller Registration; keep optional valid email if provided.
-
-    if (!matchedExisting && !cleanPassword) {
-      throw new Error('Please create a Seller Login Password (minimum 4 characters).');
+    // Email OTP verification is temporarily disabled on Seller Registration; Google Sign-In replaces separate password creation.
+    if (!matchedExisting && !cleanAuthUid && !cleanPassword) {
+      throw new Error('Please sign in with Google or create a Seller Login Password (minimum 4 characters).');
     }
 
     const now = new Date().toISOString();
@@ -3292,6 +3367,7 @@ export const firestoreService = {
     const record: SellerApplication = stripUndefinedDeep({
       id: matchedExisting ? matchedExisting.id : `seller-${crypto.randomUUID()}`,
       clientId: payload.clientId || matchedExisting?.clientId || '',
+      authUid: cleanAuthUid || matchedExisting?.authUid || '',
       sellerCode: generatedSellerCode,
       name: cleanName,
       email: cleanEmail || matchedExisting?.email || '',

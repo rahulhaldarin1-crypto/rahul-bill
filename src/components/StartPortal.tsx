@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  ArrowUpDown,
   Calendar,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -25,6 +27,7 @@ import {
   Share2,
   ShoppingBag,
   ShoppingCart,
+  SlidersHorizontal,
   Star,
   Store,
   Tag,
@@ -220,6 +223,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [accountTab, setAccountTab] = useState<CustomerDashboardTab>('cart');
   const [menuSheetOpen, setMenuSheetOpen] = useState(false);
   const [categoriesSheetOpen, setCategoriesSheetOpen] = useState(false);
+  const [sortSheetOpen, setSortSheetOpen] = useState(false);
+  const [genderSheetOpen, setGenderSheetOpen] = useState(false);
+  const [filtersSheetOpen, setFiltersSheetOpen] = useState(false);
   const categoriesSectionRef = useRef<HTMLDivElement | null>(null);
   const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>(
     readStoredFavoriteIds
@@ -256,6 +262,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       if (e.key === 'Escape') {
         setMenuSheetOpen(false);
         setCategoriesSheetOpen(false);
+        setSortSheetOpen(false);
+        setGenderSheetOpen(false);
+        setFiltersSheetOpen(false);
       }
     };
     document.addEventListener('keydown', handleEsc);
@@ -304,6 +313,18 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   );
   const [shoppingCategory, setShoppingCategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [sortBy, setSortBy] = useState<
+    'featured' | 'price_asc' | 'price_desc' | 'discount_desc' | 'rating_desc'
+  >('featured');
+  const [genderFilter, setGenderFilter] = useState<
+    'ALL' | 'women' | 'men' | 'unisex'
+  >('ALL');
+  const [priceRangeFilter, setPriceRangeFilter] = useState<
+    'ALL' | 'under_299' | '300_599' | '600_999' | '1000_plus'
+  >('ALL');
+  const [minDiscountFilter, setMinDiscountFilter] = useState<number>(0);
+  const [minRatingFilter, setMinRatingFilter] = useState<number>(0);
+  const [inStockOnlyFilter, setInStockOnlyFilter] = useState<boolean>(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [failedAdImage, setFailedAdImage] = useState(false);
 
@@ -475,6 +496,47 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     placementRule,
   ]);
 
+  const reviewsByProductId = useMemo(() => {
+    const map = new Map<string, ProductReview[]>();
+    for (const rev of productReviews) {
+      if (!rev.productId) continue;
+      const list = map.get(rev.productId) || [];
+      list.push(rev);
+      map.set(rev.productId, list);
+    }
+    return map;
+  }, [productReviews]);
+
+  const ratingSummaryByProductId = useMemo(() => {
+    const map = new Map<string, { avg: number; count: number }>();
+    for (const [pid, list] of reviewsByProductId.entries()) {
+      if (list.length === 0) continue;
+      const total = list.reduce((s, r) => s + (Number(r.rating) || 0), 0);
+      map.set(pid, {
+        avg: Number((total / list.length).toFixed(1)),
+        count: list.length,
+      });
+    }
+    return map;
+  }, [reviewsByProductId]);
+
+  const activeFiltersCount =
+    (priceRangeFilter !== 'ALL' ? 1 : 0) +
+    (minDiscountFilter > 0 ? 1 : 0) +
+    (minRatingFilter > 0 ? 1 : 0) +
+    (inStockOnlyFilter ? 1 : 0);
+
+  const resetAllShoppingFilters = () => {
+    setSearchQuery('');
+    setShoppingCategory('ALL');
+    setSortBy('featured');
+    setGenderFilter('ALL');
+    setPriceRangeFilter('ALL');
+    setMinDiscountFilter(0);
+    setMinRatingFilter(0);
+    setInStockOnlyFilter(false);
+  };
+
   const filteredShoppingItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     let list =
@@ -483,13 +545,105 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         : shoppingItems.filter((item) => item.category === shoppingCategory);
 
     if (q) {
-      list = list.filter(
-        (item) =>
+      const cleanQ = q.replace(/^#/, '');
+      list = list.filter((item) => {
+        const rawId = item.id.toLowerCase();
+        const catalogId = (item.catalogProductId || '').toLowerCase();
+        const strippedId = rawId.replace(/^cat-/, '');
+        return (
+          rawId.includes(cleanQ) ||
+          catalogId.includes(cleanQ) ||
+          strippedId.includes(cleanQ) ||
           item.name.toLowerCase().includes(q) ||
           item.category.toLowerCase().includes(q) ||
+          (item.size || '').toLowerCase().includes(q) ||
+          (item.color || '').toLowerCase().includes(q) ||
           (item.description || '').toLowerCase().includes(q) ||
           (item.sellerName || '').toLowerCase().includes(q)
-      );
+        );
+      });
+    }
+
+    if (genderFilter !== 'ALL') {
+      list = list.filter((item) => {
+        const haystack = `${item.category} ${item.name} ${item.description || ''}`.toLowerCase();
+        const isMenExplicit = /\b(men|mens|men's|gents|boy|boys|shirt|trouser|beard)\b/.test(
+          haystack
+        ) && !/\b(women|women's|womens|ladies|girl|girls)\b/.test(haystack);
+        const isWomenCategory =
+          item.category === "Women's Clothing" ||
+          item.category === 'Fashion & Jewellery' ||
+          item.category === 'Cosmetics & Makeup' ||
+          item.category === 'Innerwear & Essentials' ||
+          /\b(women|womens|women's|girl|girls|ladies|saree|kurti|lehenga|blouse|bra|panty|lingerie|bangle|earring|necklace|bridal|lipstick|makeup|handbag|purse)\b/.test(
+            haystack
+          );
+        const isUnisex =
+          item.category === 'Perfumes & Fragrances' ||
+          item.category === 'Watches & Accessories' ||
+          item.category === 'Bags & Handbags' ||
+          item.category === 'Gift Hampers & Combos' ||
+          item.category === 'Home & Living' ||
+          /\b(unisex|watch|perfume|fragrance|sunglass|gift|combo|essential)\b/.test(
+            haystack
+          );
+
+        if (genderFilter === 'women') return isWomenCategory || (isUnisex && !isMenExplicit);
+        if (genderFilter === 'men') return isMenExplicit || (isUnisex && !isWomenCategory);
+        return isUnisex || (!isMenExplicit && !isWomenCategory);
+      });
+    }
+
+    if (priceRangeFilter !== 'ALL') {
+      list = list.filter((item) => {
+        if (priceRangeFilter === 'under_299') return item.price <= 299;
+        if (priceRangeFilter === '300_599') return item.price >= 300 && item.price <= 599;
+        if (priceRangeFilter === '600_999') return item.price >= 600 && item.price <= 999;
+        return item.price >= 1000;
+      });
+    }
+
+    if (minDiscountFilter > 0) {
+      list = list.filter((item) => {
+        if (!item.originalPrice || item.originalPrice <= item.price) return false;
+        const pct = Math.round(
+          ((item.originalPrice - item.price) / item.originalPrice) * 100
+        );
+        return pct >= minDiscountFilter;
+      });
+    }
+
+    if (minRatingFilter > 0) {
+      list = list.filter((item) => {
+        const canonicalId = item.catalogProductId || item.id;
+        const summary = ratingSummaryByProductId.get(canonicalId);
+        return Boolean(summary && summary.avg >= minRatingFilter);
+      });
+    }
+
+    if (inStockOnlyFilter) {
+      list = list.filter((item) => item.stockQty === undefined || item.stockQty > 0);
+    }
+
+    if (sortBy === 'price_asc') {
+      return [...list].sort((a, b) => a.price - b.price);
+    }
+    if (sortBy === 'price_desc') {
+      return [...list].sort((a, b) => b.price - a.price);
+    }
+    if (sortBy === 'discount_desc') {
+      const getDisc = (it: PublicShopProduct) =>
+        it.originalPrice && it.originalPrice > it.price
+          ? ((it.originalPrice - it.price) / it.originalPrice) * 100
+          : 0;
+      return [...list].sort((a, b) => getDisc(b) - getDisc(a));
+    }
+    if (sortBy === 'rating_desc') {
+      const getRating = (it: PublicShopProduct) => {
+        const summary = ratingSummaryByProductId.get(it.catalogProductId || it.id);
+        return summary ? summary.avg : 0;
+      };
+      return [...list].sort((a, b) => getRating(b) - getRating(a));
     }
 
     if (shoppingCategory !== 'ALL' && placementRule === 'priority_category') {
@@ -498,7 +652,19 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       );
     }
     return list;
-  }, [shoppingItems, shoppingCategory, searchQuery, placementRule]);
+  }, [
+    shoppingItems,
+    shoppingCategory,
+    searchQuery,
+    genderFilter,
+    priceRangeFilter,
+    minDiscountFilter,
+    minRatingFilter,
+    inStockOnlyFilter,
+    sortBy,
+    ratingSummaryByProductId,
+    placementRule,
+  ]);
 
   const hasDiscountContent =
     viewPanel.discount.enabled &&
@@ -597,30 +763,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         .map((f) => f.sellerId)
     );
   }, [sellerFollows, loggedInCustomer]);
-
-  const reviewsByProductId = useMemo(() => {
-    const map = new Map<string, ProductReview[]>();
-    for (const rev of productReviews) {
-      if (!rev.productId) continue;
-      const list = map.get(rev.productId) || [];
-      list.push(rev);
-      map.set(rev.productId, list);
-    }
-    return map;
-  }, [productReviews]);
-
-  const ratingSummaryByProductId = useMemo(() => {
-    const map = new Map<string, { avg: number; count: number }>();
-    for (const [pid, list] of reviewsByProductId.entries()) {
-      if (list.length === 0) continue;
-      const total = list.reduce((s, r) => s + (Number(r.rating) || 0), 0);
-      map.set(pid, {
-        avg: Number((total / list.length).toFixed(1)),
-        count: list.length,
-      });
-    }
-    return map;
-  }, [reviewsByProductId]);
 
   const viewingSellerProfile = viewingSellerId
     ? sellerPaymentProfiles[viewingSellerId]
@@ -973,9 +1115,23 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Recover mobile browser Google Sign-In redirect result automatically
+  // Recover mobile browser Google Sign-In redirect result automatically (routing seller intent to Seller Hub)
   useEffect(() => {
     let active = true;
+    const intent = (() => {
+      try {
+        return sessionStorage.getItem('gg_google_auth_intent');
+      } catch {
+        return null;
+      }
+    })();
+    if (intent === 'seller') {
+      setPortalView('seller-hub');
+      return () => {
+        active = false;
+      };
+    }
+
     getRedirectResult(auth)
       .then(async (result) => {
         if (!active || !result?.user) return;
@@ -1995,33 +2151,136 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             }
           />
         ) : (
-          <>
-            {/* 1. TOP ADVERTISEMENT BANNER */}
-            {showAdvertisement && (
-              <section className="no-print" aria-label="Featured Advertisement">
-                {isSafeHttpUrl(viewPanel.advertisement.linkUrl) ? (
-                  <a
-                    href={viewPanel.advertisement.linkUrl.trim()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block hover:opacity-95 transition-opacity"
+          <div className="space-y-3 sm:space-y-4">
+            {/* TOP OF HOME: MEESHO-STYLE SEARCH BAR + SORT / CATEGORY / GENDER / FILTERS BAR */}
+            {hasShoppingContent && (
+              <div className="no-print -mx-3 sm:mx-0 bg-white/95 backdrop-blur-md border-b sm:border border-[#EFE2F5] sm:rounded-2xl shadow-xs overflow-hidden">
+                <div className="px-3 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="search"
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        if (sectionTab === 'discount' && e.target.value.trim()) {
+                          setSectionTab('all');
+                        }
+                      }}
+                      placeholder="Search by Keyword or Product ID"
+                      aria-label="Search by Keyword or Product ID"
+                      className="w-full rounded-full border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-9 py-2.5 text-xs sm:text-sm text-[#1F122B] placeholder:text-[#8E7C9E] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        aria-label="Clear search"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Sort · Category · Gender · Filters Control Strip */}
+                <div className="grid grid-cols-4 border-t border-[#EFE2F5] divide-x divide-[#EFE2F5] text-xs font-semibold text-[#1F122B]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCategoriesSheetOpen(false);
+                      setGenderSheetOpen(false);
+                      setFiltersSheetOpen(false);
+                      setSortSheetOpen(true);
+                    }}
+                    className={`min-h-[42px] px-1.5 py-2 flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      sortBy !== 'featured'
+                        ? 'bg-[#FAF5FF] text-[#7E22CE]'
+                        : 'hover:bg-[#FDF9FC]'
+                    }`}
                   >
-                    {adBannerCard}
-                  </a>
-                ) : (
-                  adBannerCard
-                )}
-              </section>
+                    <ArrowUpDown className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Sort</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortSheetOpen(false);
+                      setGenderSheetOpen(false);
+                      setFiltersSheetOpen(false);
+                      setCategoriesSheetOpen(true);
+                    }}
+                    className={`min-h-[42px] px-1.5 py-2 flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      shoppingCategory !== 'ALL'
+                        ? 'bg-[#FDF2F8] text-[#DB2777]'
+                        : 'hover:bg-[#FDF9FC]'
+                    }`}
+                  >
+                    <span className="truncate">
+                      {shoppingCategory === 'ALL' ? 'Category' : shoppingCategory.split('&')[0].trim()}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortSheetOpen(false);
+                      setCategoriesSheetOpen(false);
+                      setFiltersSheetOpen(false);
+                      setGenderSheetOpen(true);
+                    }}
+                    className={`min-h-[42px] px-1.5 py-2 flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      genderFilter !== 'ALL'
+                        ? 'bg-[#FAF5FF] text-[#7E22CE]'
+                        : 'hover:bg-[#FDF9FC]'
+                    }`}
+                  >
+                    <span className="truncate">
+                      {genderFilter === 'ALL'
+                        ? 'Gender'
+                        : genderFilter === 'women'
+                          ? 'Women'
+                          : genderFilter === 'men'
+                            ? 'Men'
+                            : 'Unisex'}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortSheetOpen(false);
+                      setCategoriesSheetOpen(false);
+                      setGenderSheetOpen(false);
+                      setFiltersSheetOpen(true);
+                    }}
+                    className={`min-h-[42px] px-1.5 py-2 flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      activeFiltersCount > 0
+                        ? 'bg-[#FDF2F8] text-[#DB2777]'
+                        : 'hover:bg-[#FDF9FC]'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">
+                      Filters{activeFiltersCount > 0 ? ` (${activeFiltersCount})` : ''}
+                    </span>
+                  </button>
+                </div>
+              </div>
             )}
 
             {/* Welcome bar shown only when a customer is signed in */}
             {loggedInCustomer && (
-              <div className="no-print flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#EFE2F5] bg-white/90 backdrop-blur-md px-4 py-2 text-xs text-[#4A3B59]">
+              <div className="no-print flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs text-[#4A3B59]">
                 <div className="flex flex-wrap items-center gap-2">
                   <CustomerAvatar
                     photoDataUrl={loggedInCustomer.profilePhotoDataUrl}
                     name={loggedInCustomer.name}
-                    size={24}
+                    size={26}
                   />
                   <span>
                     Welcome, <strong>{loggedInCustomer.name}</strong>
@@ -2047,9 +2306,27 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </div>
             )}
 
-            {/* 2. DISCOUNT & COMPACT E-COMMERCE SHOPPING GRID */}
+            {/* ADVERTISEMENT BANNER */}
+            {showAdvertisement && (
+              <section className="no-print" aria-label="Featured Advertisement">
+                {isSafeHttpUrl(viewPanel.advertisement.linkUrl) ? (
+                  <a
+                    href={viewPanel.advertisement.linkUrl.trim()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block hover:opacity-95 transition-opacity"
+                  >
+                    {adBannerCard}
+                  </a>
+                ) : (
+                  adBannerCard
+                )}
+              </section>
+            )}
+
+            {/* 2. DISCOUNT & FULL-SCREEN EDGE-TO-EDGE PRODUCT FEED */}
             {(hasDiscountContent || hasShoppingContent) && (
-              <div className="no-print space-y-5 pt-1">
+              <div className="no-print space-y-4">
                 {hasDiscountContent && hasShoppingContent && (
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/90 backdrop-blur-md border border-[#EFE2F5]">
@@ -2097,7 +2374,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   (sectionTab === 'all' || sectionTab === 'discount') && (
                     <section
                       aria-label="Discount Offers"
-                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-5 sm:p-6 space-y-4"
+                      className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-4 sm:p-6 space-y-4"
                     >
                       <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#F4ECF8] pb-3">
                         <div>
@@ -2179,45 +2456,25 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     </section>
                   )}
 
-                {/* COMPACT MEESHO-STYLE SHOPPING GRID */}
+                {/* FULL-SCREEN EDGE-TO-EDGE MEESHO-STYLE SHOPPING PRODUCT FEED */}
                 {hasShoppingContent &&
                   (sectionTab === 'all' || sectionTab === 'shopping') && (
                     <section
                       id="shop-categories-section"
                       ref={categoriesSectionRef}
                       aria-label="Shopping Collection"
-                      className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-3 sm:p-5 space-y-4 scroll-mt-20"
+                      className="space-y-3 scroll-mt-20"
                     >
-                      {/* Clean Search Bar & Scrollable Category Chips */}
-                      <div className="space-y-2.5 border-b border-[#F4ECF8] pb-3">
-                        <div className="relative">
-                          <Search className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                          <input
-                            type="search"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder="Search by product or category (Perfumes, Jewellery, Clothing...)"
-                            className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-9 py-2.5 text-xs sm:text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                          />
-                          {searchQuery && (
-                            <button
-                              type="button"
-                              onClick={() => setSearchQuery('')}
-                              aria-label="Clear search"
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap">
+                      {/* Horizontal Quick Category Strip + Active Filters Summary */}
+                      <div className="-mx-3 px-3 sm:mx-0 sm:px-0 space-y-2">
+                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:flex-wrap">
                           <button
                             type="button"
                             onClick={() => handleSelectShoppingCategory('ALL')}
                             className={`rounded-xl px-3 py-1.5 text-xs font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                               shoppingCategory === 'ALL'
                                 ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
-                                : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                                : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
                             }`}
                           >
                             All ({shoppingItems.length})
@@ -2230,21 +2487,50 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                               className={`rounded-xl px-3 py-1.5 text-xs font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                                 shoppingCategory === cat
                                   ? 'border-[#DB2777] bg-[#DB2777] text-white'
-                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
+                                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#DB2777]'
                               }`}
                             >
                               {cat}
                             </button>
                           ))}
                         </div>
+
+                        {(searchQuery ||
+                          shoppingCategory !== 'ALL' ||
+                          genderFilter !== 'ALL' ||
+                          sortBy !== 'featured' ||
+                          activeFiltersCount > 0) && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/95 border border-[#EFE2F5] px-3 py-1.5 text-xs">
+                            <span className="text-[#5B4B6B] font-mono-num">
+                              Showing <strong>{filteredShoppingItems.length}</strong>{' '}
+                              {filteredShoppingItems.length === 1 ? 'product' : 'products'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={resetAllShoppingFilters}
+                              className="font-bold text-[#DB2777] hover:underline cursor-pointer"
+                            >
+                              Reset Filters
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {filteredShoppingItems.length === 0 ? (
-                        <div className="py-10 text-center text-xs text-[#6B5B7B]">
-                          No shopping items found in this category.
+                        <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 py-12 px-4 text-center space-y-2.5">
+                          <div className="text-xs sm:text-sm font-semibold text-[#5B4B6B]">
+                            No products match your current search or filter selection.
+                          </div>
+                          <button
+                            type="button"
+                            onClick={resetAllShoppingFilters}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-[#FAF5FF] border border-[#D8B4FE] px-4 py-2 text-xs font-bold text-[#6D28D9] cursor-pointer"
+                          >
+                            Reset All Filters
+                          </button>
                         </div>
                       ) : (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3.5">
+                        <div className="-mx-3 px-1.5 sm:mx-0 sm:px-0 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-3">
                           {filteredShoppingItems.map((item) => {
                             const discountPercent =
                               item.originalPrice &&
@@ -2262,7 +2548,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             return (
                               <div
                                 key={item.id}
-                                className={`group rounded-2xl border bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left ${
+                                className={`group rounded-xl sm:rounded-2xl border bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left ${
                                   item.highlighted
                                     ? 'border-[#DB2777]/60 ring-1 ring-[#DB2777]/20'
                                     : 'border-[#EFE2F5]'
@@ -2291,7 +2577,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     ) : (
                                       <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
                                     )}
-                                    <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                                    <div className="absolute top-1.5 left-1.5 flex flex-col items-start gap-1">
                                       {item.highlighted && (
                                         <span className="rounded-md bg-[#DB2777] px-1.5 py-0.5 text-[10px] font-bold text-white">
                                           Featured
@@ -2316,7 +2602,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                           ? `Remove ${item.name} from favorites`
                                           : `Save ${item.name} to favorites`
                                       }
-                                      className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/95 border border-[#E6D9EE] flex items-center justify-center shadow-xs hover:scale-105 transition-transform cursor-pointer"
+                                      className="absolute top-1.5 right-1.5 w-8 h-8 rounded-full bg-white/95 border border-[#E6D9EE] flex items-center justify-center shadow-xs hover:scale-105 transition-transform cursor-pointer"
                                     >
                                       <Heart
                                         className={`w-4 h-4 ${
@@ -2343,7 +2629,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     )}
                                   </div>
 
-                                  <div className="p-2.5 sm:p-3 space-y-1">
+                                  <div className="p-2 sm:p-3 space-y-1">
                                     <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
                                       {item.category}
                                     </div>
@@ -2377,7 +2663,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                   </div>
                                 </div>
 
-                                <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
+                                <div className="px-2 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
                                   <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
                                     <span className="text-sm sm:text-base font-bold text-[#1F122B]">
                                       {formatCurrency(item.price, sym)}
@@ -2423,7 +2709,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   )}
               </div>
             )}
-          </>
+          </div>
         )}
       </main>
 
@@ -3870,6 +4156,249 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   </button>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sort Sheet Drawer */}
+      {sortSheetOpen && (
+        <div
+          className="no-print fixed inset-0 z-[45] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Sort Products"
+          onClick={() => setSortSheetOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl border border-[#EFE2F5] bg-white shadow-2xl p-4 pb-24 sm:p-5 space-y-2"
+          >
+            <div className="w-10 h-1 rounded-full bg-[#D6C9E0] mx-auto sm:hidden" />
+            <div className="flex items-center justify-between px-1 pb-2 border-b border-[#F4ECF8]">
+              <h2 className="font-display-serif text-base font-bold text-[#1F122B]">
+                Sort By
+              </h2>
+              <button
+                type="button"
+                onClick={() => setSortSheetOpen(false)}
+                aria-label="Close sort"
+                className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {(
+              [
+                { id: 'featured', label: 'Featured & Relevance' },
+                { id: 'price_asc', label: 'Price: Low to High' },
+                { id: 'price_desc', label: 'Price: High to Low' },
+                { id: 'discount_desc', label: 'Highest Discount' },
+                { id: 'rating_desc', label: 'Customer Rating' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => {
+                  setSortBy(opt.id);
+                  setSortSheetOpen(false);
+                }}
+                className={`w-full min-h-[46px] rounded-2xl px-3.5 py-2.5 text-left text-xs sm:text-sm font-semibold flex items-center justify-between cursor-pointer transition-colors ${
+                  sortBy === opt.id
+                    ? 'bg-[#FAF5FF] text-[#7E22CE] border border-[#D8B4FE]'
+                    : 'text-[#1F122B] hover:bg-[#FDF8FC] border border-transparent'
+                }`}
+              >
+                <span>{opt.label}</span>
+                {sortBy === opt.id && <Check className="w-4 h-4 text-[#7E22CE]" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Gender Sheet Drawer */}
+      {genderSheetOpen && (
+        <div
+          className="no-print fixed inset-0 z-[45] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Filter by Gender"
+          onClick={() => setGenderSheetOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl border border-[#EFE2F5] bg-white shadow-2xl p-4 pb-24 sm:p-5 space-y-2"
+          >
+            <div className="w-10 h-1 rounded-full bg-[#D6C9E0] mx-auto sm:hidden" />
+            <div className="flex items-center justify-between px-1 pb-2 border-b border-[#F4ECF8]">
+              <h2 className="font-display-serif text-base font-bold text-[#1F122B]">
+                Gender
+              </h2>
+              <button
+                type="button"
+                onClick={() => setGenderSheetOpen(false)}
+                aria-label="Close gender filter"
+                className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              {(
+                [
+                  { id: 'ALL', label: 'All Styles' },
+                  { id: 'women', label: 'Women & Girls' },
+                  { id: 'men', label: 'Men' },
+                  { id: 'unisex', label: 'Unisex & Gifts' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    setGenderFilter(opt.id);
+                    setGenderSheetOpen(false);
+                  }}
+                  className={`min-h-[48px] rounded-2xl border px-3.5 py-2.5 text-xs font-bold flex items-center justify-between cursor-pointer transition-colors ${
+                    genderFilter === opt.id
+                      ? 'border-[#DB2777] bg-[#FDF2F8] text-[#DB2777]'
+                      : 'border-[#EFE2F5] bg-[#FDFBFE] text-[#1F122B] hover:border-[#9333EA]'
+                  }`}
+                >
+                  <span>{opt.label}</span>
+                  {genderFilter === opt.id && <Check className="w-4 h-4" />}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filters Sheet Drawer */}
+      {filtersSheetOpen && (
+        <div
+          className="no-print fixed inset-0 z-[45] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Product Filters"
+          onClick={() => setFiltersSheetOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl border border-[#EFE2F5] bg-white shadow-2xl p-4 pb-24 sm:p-5 space-y-4 max-h-[84vh] overflow-y-auto"
+          >
+            <div className="w-10 h-1 rounded-full bg-[#D6C9E0] mx-auto sm:hidden" />
+            <div className="flex items-center justify-between px-1 pb-2 border-b border-[#F4ECF8]">
+              <h2 className="font-display-serif text-base font-bold text-[#1F122B]">
+                Filters
+              </h2>
+              <button
+                type="button"
+                onClick={() => setFiltersSheetOpen(false)}
+                aria-label="Close filters"
+                className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-[#4A3B59]">Price Range</div>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    { id: 'ALL', label: 'Any Price' },
+                    { id: 'under_299', label: `Under ${sym}299` },
+                    { id: '300_599', label: `${sym}300 – ${sym}599` },
+                    { id: '600_999', label: `${sym}600 – ${sym}999` },
+                    { id: '1000_plus', label: `${sym}1,000+` },
+                  ] as const
+                ).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPriceRangeFilter(p.id)}
+                    className={`rounded-xl border px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                      priceRangeFilter === p.id
+                        ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                        : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59]'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-[#4A3B59]">Minimum Discount</div>
+              <div className="flex flex-wrap gap-2">
+                {[0, 10, 25, 40].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => setMinDiscountFilter(pct)}
+                    className={`rounded-xl border px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                      minDiscountFilter === pct
+                        ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                        : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59]'
+                    }`}
+                  >
+                    {pct === 0 ? 'Any Discount' : `${pct}%+ OFF`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-[#4A3B59]">Customer Rating</div>
+              <div className="flex flex-wrap gap-2">
+                {[0, 3, 4].map((stars) => (
+                  <button
+                    key={stars}
+                    type="button"
+                    onClick={() => setMinRatingFilter(stars)}
+                    className={`rounded-xl border px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                      minRatingFilter === stars
+                        ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                        : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59]'
+                    }`}
+                  >
+                    {stars === 0 ? 'All Ratings' : `${stars}★ & above`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="flex items-center justify-between rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] px-3.5 py-2.5 cursor-pointer">
+              <span className="text-xs font-semibold text-[#1F122B]">
+                In Stock Items Only
+              </span>
+              <input
+                type="checkbox"
+                checked={inStockOnlyFilter}
+                onChange={(e) => setInStockOnlyFilter(e.target.checked)}
+                className="w-4 h-4 accent-[#7E22CE]"
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-[#F4ECF8]">
+              <button
+                type="button"
+                onClick={resetAllShoppingFilters}
+                className="rounded-xl border border-[#E6D9EE] bg-white py-2.5 text-xs font-bold text-[#5B4B6B] cursor-pointer"
+              >
+                Clear All
+              </button>
+              <button
+                type="button"
+                onClick={() => setFiltersSheetOpen(false)}
+                className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2.5 text-xs font-bold text-white cursor-pointer"
+              >
+                Done ({filteredShoppingItems.length})
+              </button>
             </div>
           </div>
         </div>

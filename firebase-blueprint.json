@@ -180,6 +180,7 @@
       "properties": {
         "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "clientId": { "type": "string", "maxLength": 128 },
+        "authUid": { "type": "string", "maxLength": 160 },
         "sellerCode": { "type": "string", "maxLength": 40 },
         "name": { "type": "string", "minLength": 1, "maxLength": 160 },
         "email": { "type": "string", "maxLength": 160 },

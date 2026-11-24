@@ -281,9 +281,19 @@ export const api = {
     return firestoreService.lookupCustomerByPhone(phone);
   },
 
+  resolveGoogleSellerAccount(payload: {
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }) {
+    return firestoreService.resolveGoogleSellerAccount(payload);
+  },
+
   submitSellerApplication(payload: {
     existingId?: string;
     clientId?: string;
+    authUid?: string;
     name: string;
     email?: string;
     otpId?: string;
