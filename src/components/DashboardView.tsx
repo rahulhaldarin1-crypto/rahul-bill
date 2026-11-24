@@ -6,6 +6,7 @@ import {
   CreditCard,
   FilePlus2,
   LifeBuoy,
+  Mail,
   Megaphone,
   Package,
   Search,
@@ -254,6 +255,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       accentText: 'text-[#9D174D]',
       borderHover: 'hover:border-[#F472B6]',
     },
+    {
+      route: 'smart-offers-mail',
+      title: 'Smart Offers Mail',
+      subtitle: 'Target top-ordering & interested category shoppers with custom offer emails',
+      metric: 'Top 20 Mail',
+      icon: Mail,
+      accentBg: 'from-[#EC4899] to-[#7E22CE]',
+      accentText: 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#F472B6]',
+    },
   ];
 
   return (
@@ -315,6 +326,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <Megaphone className="w-4 h-4 text-[#DB2777]" />
             <span>View Panel Control</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('smart-offers-mail')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#E9D5FF] bg-[#FAF5FF] px-4 py-3 text-sm font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Mail className="w-4 h-4 text-[#7E22CE]" />
+            <span>Smart Offers Mail</span>
           </button>
           {onOpenViewPanel && (
             <button

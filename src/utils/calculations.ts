@@ -18,6 +18,25 @@ export const HIGHLIGHT_UPI_ID = DEFAULT_ADMIN_UPI_ID;
 export const WHATSAPP_SUPPORT_PHONE = '919332578394';
 export const COD_DELIVERY_CHARGE_PER_ITEM = 50;
 
+export const ALLOWED_ADMIN_EMAILS = [
+  'rahulhaldar.in1@gmail.com',
+  'rahulhaldar.in@gmail.com',
+] as const;
+
+export function isAuthorizedAdminEmail(email?: string | null): boolean {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return (ALLOWED_ADMIN_EMAILS as readonly string[]).includes(normalized);
+}
+
+export function computeCategoryScore(
+  searches = 0,
+  views = 0,
+  orders = 0
+): number {
+  return Math.max(0, searches * 1 + views * 2 + orders * 5);
+}
+
 export const ADMIN_OTP_EMAIL = 'rahulhaldar.in@gmail.com';
 export const ADMIN_OTP_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const OTP_EXPIRY_MS = 5 * 60 * 1000;

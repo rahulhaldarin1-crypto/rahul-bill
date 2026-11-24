@@ -4,12 +4,19 @@ import {
   Home,
   LifeBuoy,
   Lock,
+  Mail,
   Package,
   Settings,
   ShoppingBag,
   Store,
   Users,
 } from 'lucide-react';
+import {
+  auth,
+  getRedirectResult,
+  onAuthStateChanged,
+  signOut,
+} from './firebase';
 import { AdminLockView } from './components/AdminLockView';
 import { AppBackground } from './components/AppBackground';
 import { BrandLogo } from './components/BrandLogo';
@@ -26,6 +33,7 @@ import { ProfitLossView } from './components/ProfitLossView';
 import { SalesReportView } from './components/SalesReportView';
 import { SellerHubManageView } from './components/SellerHubManageView';
 import { SettingsView } from './components/SettingsView';
+import { SmartOffersMailView } from './components/SmartOffersMailView';
 import { StartPortal } from './components/StartPortal';
 import { ViewPanelControlView } from './components/ViewPanelControlView';
 import {
@@ -52,7 +60,6 @@ import {
 import {
   getCustomerSessionId,
   getSellerSessionId,
-  isAdminUnlockedStored,
   setAdminUnlockedStored,
   setCustomerSessionId,
 } from './utils/adminAuth';
@@ -63,7 +70,7 @@ import {
   DEFAULT_HIGHLIGHT_CONFIG,
   DEFAULT_VIEW_PANEL_CONFIG,
   createEmptyWorkspace,
-  isAdminOtpWindowValid,
+  isAuthorizedAdminEmail,
   mergeAdminPaymentSettings,
   mergeBusinessSettings,
 } from './utils/calculations';
@@ -101,23 +108,50 @@ export default function App() {
   const [isolatedCustomerOrders, setIsolatedCustomerOrders] = useState<CustomerOrder[]>([]);
   const [isolatedCustomerBills, setIsolatedCustomerBills] = useState<Invoice[]>([]);
 
-  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() =>
-    adminOnlyMode ? isAdminUnlockedStored() : false
-  );
+  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(false);
+  const [adminAuthChecked, setAdminAuthChecked] = useState<boolean>(() => !adminOnlyMode);
+  const [adminDeniedMessage, setAdminDeniedMessage] = useState<string>('');
 
-  // Enforce 24-hour Admin Email OTP window once workspace settings have loaded
+  // Enforce strict Admin Google Authentication allowlist on mount & auth state changes
   useEffect(() => {
-    if (!adminOnlyMode || !workspaceLoaded || !adminUnlocked) return;
-    if (!isAdminOtpWindowValid(workspace.settings.lastAdminOtpVerifiedAt)) {
-      setAdminUnlockedStored(false);
-      setAdminUnlocked(false);
-    }
-  }, [
-    adminOnlyMode,
-    workspaceLoaded,
-    adminUnlocked,
-    workspace.settings.lastAdminOtpVerifiedAt,
-  ]);
+    if (!adminOnlyMode) return;
+    let active = true;
+
+    void getRedirectResult(auth).catch(() => undefined);
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (!active) return;
+      if (user) {
+        if (isAuthorizedAdminEmail(user.email)) {
+          setAdminDeniedMessage('');
+          setAdminUnlockedStored(true);
+          setAdminUnlocked(true);
+          setAdminAuthChecked(true);
+        } else {
+          await signOut(auth).catch(() => undefined);
+          if (!active) return;
+          setAdminUnlockedStored(false);
+          setAdminUnlocked(false);
+          setWorkspace(createEmptyWorkspace());
+          setWorkspaceLoaded(false);
+          setAdminDeniedMessage('Access Denied: Unauthorized Admin Account');
+          setAdminAuthChecked(true);
+        }
+      } else {
+        setAdminUnlockedStored(false);
+        setAdminUnlocked(false);
+        setWorkspace(createEmptyWorkspace());
+        setWorkspaceLoaded(false);
+        setAdminAuthChecked(true);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribeAuth();
+    };
+  }, [adminOnlyMode]);
+
   const [customerSessionId, setCustomerSessionIdState] = useState<string | null>(() =>
     getCustomerSessionId()
   );
@@ -154,12 +188,34 @@ export default function App() {
   }, []);
 
   // Load from Cloud Firestore and keep synced in real time
-  // Admin Mode loads full workspace; Customer Mode loads ONLY public storefront + settings + approved seller IDs
+  // Admin Mode loads full workspace ONLY after verified Google Admin unlock; otherwise only lightweight public branding for the lock screen
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
 
     if (adminOnlyMode) {
+      if (!adminAuthChecked) return;
+
+      if (!adminUnlocked) {
+        api
+          .fetchPublicSettingsOnly()
+          .then((settings) => {
+            if (!active) return;
+            setWorkspace((prev) => ({
+              ...createEmptyWorkspace(),
+              settings,
+              paymentSettings: prev.paymentSettings,
+            }));
+          })
+          .finally(() => {
+            if (active) setLoading(false);
+          });
+        return () => {
+          active = false;
+        };
+      }
+
+      setLoading(true);
       api
         .fetchWorkspace()
         .then((data) => {
@@ -265,7 +321,7 @@ export default function App() {
       active = false;
       if (unsubscribe) unsubscribe();
     };
-  }, [adminOnlyMode, showToast]);
+  }, [adminOnlyMode, adminAuthChecked, adminUnlocked, showToast]);
 
   // In Customer Mode, subscribe ONLY to the logged-in customer's own client record, orders, and bills
   useEffect(() => {
@@ -776,15 +832,27 @@ export default function App() {
   };
 
   const handleUnlockAdmin = () => {
+    const email = auth.currentUser?.email;
+    if (!isAuthorizedAdminEmail(email)) {
+      void signOut(auth).catch(() => undefined);
+      setAdminUnlockedStored(false);
+      setAdminUnlocked(false);
+      setAdminDeniedMessage('Access Denied: Unauthorized Admin Account');
+      return;
+    }
+    setAdminDeniedMessage('');
     setAdminUnlockedStored(true);
     setAdminUnlocked(true);
     setRoute('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleLockAdmin = () => {
+  const handleLockAdmin = async () => {
+    await signOut(auth).catch(() => undefined);
     setAdminUnlockedStored(false);
     setAdminUnlocked(false);
+    setWorkspace(createEmptyWorkspace());
+    setWorkspaceLoaded(false);
     setRoute('dashboard');
     showToast('Admin Panel locked.');
   };
@@ -799,6 +867,7 @@ export default function App() {
   );
 
   const handleCustomerLogout = useCallback(() => {
+    void signOut(auth).catch(() => undefined);
     setCustomerSessionId(null);
     setCustomerSessionIdState(null);
     setIsolatedCustomer(null);
@@ -921,15 +990,8 @@ export default function App() {
       <>
         <AdminLockView
           settings={workspace.settings}
-          onAdminOtpRecorded={(verifiedAt) => {
-            setWorkspace((prev) => ({
-              ...prev,
-              settings: {
-                ...prev.settings,
-                lastAdminOtpVerifiedAt: verifiedAt,
-              },
-            }));
-          }}
+          deniedMessage={adminDeniedMessage}
+          onClearDeniedMessage={() => setAdminDeniedMessage('')}
           onUnlock={handleUnlockAdmin}
         />
         {toast && (
@@ -1030,6 +1092,20 @@ export default function App() {
                   {pendingSellerCount}
                 </span>
               )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateTo('smart-offers-mail')}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                route === 'smart-offers-mail'
+                  ? 'border-[#DB2777] bg-[#FDF2F8] text-[#9D174D]'
+                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE]'
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
+              <span className="hidden sm:inline">Smart Offers Mail</span>
+              <span className="sm:hidden">Offers Mail</span>
             </button>
 
             <button
@@ -1244,6 +1320,17 @@ export default function App() {
             onOpenCustomerProfile={(clientId) =>
               navigateTo('client-list', { clientId })
             }
+          />
+        )}
+
+        {route === 'smart-offers-mail' && (
+          <SmartOffersMailView
+            clients={workspace.clients}
+            orders={workspace.orders || []}
+            invoices={workspace.invoices}
+            products={workspace.products}
+            businessName={workspace.settings.businessName || 'Glamour Galleria'}
+            onBack={goBack}
           />
         )}
       </main>

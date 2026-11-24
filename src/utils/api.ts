@@ -22,10 +22,13 @@ import {
   SellerApprovalStatus,
   SellerFollowRecord,
   SellerPublicPaymentProfile,
+  SmartOfferRecipient,
+  SmartOffersSendResult,
   SupportChatThread,
   SupportSenderRole,
   WorkspaceData,
 } from '../types/business';
+import { auth } from '../firebase';
 import { firestoreService } from './firestoreService';
 
 export function formatApiError(err: unknown, fallback: string): string {
@@ -45,6 +48,10 @@ export function formatApiError(err: unknown, fallback: string): string {
 export const api = {
   saveMediaRecord(record: CloudinaryMediaRecord) {
     return firestoreService.saveMediaRecord(record);
+  },
+
+  fetchPublicSettingsOnly() {
+    return firestoreService.fetchPublicSettingsOnly();
   },
 
   fetchWorkspace() {
@@ -114,6 +121,50 @@ export const api = {
 
   updateCustomerCart(clientId: string, cart: CustomerCartItem[]) {
     return firestoreService.updateCustomerCart(clientId, cart);
+  },
+
+  resolveGoogleCustomerAccount(payload: {
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }) {
+    return firestoreService.resolveGoogleCustomerAccount(payload);
+  },
+
+  completeGoogleCustomerOnboarding(payload: {
+    uid: string;
+    email?: string | null;
+    name: string;
+    mobile: string;
+    profilePhotoDataUrl?: string;
+    referredBy?: string;
+  }) {
+    return firestoreService.completeGoogleCustomerOnboarding(payload);
+  },
+
+  updateCustomerDeliveryAddress(
+    clientId: string,
+    payload: {
+      address: string;
+      city?: string;
+      state?: string;
+      pinCode?: string;
+      whatsapp?: string;
+    }
+  ) {
+    return firestoreService.updateCustomerDeliveryAddress(clientId, payload);
+  },
+
+  trackCustomerCategoryActivity(
+    clientId: string,
+    payload: {
+      category: string;
+      type: 'search' | 'view' | 'order';
+      count?: number;
+    }
+  ) {
+    return firestoreService.trackCustomerCategoryActivity(clientId, payload);
   },
 
   createProduct(payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>) {
@@ -499,5 +550,39 @@ export const api = {
 
   recordAdminOtpVerified(otpId: string) {
     return firestoreService.recordAdminOtpVerified(otpId);
+  },
+
+  async sendSmartOffersMail(payload: {
+    category: string;
+    subject: string;
+    message: string;
+    recipients: SmartOfferRecipient[];
+  }): Promise<SmartOffersSendResult> {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('Please sign in with an authorized Admin Google account first.');
+    }
+    const idToken = await currentUser.getIdToken();
+    const res = await fetch('/api/offers/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<SmartOffersSendResult> & {
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to send Smart Offers Mail.');
+    }
+    return {
+      totalRequested: Number(data.totalRequested || 0),
+      sentCount: Number(data.sentCount || 0),
+      failedCount: Number(data.failedCount || 0),
+      senderDisplay: String(data.senderDisplay || '"Glamour Galleria"'),
+      logs: Array.isArray(data.logs) ? data.logs : [],
+    };
   },
 };

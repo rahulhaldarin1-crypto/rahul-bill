@@ -480,7 +480,7 @@ async function startServer(): Promise<void> {
       });
 
       await transporter.sendMail({
-        from: fromEmail,
+        from: `"Glamour Galleria" <${fromEmail}>`,
         to: targetEmail,
         subject: `Glamour Galleria - Your 6-Digit OTP (${purposeLabel})`,
         text: `Your Glamour Galleria 6-digit verification code for ${purposeLabel} is: ${code}\n\nThis code is valid for 5 minutes. Do not share this code with anyone.`,
@@ -598,6 +598,240 @@ async function startServer(): Promise<void> {
     }
 
     res.json({ verified: true, otpId, email: targetEmail, purpose });
+  });
+
+  const FIREBASE_PROJECT_ID = 'rahul-bill';
+  const AUTHORIZED_ADMIN_EMAILS = new Set([
+    'rahulhaldar.in1@gmail.com',
+    'rahulhaldar.in@gmail.com',
+  ]);
+  let cachedGoogleCerts: { certs: Record<string, string>; expiresAtMs: number } | null = null;
+
+  const getGooglePublicCerts = async (): Promise<Record<string, string>> => {
+    if (cachedGoogleCerts && cachedGoogleCerts.expiresAtMs > Date.now()) {
+      return cachedGoogleCerts.certs;
+    }
+    const response = await fetch(
+      'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+    );
+    if (!response.ok) {
+      throw new Error('Failed to fetch Firebase public verification certificates.');
+    }
+    const cacheControl = response.headers.get('cache-control') || '';
+    const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+    const maxAgeSec = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
+    const certs = (await response.json()) as Record<string, string>;
+    cachedGoogleCerts = {
+      certs,
+      expiresAtMs: Date.now() + Math.max(60, maxAgeSec) * 1000,
+    };
+    return certs;
+  };
+
+  const verifyAuthorizedAdminToken = async (
+    authHeader?: string
+  ): Promise<{ ok: true; email: string } | { ok: false; status: number; error: string }> => {
+    const raw = String(authHeader || '').trim();
+    if (!raw.startsWith('Bearer ')) {
+      return { ok: false, status: 401, error: 'Missing Admin Google authentication token.' };
+    }
+    const token = raw.slice(7).trim();
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      return { ok: false, status: 401, error: 'Invalid authentication token format.' };
+    }
+    try {
+      const [headerB64, payloadB64, sigB64] = parts;
+      const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as {
+        alg?: string;
+        kid?: string;
+      };
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
+        aud?: string;
+        iss?: string;
+        sub?: string;
+        exp?: number;
+        iat?: number;
+        email?: string;
+        email_verified?: boolean;
+      };
+      if (header.alg !== 'RS256' || !header.kid) {
+        return { ok: false, status: 401, error: 'Unsupported token algorithm.' };
+      }
+      const certs = await getGooglePublicCerts();
+      const certPem = certs[header.kid];
+      if (!certPem) {
+        return { ok: false, status: 401, error: 'Unrecognized signing certificate.' };
+      }
+      const signatureValid = crypto.verify(
+        'RSA-SHA256',
+        Buffer.from(`${headerB64}.${payloadB64}`, 'utf8'),
+        certPem,
+        Buffer.from(sigB64, 'base64url')
+      );
+      if (!signatureValid) {
+        return { ok: false, status: 401, error: 'Invalid authentication token signature.' };
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (
+        payload.aud !== FIREBASE_PROJECT_ID ||
+        payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}` ||
+        !payload.sub ||
+        typeof payload.exp !== 'number' ||
+        payload.exp <= nowSec
+      ) {
+        return { ok: false, status: 401, error: 'Authentication session expired or invalid.' };
+      }
+      const email = String(payload.email || '').trim().toLowerCase();
+      if (!email || payload.email_verified !== true || !AUTHORIZED_ADMIN_EMAILS.has(email)) {
+        return {
+          ok: false,
+          status: 403,
+          error: 'Access Denied: Unauthorized Admin Account',
+        };
+      }
+      return { ok: true, email };
+    } catch {
+      return { ok: false, status: 401, error: 'Failed to verify Admin session token.' };
+    }
+  };
+
+  app.post('/api/offers/send', async (req: Request, res: Response) => {
+    try {
+      const authCheck = await verifyAuthorizedAdminToken(req.headers.authorization);
+      if (!authCheck.ok) {
+        res.status(authCheck.status).json({ error: authCheck.error });
+        return;
+      }
+
+      const body = (req.body || {}) as {
+        subject?: unknown;
+        message?: unknown;
+        category?: unknown;
+        recipients?: Array<{ email?: unknown; name?: unknown }>;
+      };
+
+      const subject = String(body.subject || '').trim();
+      const message = String(body.message || '').trim();
+      const category = String(body.category || '').trim();
+      const rawRecipients = Array.isArray(body.recipients) ? body.recipients : [];
+
+      if (!subject || subject.length > 200) {
+        res.status(400).json({ error: 'Please enter a valid email subject (1-200 characters).' });
+        return;
+      }
+      if (!message || message.length > 6000) {
+        res.status(400).json({ error: 'Please enter a valid offer or notice message.' });
+        return;
+      }
+
+      const uniqueRecipients = new Map<string, { email: string; name: string }>();
+      for (const item of rawRecipients) {
+        const email = String(item?.email || '').trim().toLowerCase();
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+        if (!uniqueRecipients.has(email)) {
+          uniqueRecipients.set(email, {
+            email,
+            name: String(item?.name || 'Valued Customer').trim() || 'Valued Customer',
+          });
+        }
+      }
+
+      const recipientList = Array.from(uniqueRecipients.values()).slice(0, 50);
+      if (recipientList.length === 0) {
+        res.status(400).json({ error: 'Please select at least one valid customer email address.' });
+        return;
+      }
+
+      const smtpHost = String(process.env.SMTP_HOST || '').trim();
+      const smtpPort = Number(process.env.SMTP_PORT || 587);
+      const smtpUser = String(process.env.SMTP_USER || '').trim();
+      const smtpPass = String(process.env.SMTP_PASS || '').trim();
+      const fromEmail = String(process.env.OTP_FROM_EMAIL || smtpUser).trim();
+
+      if (!smtpHost || !smtpUser || !smtpPass || !fromEmail || !Number.isFinite(smtpPort)) {
+        res.status(503).json({
+          error:
+            'SMTP email service is not configured yet. Please configure SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and OTP_FROM_EMAIL environment variables.',
+        });
+        return;
+      }
+
+      const senderDisplay = `"Glamour Galleria" <${fromEmail}>`;
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+
+      const logs: Array<{
+        email: string;
+        name: string;
+        status: 'sent' | 'failed';
+        error?: string;
+      }> = [];
+      let sentCount = 0;
+      let failedCount = 0;
+
+      const formattedParagraphs = message
+        .split(/\r?\n/)
+        .map((line) => (line.trim() ? `<p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(line)}</p>` : '<div style="height:8px;"></div>'))
+        .join('');
+
+      for (const recipient of recipientList) {
+        try {
+          const personalizedHtml = `
+            <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; border: 1px solid #EFE2F5; border-radius: 16px; background: #FDF9FC; color: #1F122B;">
+              <div style="border-bottom: 1px solid #EDE1F4; padding-bottom: 14px; margin-bottom: 18px;">
+                <h2 style="margin: 0; color: #6D28D9; font-size: 22px;">Glamour Galleria</h2>
+                ${category ? `<p style="margin: 4px 0 0; font-size: 12px; color: #7E22CE; font-weight: bold;">${escapeHtml(category)}</p>` : ''}
+              </div>
+              <p style="margin: 0 0 14px; font-size: 14px;">Hello <strong>${escapeHtml(recipient.name)}</strong>,</p>
+              <div style="font-size: 14px; color: #2E1F3D; background: #FFFFFF; border: 1px solid #EFE2F5; border-radius: 12px; padding: 18px;">
+                ${formattedParagraphs}
+              </div>
+              <p style="margin: 18px 0 0; font-size: 12px; color: #6B5B7B;">Warm regards,<br/><strong>Glamour Galleria</strong></p>
+            </div>
+          `;
+          const personalizedText = `Hello ${recipient.name},\n\n${message}\n\nWarm regards,\nGlamour Galleria`;
+
+          await transporter.sendMail({
+            from: senderDisplay,
+            to: recipient.email,
+            subject,
+            text: personalizedText,
+            html: personalizedHtml,
+          });
+          sentCount += 1;
+          logs.push({ email: recipient.email, name: recipient.name, status: 'sent' });
+        } catch (sendErr) {
+          failedCount += 1;
+          logs.push({
+            email: recipient.email,
+            name: recipient.name,
+            status: 'failed',
+            error: sendErr instanceof Error ? sendErr.message : 'Delivery failed',
+          });
+        }
+      }
+
+      res.json({
+        totalRequested: recipientList.length,
+        sentCount,
+        failedCount,
+        senderDisplay,
+        logs,
+      });
+    } catch (err) {
+      console.error('Smart offers mail error:', err);
+      res.status(500).json({
+        error: 'Could not send Smart Offers Mail. Please verify your SMTP configuration and try again.',
+      });
+    }
   });
 
   // OPEN ADMIN PANEL WORKSPACE ROUTES (No Login Gate)

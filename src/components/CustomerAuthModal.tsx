@@ -1,88 +1,130 @@
 import React, { useEffect, useState } from 'react';
-import {
-  ArrowLeft,
-  Camera,
-  CheckCircle2,
-  Eye,
-  EyeOff,
-  KeyRound,
-  Lock,
-  MessageCircle,
-  Phone,
-  UserPlus,
-  X,
-} from 'lucide-react';
+import { Camera, CheckCircle2, Phone, UserCheck, X } from 'lucide-react';
+import { signInWithGoogleWithFallback } from '../firebase';
 import { Client } from '../types/business';
 import { api, formatApiError } from '../utils/api';
 import {
-  buildForgotPasswordWhatsAppUrl,
   normalizeIndianPhone,
+  stripPlus91Prefix,
   validateEnglishName,
-  validateGmailAddress,
 } from '../utils/calculations';
 import { uploadMediaToCloudinary } from '../utils/cloudinary';
-import { sanitizeNumericInput } from '../utils/numberInput';
 import { CustomerAvatar } from './CustomerAvatar';
-import { EmailOtpBox } from './EmailOtpBox';
+
+export interface GoogleOnboardingSeed {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL: string;
+  existingMobile?: string;
+}
 
 interface CustomerAuthModalProps {
   open: boolean;
-  initialMode?: 'login' | 'register';
   noticeBanner?: string;
+  initialOnboardingUser?: GoogleOnboardingSeed | null;
   onClose: () => void;
   onSuccess: (client: Client) => void;
 }
 
 export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   open,
-  initialMode = 'login',
   noticeBanner = '',
+  initialOnboardingUser = null,
   onClose,
   onSuccess,
 }) => {
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
+  const [step, setStep] = useState<'signin' | 'onboarding'>('signin');
   const [error, setError] = useState('');
-  const [successBanner, setSuccessBanner] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  const [submittingProfile, setSubmittingProfile] = useState(false);
 
-  // Login state
-  const [loginPhone, setLoginPhone] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [showLoginPassword, setShowLoginPassword] = useState(false);
-
-  // Registration state
-  const [regName, setRegName] = useState('');
-  const [regEmail, setRegEmail] = useState('');
-  const [regOtpId, setRegOtpId] = useState('');
-  const [regPhone, setRegPhone] = useState('');
-  const [regAddress, setRegAddress] = useState('');
-  const [regCity, setRegCity] = useState('');
-  const [regState, setRegState] = useState('');
-  const [regPinCode, setRegPinCode] = useState('');
-  const [regPassword, setRegPassword] = useState('');
-  const [showRegPassword, setShowRegPassword] = useState(false);
-  const [regPhoto, setRegPhoto] = useState('');
+  // Google user pending onboarding
+  const [googleUid, setGoogleUid] = useState('');
+  const [googleEmail, setGoogleEmail] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [profilePhoto, setProfilePhoto] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
-  // Forgot Password via Email OTP state
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotOtpId, setForgotOtpId] = useState('');
-  const [forgotNewPassword, setForgotNewPassword] = useState('');
-  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
-  const [showForgotPassword, setShowForgotPassword] = useState(false);
-
   useEffect(() => {
-    if (open) {
-      setMode(initialMode);
-      setError('');
-      setSuccessBanner('');
-      setRegOtpId('');
-      setForgotOtpId('');
+    if (!open) return;
+    setError('');
+    if (initialOnboardingUser) {
+      setGoogleUid(initialOnboardingUser.uid);
+      setGoogleEmail(initialOnboardingUser.email);
+      setFullName(
+        initialOnboardingUser.displayName
+          .replace(/[^A-Za-z .'-]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      );
+      setMobile(stripPlus91Prefix(initialOnboardingUser.existingMobile || ''));
+      setProfilePhoto(initialOnboardingUser.photoURL || '');
+      setStep('onboarding');
+    } else {
+      setStep('signin');
     }
-  }, [open, initialMode]);
+  }, [open, initialOnboardingUser]);
 
   if (!open) return null;
+
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setSigningIn(true);
+    try {
+      const result = await signInWithGoogleWithFallback();
+      if (result.redirected || !result.user) {
+        return;
+      }
+      const user = result.user;
+      const resolved = await api.resolveGoogleCustomerAccount({
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName,
+        photoURL: user.photoURL,
+      });
+
+      if (!resolved.needsOnboarding && resolved.client) {
+        onSuccess(resolved.client);
+        return;
+      }
+
+      const rawDisplayName = String(
+        resolved.client?.name || user.displayName || ''
+      )
+        .replace(/[^A-Za-z .'-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      setGoogleUid(user.uid);
+      setGoogleEmail(String(user.email || '').trim().toLowerCase());
+      setFullName(rawDisplayName);
+      setMobile(stripPlus91Prefix(resolved.client?.mobile || ''));
+      setProfilePhoto(
+        resolved.client?.profilePhotoDataUrl || user.photoURL || ''
+      );
+      setStep('onboarding');
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
+      if (
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
+      ) {
+        setError('Google sign-in was cancelled. Please try again.');
+      } else {
+        setError(
+          formatApiError(err, 'Could not complete Google Sign-In. Please try again.')
+        );
+      }
+    } finally {
+      setSigningIn(false);
+    }
+  };
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -100,7 +142,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
         allowedTypes: ['image'],
         onProgress: (pct) => setUploadProgress(pct),
       });
-      setRegPhoto(record.secureUrl);
+      setProfilePhoto(record.secureUrl);
     } catch (err) {
       setError(
         err instanceof Error
@@ -113,72 +155,25 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     }
   };
 
-  const handleLoginSubmit = async (e: React.FormEvent) => {
+  const handleCompleteOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    const phoneCheck = normalizeIndianPhone(loginPhone);
-    if (!phoneCheck.valid) {
-      setError(phoneCheck.error || 'Please enter a valid 10-digit mobile number.');
-      return;
-    }
-    if (!loginPassword.trim()) {
-      setError('Please enter your password.');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const res = await api.loginCustomerAccount(
-        phoneCheck.formatted,
-        loginPassword
-      );
-      onSuccess(res.client);
-    } catch (err) {
-      setError(formatApiError(err, 'Invalid phone number or password.'));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleRegisterSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSuccessBanner('');
-
-    const nameCheck = validateEnglishName(regName, 'Full Name');
+    const nameCheck = validateEnglishName(fullName, 'Full Name');
     if (!nameCheck.valid) {
       setError(nameCheck.error || 'Please enter your full name in English.');
       return;
     }
-    const gmailCheck = validateGmailAddress(regEmail);
-    if (!gmailCheck.valid) {
-      setError(
-        gmailCheck.error || 'Please enter a valid @gmail.com address for OTP verification.'
-      );
-      return;
-    }
-    if (!regOtpId) {
-      setError(
-        'Please send and verify the 6-digit Email OTP on your Gmail address first.'
-      );
-      return;
-    }
-    const phoneCheck = normalizeIndianPhone(regPhone);
+
+    const phoneCheck = normalizeIndianPhone(mobile);
     if (!phoneCheck.valid) {
-      setError(phoneCheck.error || 'Please enter a valid 10-digit mobile number.');
-      return;
-    }
-    if (!regAddress.trim()) {
-      setError('Please enter your full delivery address.');
-      return;
-    }
-    if (regPassword.trim().length < 4) {
-      setError('Password must be at least 4 characters.');
+      setError(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
       return;
     }
 
-    setSubmitting(true);
+    setSubmittingProfile(true);
     try {
       let referredBy = '';
       try {
@@ -188,78 +183,22 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       } catch {
         // ignore storage errors
       }
-      const res = await api.registerCustomerAccount({
+
+      const client = await api.completeGoogleCustomerOnboarding({
+        uid: googleUid,
+        email: googleEmail,
         name: nameCheck.cleaned,
-        email: gmailCheck.email,
-        otpId: regOtpId,
-        phone: phoneCheck.formatted,
-        address: regAddress.trim(),
-        city: regCity.trim(),
-        state: regState.trim(),
-        pinCode: regPinCode.trim(),
-        password: regPassword.trim(),
-        profilePhotoDataUrl: regPhoto,
+        mobile: phoneCheck.formatted,
+        profilePhotoDataUrl: profilePhoto,
         referredBy,
       });
-      onSuccess(res.client);
+      onSuccess(client);
     } catch (err) {
-      setError(
-        formatApiError(err, 'Could not create your customer account.')
-      );
+      setError(formatApiError(err, 'Could not save your profile details.'));
     } finally {
-      setSubmitting(false);
+      setSubmittingProfile(false);
     }
   };
-
-  const handleForgotSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSuccessBanner('');
-
-    const gmailCheck = validateGmailAddress(forgotEmail);
-    if (!gmailCheck.valid) {
-      setError(
-        gmailCheck.error || 'Please enter your registered @gmail.com address.'
-      );
-      return;
-    }
-    if (!forgotOtpId) {
-      setError('Please send and verify the 6-digit Email OTP first.');
-      return;
-    }
-    if (forgotNewPassword.trim().length < 4) {
-      setError('New password must be at least 4 characters.');
-      return;
-    }
-    if (forgotNewPassword.trim() !== forgotConfirmPassword.trim()) {
-      setError('New password and Confirm password do not match.');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      await api.resetCustomerPasswordWithOtp({
-        email: gmailCheck.email,
-        otpId: forgotOtpId,
-        newPassword: forgotNewPassword.trim(),
-      });
-      setForgotNewPassword('');
-      setForgotConfirmPassword('');
-      setForgotOtpId('');
-      setMode('login');
-      setSuccessBanner(
-        'Password reset successful! You can now sign in with your phone number and new password.'
-      );
-    } catch (err) {
-      setError(
-        formatApiError(err, 'Could not reset password. Please try again.')
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const forgotPasswordUrl = buildForgotPasswordWhatsAppUrl(loginPhone);
 
   return (
     <div
@@ -276,18 +215,12 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
               id="customer-auth-title"
               className="font-display-serif text-lg font-bold text-[#1F122B]"
             >
-              {mode === 'login'
-                ? 'Customer Sign In'
-                : mode === 'register'
-                  ? 'Create Customer Account'
-                  : 'Reset Password via Gmail OTP'}
+              {step === 'signin' ? 'Sign In to Glamour Galleria' : 'Complete Your Profile'}
             </h2>
             <p className="text-xs text-[#6B5B7B] mt-0.5">
-              {mode === 'login'
-                ? 'Access your cart, track orders, and download bills.'
-                : mode === 'register'
-                  ? 'Register once with Gmail OTP verification for faster checkout.'
-                  : 'Verify your registered Gmail with a 6-digit OTP to set a new password.'}
+              {step === 'signin'
+                ? 'Continue seamlessly with your Google account.'
+                : 'Quick one-time setup — confirm your name, mobile number, and optional photo.'}
             </p>
           </div>
           <button
@@ -307,260 +240,62 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
             </div>
           )}
 
-          {successBanner && (
-            <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2.5 text-xs font-semibold text-[#15803D] flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>{successBanner}</span>
-            </div>
-          )}
-
-          {/* Mode Tabs */}
-          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#F8F3FB] border border-[#EFE2F5]">
-            <button
-              type="button"
-              onClick={() => {
-                setMode('login');
-                setError('');
-              }}
-              className={`rounded-lg py-2 text-xs font-bold transition-colors cursor-pointer ${
-                mode === 'login' || mode === 'forgot'
-                  ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                  : 'text-[#5B4B6B] hover:text-[#1F122B]'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode('register');
-                setError('');
-                setSuccessBanner('');
-              }}
-              className={`rounded-lg py-2 text-xs font-bold transition-colors cursor-pointer ${
-                mode === 'register'
-                  ? 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
-                  : 'text-[#5B4B6B] hover:text-[#1F122B]'
-              }`}
-            >
-              Create Account
-            </button>
-          </div>
-
           {error && (
             <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
               {error}
             </div>
           )}
 
-          {mode === 'login' ? (
-            <form onSubmit={handleLoginSubmit} noValidate className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Phone Number <span className="text-[#DB2777]">*</span>
-                </label>
-                <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
-                  <span className="inline-flex items-center gap-1 px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
-                    <Phone className="w-3.5 h-3.5 text-[#9333EA]" />
-                    +91
-                  </span>
-                  <input
-                    type="tel"
-                    inputMode="tel"
-                    autoFocus
-                    required
-                    value={loginPhone}
-                    onChange={(e) => setLoginPhone(e.target.value)}
-                    placeholder="9876543210"
-                    className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <label className="block text-xs font-semibold text-[#4A3B59]">
-                    Password <span className="text-[#DB2777]">*</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMode('forgot');
-                      setError('');
-                      setSuccessBanner('');
-                    }}
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#7E22CE] hover:text-[#DB2777] hover:underline cursor-pointer"
-                  >
-                    <KeyRound className="w-3 h-3" />
-                    <span>Forgot Password?</span>
-                  </button>
-                </div>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type={showLoginPassword ? 'text' : 'password'}
-                    required
-                    autoComplete="current-password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="Enter your account password"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-10 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowLoginPassword((prev) => !prev)}
-                    aria-label={
-                      showLoginPassword ? 'Hide password' : 'Show password'
-                    }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                  >
-                    {showLoginPassword ? (
-                      <EyeOff className="w-4 h-4" />
-                    ) : (
-                      <Eye className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
+          {step === 'signin' ? (
+            <div className="space-y-4 py-2">
               <button
-                type="submit"
-                disabled={submitting}
-                className="w-full rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2.5 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity cursor-pointer disabled:opacity-60"
+                type="button"
+                disabled={signingIn}
+                onClick={handleGoogleSignIn}
+                className="w-full inline-flex items-center justify-center gap-3 rounded-xl border border-[#E6D9EE] bg-white hover:bg-[#FDF9FC] hover:border-[#9333EA] py-3 px-5 text-sm font-bold text-[#1F122B] shadow-xs transition-all cursor-pointer disabled:opacity-60"
               >
-                {submitting ? 'Signing In...' : 'Sign In'}
+                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+                  />
+                </svg>
+                <span>
+                  {signingIn ? 'Signing in with Google...' : 'Sign in with Google'}
+                </span>
               </button>
 
-              <div className="rounded-xl border border-[#F4ECF8] bg-[#FDF9FC] p-3 text-[11px] text-[#5B4B6B] flex items-center justify-between gap-2">
-                <span>Need help resetting your password?</span>
-                <a
-                  href={forgotPasswordUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 font-bold text-[#15803D] hover:underline whitespace-nowrap shrink-0"
-                >
-                  <MessageCircle className="w-3 h-3" />
-                  <span>WhatsApp Support</span>
-                </a>
-              </div>
-            </form>
-          ) : mode === 'forgot' ? (
-            <form onSubmit={handleForgotSubmit} noValidate className="space-y-3.5">
-              <EmailOtpBox
-                purpose="customer_forgot_password"
-                email={forgotEmail}
-                onEmailChange={setForgotEmail}
-                label="Registered Gmail Address (@gmail.com)"
-                helperText="Enter the @gmail.com address linked to your customer account to receive a 6-digit OTP."
-                verifiedOtpId={forgotOtpId}
-                onVerified={({ otpId, email: verifiedEmail }) => {
-                  setForgotOtpId(otpId);
-                  setForgotEmail(verifiedEmail);
-                  setError('');
-                }}
-                onResetVerification={() => setForgotOtpId('')}
-                disabled={submitting}
-              />
-
-              {forgotOtpId && (
-                <>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      New Password <span className="text-[#DB2777]">*</span>
-                    </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type={showForgotPassword ? 'text' : 'password'}
-                        required
-                        minLength={4}
-                        autoComplete="new-password"
-                        value={forgotNewPassword}
-                        onChange={(e) => setForgotNewPassword(e.target.value)}
-                        placeholder="Minimum 4 characters"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-10 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowForgotPassword((prev) => !prev)}
-                        aria-label={
-                          showForgotPassword ? 'Hide password' : 'Show password'
-                        }
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                      >
-                        {showForgotPassword ? (
-                          <EyeOff className="w-4 h-4" />
-                        ) : (
-                          <Eye className="w-4 h-4" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      Confirm New Password <span className="text-[#DB2777]">*</span>
-                    </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type={showForgotPassword ? 'text' : 'password'}
-                        required
-                        minLength={4}
-                        autoComplete="new-password"
-                        value={forgotConfirmPassword}
-                        onChange={(e) => setForgotConfirmPassword(e.target.value)}
-                        placeholder="Re-enter new password"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-4 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="w-full rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2.5 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity cursor-pointer disabled:opacity-60"
-                  >
-                    {submitting ? 'Updating Password...' : 'Reset Password'}
-                  </button>
-                </>
+              <p className="text-[11px] text-center text-[#6B5B7B] leading-relaxed">
+                New customers complete a 10-second profile setup with just Name, Mobile Number, and an optional Profile Photo. Returning customers go straight into their account.
+              </p>
+            </div>
+          ) : (
+            <form onSubmit={handleCompleteOnboarding} noValidate className="space-y-4">
+              {googleEmail && (
+                <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2 text-xs font-semibold text-[#15803D] flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span className="truncate">Google verified: {googleEmail}</span>
+                </div>
               )}
 
-              <div className="flex items-center justify-between pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode('login');
-                    setError('');
-                  }}
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Back to Sign In</span>
-                </button>
-                <a
-                  href={forgotPasswordUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#15803D] hover:underline"
-                >
-                  <MessageCircle className="w-3 h-3" />
-                  <span>WhatsApp Support</span>
-                </a>
-              </div>
-            </form>
-          ) : (
-            <form
-              onSubmit={handleRegisterSubmit}
-              noValidate
-              className="space-y-3.5"
-            >
-              {/* Optional Profile Picture */}
+              {/* 1. Optional Profile Photo Upload (pre-filled with Google photo) */}
               <div className="flex items-center gap-3.5 rounded-2xl border border-[#F4ECF8] bg-[#FDF9FC] p-3">
                 <CustomerAvatar
-                  photoDataUrl={regPhoto}
-                  name={regName}
-                  size={52}
+                  photoDataUrl={profilePhoto}
+                  name={fullName}
+                  size={56}
                 />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-semibold text-[#1F122B]">
@@ -572,7 +307,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                       <span>
                         {uploadingPhoto
                           ? `Uploading${uploadProgress !== null ? ` ${uploadProgress}%` : ''}...`
-                          : regPhoto
+                          : profilePhoto
                             ? 'Change Photo'
                             : 'Upload Photo'}
                       </span>
@@ -584,10 +319,10 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                         className="sr-only"
                       />
                     </label>
-                    {regPhoto && (
+                    {profilePhoto && (
                       <button
                         type="button"
-                        onClick={() => setRegPhoto('')}
+                        onClick={() => setProfilePhoto('')}
                         className="text-[11px] font-semibold text-[#BE123C] hover:underline cursor-pointer"
                       >
                         Remove
@@ -597,6 +332,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 </div>
               </div>
 
+              {/* 2. Full Name */}
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                   Full Name (in English) <span className="text-[#DB2777]">*</span>
@@ -604,150 +340,50 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 <input
                   type="text"
                   required
-                  value={regName}
-                  onChange={(e) => setRegName(e.target.value)}
+                  autoFocus
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
                   placeholder="Enter your full name in English (e.g. Priya Sharma)"
-                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 />
               </div>
 
+              {/* 3. Mobile Number */}
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Phone Number <span className="text-[#DB2777]">*</span>
+                  Mobile Number <span className="text-[#DB2777]">*</span>
                 </label>
                 <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
-                  <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                  <span className="inline-flex items-center gap-1 px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                    <Phone className="w-3.5 h-3.5 text-[#9333EA]" />
                     +91
                   </span>
                   <input
                     type="tel"
                     inputMode="tel"
                     required
-                    value={regPhone}
-                    onChange={(e) => setRegPhone(e.target.value)}
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value)}
                     placeholder="9876543210"
-                    className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                    className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
                   />
                 </div>
               </div>
 
-              <EmailOtpBox
-                purpose="customer_register"
-                email={regEmail}
-                onEmailChange={setRegEmail}
-                label="Gmail Address (@gmail.com · OTP Required)"
-                helperText="First-time account creation requires a 6-digit OTP sent to your Gmail. Future sign-ins use password only."
-                verifiedOtpId={regOtpId}
-                onVerified={({ otpId, email: verifiedEmail }) => {
-                  setRegOtpId(otpId);
-                  setRegEmail(verifiedEmail);
-                  setError('');
-                }}
-                onResetVerification={() => setRegOtpId('')}
-                disabled={submitting}
-              />
-
-              <div>
-                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Full Delivery Address <span className="text-[#DB2777]">*</span>
-                </label>
-                <textarea
-                  rows={2}
-                  required
-                  value={regAddress}
-                  onChange={(e) => setRegAddress(e.target.value)}
-                  placeholder="House/Flat No, Street, Area, Landmark..."
-                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
-                    City
-                  </label>
-                  <input
-                    type="text"
-                    value={regCity}
-                    onChange={(e) => setRegCity(e.target.value)}
-                    placeholder="City"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
-                    State
-                  </label>
-                  <input
-                    type="text"
-                    value={regState}
-                    onChange={(e) => setRegState(e.target.value)}
-                    placeholder="State"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
-                    PIN Code
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={regPinCode}
-                    onChange={(e) =>
-                      setRegPinCode(
-                        sanitizeNumericInput(e.target.value, {
-                          allowDecimal: false,
-                        })
-                      )
-                    }
-                    placeholder="PIN"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-xs font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Create Password <span className="text-[#DB2777]">*</span>
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type={showRegPassword ? 'text' : 'password'}
-                    required
-                    minLength={4}
-                    autoComplete="new-password"
-                    value={regPassword}
-                    onChange={(e) => setRegPassword(e.target.value)}
-                    placeholder="Minimum 4 characters"
-                    className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-10 pr-10 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowRegPassword((prev) => !prev)}
-                    aria-label={
-                      showRegPassword ? 'Hide password' : 'Show password'
-                    }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                  >
-                    {showRegPassword ? (
-                      <EyeOff className="w-4 h-4" />
-                    ) : (
-                      <Eye className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
+              <p className="text-[11px] text-[#6B5B7B]">
+                No address needed right now — you can save your delivery address later in your Account or during checkout.
+              </p>
 
               <button
                 type="submit"
-                disabled={submitting || uploadingPhoto}
+                disabled={submittingProfile || uploadingPhoto}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2.5 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity cursor-pointer disabled:opacity-60"
               >
-                <UserPlus className="w-4 h-4" />
+                <UserCheck className="w-4 h-4" />
                 <span>
-                  {submitting ? 'Creating Account...' : 'Create Account & Continue'}
+                  {submittingProfile
+                    ? 'Saving Profile...'
+                    : 'Save Profile & Continue'}
                 </span>
               </button>
             </form>

@@ -18,6 +18,7 @@ import {
   MoreVertical,
   Plus,
   QrCode,
+  Search,
   Share2,
   ShoppingBag,
   ShoppingCart,
@@ -69,9 +70,10 @@ import {
   uploadMediaToCloudinary,
 } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
+import { auth, getRedirectResult } from '../firebase';
 import { AppBackground } from './AppBackground';
 import { BrandLogo } from './BrandLogo';
-import { CustomerAuthModal } from './CustomerAuthModal';
+import { CustomerAuthModal, GoogleOnboardingSeed } from './CustomerAuthModal';
 import { CustomerAvatar } from './CustomerAvatar';
 import {
   CustomerDashboardTab,
@@ -254,11 +256,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
   // Customer Auth Modal & pending action after login
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>(
-    'login'
-  );
   const [authNotice, setAuthNotice] = useState('');
   const [pendingAction, setPendingAction] = useState<PendingAuthAction>(null);
+  const [pendingOnboardingUser, setPendingOnboardingUser] =
+    useState<GoogleOnboardingSeed | null>(null);
 
   // Store Toast
   const [storeNotice, setStoreNotice] = useState('');
@@ -300,6 +301,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     'all'
   );
   const [shoppingCategory, setShoppingCategory] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [failedAdImage, setFailedAdImage] = useState(false);
 
@@ -472,17 +474,29 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   ]);
 
   const filteredShoppingItems = useMemo(() => {
-    if (shoppingCategory === 'ALL') return shoppingItems;
-    const matched = shoppingItems.filter(
-      (item) => item.category === shoppingCategory
-    );
-    if (placementRule === 'priority_category') {
-      return [...matched].sort(
+    const q = searchQuery.trim().toLowerCase();
+    let list =
+      shoppingCategory === 'ALL'
+        ? shoppingItems
+        : shoppingItems.filter((item) => item.category === shoppingCategory);
+
+    if (q) {
+      list = list.filter(
+        (item) =>
+          item.name.toLowerCase().includes(q) ||
+          item.category.toLowerCase().includes(q) ||
+          (item.description || '').toLowerCase().includes(q) ||
+          (item.sellerName || '').toLowerCase().includes(q)
+      );
+    }
+
+    if (shoppingCategory !== 'ALL' && placementRule === 'priority_category') {
+      return [...list].sort(
         (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
       );
     }
-    return matched;
-  }, [shoppingItems, shoppingCategory, placementRule]);
+    return list;
+  }, [shoppingItems, shoppingCategory, searchQuery, placementRule]);
 
   const hasDiscountContent =
     viewPanel.discount.enabled &&
@@ -646,17 +660,18 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const openAuthForAction = (
     action: PendingAuthAction,
     notice: string,
-    mode: 'login' | 'register' = 'login'
+    _mode?: 'login' | 'register'
   ) => {
+    setPendingOnboardingUser(null);
     setPendingAction(action);
     setAuthNotice(notice);
-    setAuthModalMode(mode);
     setAuthModalOpen(true);
   };
 
   const handleCustomerAuthSuccess = async (client: Client) => {
     setAuthModalOpen(false);
     setAuthNotice('');
+    setPendingOnboardingUser(null);
     onCustomerLogin?.(client);
 
     const action = pendingAction;
@@ -899,10 +914,92 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Recover mobile browser Google Sign-In redirect result automatically
+  useEffect(() => {
+    let active = true;
+    getRedirectResult(auth)
+      .then(async (result) => {
+        if (!active || !result?.user) return;
+        const user = result.user;
+        const resolved = await api.resolveGoogleCustomerAccount({
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: user.photoURL,
+        });
+        if (!active) return;
+        if (!resolved.needsOnboarding && resolved.client) {
+          onCustomerLogin?.(resolved.client);
+          triggerStoreNotice(`Signed in as ${resolved.client.name}`);
+          return;
+        }
+        setPendingOnboardingUser({
+          uid: user.uid,
+          email: String(user.email || '').trim().toLowerCase(),
+          displayName: String(resolved.client?.name || user.displayName || ''),
+          photoURL: resolved.client?.profilePhotoDataUrl || user.photoURL || '',
+          existingMobile: resolved.client?.mobile,
+        });
+        setAuthNotice('Complete your 10-second profile setup to continue.');
+        setAuthModalOpen(true);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [onCustomerLogin]);
+
+  // Debounced search tracking per category for logged-in customer
+  useEffect(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!loggedInCustomer || q.length < 2) return;
+    const timer = setTimeout(() => {
+      const matchedCats = new Set<string>();
+      for (const cat of PRODUCT_CATEGORIES) {
+        if (cat.toLowerCase().includes(q)) matchedCats.add(cat);
+      }
+      for (const item of shoppingItems) {
+        if (
+          item.name.toLowerCase().includes(q) ||
+          item.category.toLowerCase().includes(q) ||
+          (item.description || '').toLowerCase().includes(q)
+        ) {
+          if (item.category) matchedCats.add(item.category);
+        }
+        if (matchedCats.size >= 3) break;
+      }
+      if (shoppingCategory !== 'ALL') matchedCats.add(shoppingCategory);
+      for (const cat of Array.from(matchedCats).slice(0, 3)) {
+        void api.trackCustomerCategoryActivity(loggedInCustomer.id, {
+          category: cat,
+          type: 'search',
+        });
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [searchQuery, loggedInCustomer, shoppingItems, shoppingCategory]);
+
+  const handleSelectShoppingCategory = (category: string) => {
+    setShoppingCategory(category);
+    if (category !== 'ALL' && loggedInCustomer) {
+      void api.trackCustomerCategoryActivity(loggedInCustomer.id, {
+        category,
+        type: 'search',
+      });
+    }
+  };
+
   // --- Product Detail & Checkout Modal ---
   const handledQueryProductRef = useRef(false);
 
   const openProductDetail = (item: PublicShopProduct) => {
+    if (loggedInCustomer && item.category) {
+      void api.trackCustomerCategoryActivity(loggedInCustomer.id, {
+        category: item.category,
+        type: 'view',
+      });
+    }
     setSelectedProduct(item);
     setActiveImageIndex(0);
     setModalStep('detail');
@@ -1917,33 +2014,55 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       aria-label="Shopping Collection"
                       className="rounded-3xl border border-[#EFE2F5] bg-white/92 backdrop-blur-md p-3.5 sm:p-5 space-y-4"
                     >
-                      {/* Compact Fixed/Sticky Category Chips (All + 7 Exact Categories) */}
-                      <div className="sticky top-16 z-20 -mx-1 px-1.5 py-2 bg-white/95 backdrop-blur-md border-b border-[#F4ECF8] rounded-xl flex items-center gap-1.5 overflow-x-auto sm:flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => setShoppingCategory('ALL')}
-                          className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                            shoppingCategory === 'ALL'
-                              ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
-                              : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
-                          }`}
-                        >
-                          All ({shoppingItems.length})
-                        </button>
-                        {PRODUCT_CATEGORIES.map((cat) => (
+                      {/* Compact Fixed/Sticky Search Bar & Category Chips */}
+                      <div className="sticky top-16 z-20 -mx-1 px-2 py-2 bg-white/95 backdrop-blur-md border-b border-[#F4ECF8] rounded-xl space-y-2">
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-[#9333EA] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="search"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search products or categories (e.g. Perfumes, Jewellery, Clothing)..."
+                            className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-8 pr-8 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                          />
+                          {searchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setSearchQuery('')}
+                              aria-label="Clear search"
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 overflow-x-auto sm:flex-wrap">
                           <button
-                            key={cat}
                             type="button"
-                            onClick={() => setShoppingCategory(cat)}
+                            onClick={() => handleSelectShoppingCategory('ALL')}
                             className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                              shoppingCategory === cat
-                                ? 'border-[#DB2777] bg-[#DB2777] text-white'
-                                : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
+                              shoppingCategory === 'ALL'
+                                ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                                : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
                             }`}
                           >
-                            {cat}
+                            All ({shoppingItems.length})
                           </button>
-                        ))}
+                          {PRODUCT_CATEGORIES.map((cat) => (
+                            <button
+                              key={cat}
+                              type="button"
+                              onClick={() => handleSelectShoppingCategory(cat)}
+                              className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                                shoppingCategory === cat
+                                  ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                                  : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#DB2777]'
+                              }`}
+                            >
+                              {cat}
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
                       {filteredShoppingItems.length === 0 ? (
@@ -3327,14 +3446,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         </div>
       )}
 
-      {/* Customer Login / Create Account Modal */}
+      {/* Customer Google Sign-In & Quick Onboarding Modal */}
       <CustomerAuthModal
         open={authModalOpen}
-        initialMode={authModalMode}
         noticeBanner={authNotice}
+        initialOnboardingUser={pendingOnboardingUser}
         onClose={() => {
           setAuthModalOpen(false);
           setPendingAction(null);
+          setPendingOnboardingUser(null);
           setAuthNotice('');
         }}
         onSuccess={handleCustomerAuthSuccess}

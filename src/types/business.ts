@@ -12,7 +12,8 @@ export type AppRoute =
   | 'view-panel-control'
   | 'orders'
   | 'seller-hub-manage'
-  | 'help-chat';
+  | 'help-chat'
+  | 'smart-offers-mail';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -227,10 +228,20 @@ export interface CustomerCartItem {
   sellerName?: string;
 }
 
+export interface CategoryInterestEntry {
+  searches: number;
+  views: number;
+  orders: number;
+  score: number;
+  lastActivityAt: string;
+}
+
 export interface Client {
   id: string;
   name: string;
   email?: string;
+  authUid?: string;
+  profileCompleted?: boolean;
   mobile: string;
   whatsapp: string;
   address: string;
@@ -245,6 +256,8 @@ export interface Client {
   cart?: CustomerCartItem[];
   referralCode?: string;
   referredBy?: string;
+  categoryInterests?: Record<string, CategoryInterestEntry>;
+  totalCategoryOrders?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -421,6 +434,7 @@ export interface CustomerOrder {
   invoiceId?: string;
   invoiceNumber?: string;
   confirmedAt?: string;
+  categoryOrdersTracked?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -585,4 +599,27 @@ export interface WorkspaceData {
   highlightRequests: HighlightRequest[];
   sellerFollows?: SellerFollowRecord[];
   productReviews?: ProductReview[];
+}
+
+export interface SmartOfferRecipient {
+  email: string;
+  name?: string;
+  clientId?: string;
+  orderCount?: number;
+  interestScore?: number;
+}
+
+export interface SmartOffersSendDeliveryItem {
+  email: string;
+  name?: string;
+  status: 'sent' | 'failed';
+  error?: string;
+}
+
+export interface SmartOffersSendResult {
+  totalRequested: number;
+  sentCount: number;
+  failedCount: number;
+  senderDisplay: string;
+  logs: SmartOffersSendDeliveryItem[];
 }

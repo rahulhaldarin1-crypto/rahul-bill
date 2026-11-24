@@ -57,13 +57,11 @@ import {
   mergeAdminPaymentSettings,
   stripPlus91Prefix,
   validateAdultDateOfBirth,
-  validateGmailAddress,
 } from '../utils/calculations';
 import {
   getOptimizedMediaUrl,
   uploadMediaToCloudinary,
 } from '../utils/cloudinary';
-import { EmailOtpBox } from './EmailOtpBox';
 import { ProductsView } from './ProductsView';
 
 interface SellerHubViewProps {
@@ -124,12 +122,6 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loginForgotMode, setLoginForgotMode] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotOtpId, setForgotOtpId] = useState('');
-  const [forgotNewPassword, setForgotNewPassword] = useState('');
-  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
-  const [showForgotPassword, setShowForgotPassword] = useState(false);
-  const [forgotBusy, setForgotBusy] = useState(false);
   const [forgotSuccessMsg, setForgotSuccessMsg] = useState('');
 
   // Authenticated Seller (supports pending, rejected, suspended, approved privately)
@@ -187,7 +179,6 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   // Registration Form State
   const [name, setName] = useState(() => loggedInCustomer?.name || '');
   const [email, setEmail] = useState('');
-  const [sellerRegOtpId, setSellerRegOtpId] = useState('');
   const [dateOfBirth, setDateOfBirth] = useState('');
   const [fullAddress, setFullAddress] = useState(() => {
     if (!loggedInCustomer) return '';
@@ -417,50 +408,9 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
 
   const handleSellerForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoginError('');
-    setForgotSuccessMsg('');
-
-    const gmailCheck = validateGmailAddress(forgotEmail);
-    if (!gmailCheck.valid) {
-      setLoginError(
-        gmailCheck.error || 'Please enter your registered @gmail.com address.'
-      );
-      return;
-    }
-    if (!forgotOtpId) {
-      setLoginError('Please send and verify the 6-digit Email OTP first.');
-      return;
-    }
-    if (forgotNewPassword.trim().length < 4) {
-      setLoginError('New seller password must be at least 4 characters.');
-      return;
-    }
-    if (forgotNewPassword.trim() !== forgotConfirmPassword.trim()) {
-      setLoginError('New password and Confirm password do not match.');
-      return;
-    }
-
-    setForgotBusy(true);
-    try {
-      await api.resetSellerPasswordWithOtp({
-        email: gmailCheck.email,
-        otpId: forgotOtpId,
-        newPassword: forgotNewPassword.trim(),
-      });
-      setForgotNewPassword('');
-      setForgotConfirmPassword('');
-      setForgotOtpId('');
-      setLoginForgotMode(false);
-      setForgotSuccessMsg(
-        'Seller password updated! Sign in with your Seller ID, Gmail, or Phone and new password.'
-      );
-    } catch (err) {
-      setLoginError(
-        formatApiError(err, 'Could not reset seller password. Please try again.')
-      );
-    } finally {
-      setForgotBusy(false);
-    }
+    setLoginError(
+      'Email OTP reset is temporarily disabled. Please contact Admin Support in Help Center to reset your Seller password.'
+    );
   };
 
   const handleSellerLogout = () => {
@@ -551,22 +501,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       return;
     }
 
-    if (!editingRejected) {
-      const gmailCheck = validateGmailAddress(email);
-      if (!gmailCheck.valid) {
-        setError(
-          gmailCheck.error ||
-            'Please enter a valid @gmail.com address for Seller OTP verification.'
-        );
-        return;
-      }
-      if (!sellerRegOtpId) {
-        setError(
-          'Please send and verify the 6-digit Email OTP on your Gmail address first.'
-        );
-        return;
-      }
-    }
+    // Email OTP verification is temporarily disabled during Seller Registration.
 
     if (!editingRejected && regPassword.trim().length < 4) {
       setError(
@@ -582,7 +517,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         clientId: loggedInCustomer?.id,
         name,
         email,
-        otpId: editingRejected ? undefined : sellerRegOtpId,
+        otpId: undefined,
         dateOfBirth: dobCheck.dob,
         fullAddress,
         phone,
@@ -2353,82 +2288,14 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
 
           {loginForgotMode ? (
             <form onSubmit={handleSellerForgotSubmit} className="space-y-4">
-              <EmailOtpBox
-                purpose="seller_forgot_password"
-                email={forgotEmail}
-                onEmailChange={setForgotEmail}
-                label="Registered Seller Gmail (@gmail.com)"
-                helperText="Enter the @gmail.com address linked to your Seller account."
-                verifiedOtpId={forgotOtpId}
-                onVerified={({ otpId, email: verifiedEmail }) => {
-                  setForgotOtpId(otpId);
-                  setForgotEmail(verifiedEmail);
-                  setLoginError('');
-                }}
-                onResetVerification={() => setForgotOtpId('')}
-                disabled={forgotBusy}
-              />
-
-              {forgotOtpId && (
-                <>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      New Seller Password <span className="text-[#DB2777]">*</span>
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showForgotPassword ? 'text' : 'password'}
-                        required
-                        minLength={4}
-                        value={forgotNewPassword}
-                        onChange={(e) => setForgotNewPassword(e.target.value)}
-                        placeholder="Minimum 4 characters"
-                        className={`${inputClass} pr-10`}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowForgotPassword((prev) => !prev)}
-                        aria-label={
-                          showForgotPassword ? 'Hide password' : 'Show password'
-                        }
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B5B7B] hover:text-[#7E22CE] cursor-pointer"
-                      >
-                        {showForgotPassword ? (
-                          <EyeOff className="w-4 h-4" />
-                        ) : (
-                          <Eye className="w-4 h-4" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      Confirm New Password <span className="text-[#DB2777]">*</span>
-                    </label>
-                    <input
-                      type={showForgotPassword ? 'text' : 'password'}
-                      required
-                      minLength={4}
-                      value={forgotConfirmPassword}
-                      onChange={(e) => setForgotConfirmPassword(e.target.value)}
-                      placeholder="Re-enter new seller password"
-                      className={inputClass}
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={forgotBusy}
-                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-3 px-4 text-sm font-semibold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
-                  >
-                    <KeyRound className="w-4 h-4" />
-                    <span>
-                      {forgotBusy ? 'Updating Password...' : 'Reset Seller Password'}
-                    </span>
-                  </button>
-                </>
-              )}
+              <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-4 text-xs text-[#4A3B59] leading-relaxed">
+                <p className="font-bold text-[#1F122B] mb-1">
+                  Password Reset Assistance
+                </p>
+                <p>
+                  Email OTP verification is temporarily unavailable. To reset your Seller password, please message the store administrator through <strong>Help Center</strong> with your Seller ID or registered phone number.
+                </p>
+              </div>
 
               <button
                 type="button"
@@ -2620,41 +2487,21 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                   </div>
                 </div>
 
-                {editingRejected ? (
-                  <div>
-                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      Email Address (for Seller Login)
-                    </label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="seller@gmail.com"
-                        className={`${inputClass} pl-10`}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="sm:col-span-2">
-                    <EmailOtpBox
-                      purpose="seller_register"
-                      email={email}
-                      onEmailChange={setEmail}
-                      label="Gmail Address (@gmail.com · OTP Required)"
-                      helperText="First-time Seller registration requires a 6-digit OTP sent to your Gmail. Future sign-ins use password only."
-                      verifiedOtpId={sellerRegOtpId}
-                      onVerified={({ otpId, email: verifiedEmail }) => {
-                        setSellerRegOtpId(otpId);
-                        setEmail(verifiedEmail);
-                        setError('');
-                      }}
-                      onResetVerification={() => setSellerRegOtpId('')}
-                      disabled={submitting}
+                <div>
+                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                    Email Address (Optional · for Seller Login)
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="seller@gmail.com"
+                      className={`${inputClass} pl-10`}
                     />
                   </div>
-                )}
+                </div>
 
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-[#4A3B59] mb-1">

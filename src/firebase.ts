@@ -1,5 +1,15 @@
 import { initializeApp } from 'firebase/app';
 import { getAnalytics, isSupported } from 'firebase/analytics';
+import {
+  GoogleAuthProvider,
+  getAuth,
+  getRedirectResult,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -14,6 +24,36 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
+export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+export async function signInWithGoogleWithFallback(): Promise<{
+  user: User | null;
+  redirected: boolean;
+}> {
+  try {
+    const credential = await signInWithPopup(auth, googleProvider);
+    return { user: credential.user, redirected: false };
+  } catch (err: unknown) {
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code?: unknown }).code || '')
+        : '';
+    if (
+      code === 'auth/popup-blocked' ||
+      code === 'auth/operation-not-supported-in-this-environment'
+    ) {
+      await signInWithRedirect(auth, googleProvider);
+      return { user: null, redirected: true };
+    }
+    throw err;
+  }
+}
+
+export { getRedirectResult, onAuthStateChanged, signInWithRedirect, signOut };
+export type { User as FirebaseAuthUser };
+
 export const analytics = isSupported().then((yes) => (yes ? getAnalytics(app) : null));
 export default app;
 

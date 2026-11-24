@@ -15,6 +15,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
   AdminPaymentSettings,
   BusinessSettings,
+  CategoryInterestEntry,
   Client,
   CloudinaryMediaRecord,
   CustomerCartItem,
@@ -54,6 +55,7 @@ import {
   addDaysIsoDate,
   ADMIN_OTP_EMAIL,
   COD_DELIVERY_CHARGE_PER_ITEM,
+  computeCategoryScore,
   DEFAULT_ADMIN_PAYMENT_SETTINGS,
   DEFAULT_ADMIN_UPI_ID,
   DEFAULT_HIGHLIGHT_CONFIG,
@@ -113,6 +115,62 @@ function stripUndefinedDeep<T>(value: T): T {
 function safeNum(v: unknown, fallback = 0): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function applyCategoryInterestDelta(
+  existingInterests: Record<string, CategoryInterestEntry> | undefined,
+  categoryRaw: string,
+  activityType: 'search' | 'view' | 'order',
+  delta = 1,
+  nowIso = new Date().toISOString()
+): {
+  categoryInterests: Record<string, CategoryInterestEntry>;
+  totalCategoryOrders: number;
+} {
+  const category = String(categoryRaw || '').trim();
+  const baseMap: Record<string, CategoryInterestEntry> = {
+    ...(existingInterests || {}),
+  };
+  if (!category) {
+    const total = Object.values(baseMap).reduce(
+      (sum, entry) => sum + Math.max(0, safeNum(entry?.orders, 0)),
+      0
+    );
+    return { categoryInterests: baseMap, totalCategoryOrders: total };
+  }
+
+  const prev = baseMap[category] || {
+    searches: 0,
+    views: 0,
+    orders: 0,
+    score: 0,
+    lastActivityAt: nowIso,
+  };
+  const step = Math.max(1, Math.floor(safeNum(delta, 1)));
+  const searches =
+    Math.max(0, safeNum(prev.searches, 0)) + (activityType === 'search' ? step : 0);
+  const views =
+    Math.max(0, safeNum(prev.views, 0)) + (activityType === 'view' ? step : 0);
+  const orders =
+    Math.max(0, safeNum(prev.orders, 0)) + (activityType === 'order' ? step : 0);
+
+  baseMap[category] = {
+    searches,
+    views,
+    orders,
+    score: computeCategoryScore(searches, views, orders),
+    lastActivityAt: nowIso,
+  };
+
+  const totalCategoryOrders = Object.values(baseMap).reduce(
+    (sum, entry) => sum + Math.max(0, safeNum(entry?.orders, 0)),
+    0
+  );
+
+  return {
+    categoryInterests: baseMap,
+    totalCategoryOrders,
+  };
 }
 
 function isPermissionDeniedError(err: unknown): boolean {
@@ -2051,6 +2109,289 @@ export const firestoreService = {
     }
   },
 
+  async fetchPublicSettingsOnly(): Promise<BusinessSettings> {
+    try {
+      const snap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
+      if (snap.exists()) {
+        return mergeBusinessSettings(snap.data() as Partial<BusinessSettings>);
+      }
+      return mergeBusinessSettings();
+    } catch {
+      return mergeBusinessSettings();
+    }
+  },
+
+  async resolveGoogleCustomerAccount(payload: {
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }): Promise<{ client: Client | null; needsOnboarding: boolean }> {
+    const cleanUid = String(payload.uid || '').trim();
+    const cleanEmail = String(payload.email || '').trim().toLowerCase();
+    const cleanPhoto = String(payload.photoURL || '').trim();
+    if (!cleanUid) {
+      throw new Error('Google authentication account ID is missing.');
+    }
+
+    let matched: Client | undefined;
+    try {
+      const byUidSnap = await getDocs(
+        query(collection(db, CLIENTS_COL), where('authUid', '==', cleanUid))
+      );
+      if (!byUidSnap.empty) {
+        matched = byUidSnap.docs[0].data() as Client;
+      }
+
+      if (!matched && cleanEmail) {
+        const allClientsSnap = await getDocs(collection(db, CLIENTS_COL));
+        const allClients = allClientsSnap.docs.map((d) => d.data() as Client);
+        matched = allClients.find(
+          (c) => String(c.email || '').trim().toLowerCase() === cleanEmail
+        );
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, CLIENTS_COL);
+    }
+
+    if (!matched) {
+      return { client: null, needsOnboarding: true };
+    }
+
+    const phoneValid = normalizeIndianPhone(matched.mobile).valid;
+    const isComplete = phoneValid && matched.profileCompleted !== false;
+
+    if (!isComplete) {
+      return { client: matched, needsOnboarding: true };
+    }
+
+    const needsSync =
+      matched.authUid !== cleanUid ||
+      (cleanEmail && String(matched.email || '').trim().toLowerCase() !== cleanEmail) ||
+      (!matched.profilePhotoDataUrl && cleanPhoto) ||
+      matched.profileCompleted !== true;
+
+    if (needsSync) {
+      const now = new Date().toISOString();
+      const updated: Client = stripUndefinedDeep({
+        ...matched,
+        authUid: cleanUid,
+        email: cleanEmail || matched.email || '',
+        profilePhotoDataUrl: matched.profilePhotoDataUrl || cleanPhoto || '',
+        profileCompleted: true,
+        referralCode:
+          matched.referralCode ||
+          getCustomerReferralCode({
+            id: matched.id,
+            mobile: matched.mobile,
+            referralCode: matched.referralCode,
+          }),
+        updatedAt: now,
+      });
+      try {
+        await setDoc(doc(db, CLIENTS_COL, matched.id), updated);
+        return { client: updated, needsOnboarding: false };
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `${CLIENTS_COL}/${matched.id}`);
+      }
+    }
+
+    return { client: matched, needsOnboarding: false };
+  },
+
+  async completeGoogleCustomerOnboarding(payload: {
+    uid: string;
+    email?: string | null;
+    name: string;
+    mobile: string;
+    profilePhotoDataUrl?: string;
+    referredBy?: string;
+  }): Promise<Client> {
+    const cleanUid = String(payload.uid || '').trim();
+    const cleanEmail = String(payload.email || '').trim().toLowerCase();
+    const nameCheck = validateEnglishName(payload.name, 'Full Name');
+    const phoneCheck = normalizeIndianPhone(payload.mobile);
+
+    if (!cleanUid) {
+      throw new Error('Please sign in with Google first.');
+    }
+    if (!nameCheck.valid) {
+      throw new Error(nameCheck.error);
+    }
+    if (!phoneCheck.valid) {
+      throw new Error(
+        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+      );
+    }
+
+    const cleanName = nameCheck.cleaned;
+    const cleanPhone = phoneCheck.formatted;
+    const cleanReferredBy = String(payload.referredBy || '').trim().toUpperCase();
+
+    let allClients: Client[] = [];
+    try {
+      const snap = await getDocs(collection(db, CLIENTS_COL));
+      allClients = snap.docs.map((d) => d.data() as Client);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, CLIENTS_COL);
+    }
+
+    const matched =
+      allClients.find((c) => c.authUid === cleanUid) ||
+      (cleanEmail
+        ? allClients.find(
+            (c) => String(c.email || '').trim().toLowerCase() === cleanEmail
+          )
+        : undefined) ||
+      allClients.find(
+        (c) =>
+          phoneNumbersMatch(c.mobile, cleanPhone) ||
+          phoneNumbersMatch(c.whatsapp, cleanPhone)
+      );
+
+    const now = new Date().toISOString();
+    const id = matched ? matched.id : `cli-${crypto.randomUUID()}`;
+    const resolvedReferralCode =
+      matched?.referralCode && matched.referralCode.trim()
+        ? matched.referralCode.trim()
+        : getCustomerReferralCode({ id, mobile: cleanPhone });
+
+    let finalReferredBy = matched?.referredBy || '';
+    if (!finalReferredBy && cleanReferredBy && cleanReferredBy !== resolvedReferralCode) {
+      const referrerExists = allClients.some(
+        (c) =>
+          c.id !== id &&
+          getCustomerReferralCode({
+            id: c.id,
+            mobile: c.mobile,
+            referralCode: c.referralCode,
+          }) === cleanReferredBy
+      );
+      if (referrerExists) {
+        finalReferredBy = cleanReferredBy;
+      }
+    }
+
+    const client: Client = stripUndefinedDeep({
+      ...(matched || {}),
+      id,
+      name: cleanName,
+      email: cleanEmail || matched?.email || '',
+      authUid: cleanUid,
+      profileCompleted: true,
+      mobile: cleanPhone,
+      whatsapp: matched?.whatsapp ? formatPhoneWithPlus91(matched.whatsapp) : cleanPhone,
+      address: matched?.address || '',
+      city: matched?.city || '',
+      state: matched?.state || '',
+      pinCode: matched?.pinCode || '',
+      profilePhotoDataUrl: String(
+        payload.profilePhotoDataUrl !== undefined
+          ? payload.profilePhotoDataUrl
+          : matched?.profilePhotoDataUrl || ''
+      ),
+      cart: Array.isArray(matched?.cart) ? matched.cart : [],
+      referralCode: resolvedReferralCode,
+      referredBy: finalReferredBy,
+      categoryInterests: matched?.categoryInterests || {},
+      totalCategoryOrders: matched?.totalCategoryOrders || 0,
+      createdAt: matched ? matched.createdAt : now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, CLIENTS_COL, client.id), client);
+      return client;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `${CLIENTS_COL}/${client.id}`);
+    }
+  },
+
+  async updateCustomerDeliveryAddress(
+    clientId: string,
+    payload: {
+      address: string;
+      city?: string;
+      state?: string;
+      pinCode?: string;
+      whatsapp?: string;
+    }
+  ): Promise<Client> {
+    const cleanAddress = String(payload.address || '').trim();
+    if (!cleanAddress) {
+      throw new Error('Please enter your delivery address.');
+    }
+
+    let cleanWhatsapp: string | undefined;
+    const rawWa = String(payload.whatsapp || '').trim();
+    if (rawWa) {
+      const waCheck = normalizeIndianPhone(rawWa);
+      if (!waCheck.valid) {
+        throw new Error('Please enter a valid 10-digit WhatsApp number.');
+      }
+      cleanWhatsapp = waCheck.formatted;
+    }
+
+    const ref = doc(db, CLIENTS_COL, clientId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Customer account not found.');
+      const existing = snap.data() as Client;
+      const now = new Date().toISOString();
+      const updated: Client = stripUndefinedDeep({
+        ...existing,
+        address: cleanAddress,
+        city: String(payload.city || '').trim(),
+        state: String(payload.state || '').trim(),
+        pinCode: String(payload.pinCode || '').trim(),
+        whatsapp: cleanWhatsapp || existing.whatsapp || existing.mobile,
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Customer account not found.') {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.UPDATE, `${CLIENTS_COL}/${clientId}`);
+    }
+  },
+
+  async trackCustomerCategoryActivity(
+    clientId: string,
+    payload: {
+      category: string;
+      type: 'search' | 'view' | 'order';
+      count?: number;
+    }
+  ): Promise<void> {
+    const cleanClientId = String(clientId || '').trim();
+    const cleanCategory = String(payload.category || '').trim();
+    if (!cleanClientId || !cleanCategory) return;
+
+    const ref = doc(db, CLIENTS_COL, cleanClientId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return;
+      const existing = snap.data() as Client;
+      const now = new Date().toISOString();
+      const { categoryInterests, totalCategoryOrders } = applyCategoryInterestDelta(
+        existing.categoryInterests,
+        cleanCategory,
+        payload.type,
+        payload.count || 1,
+        now
+      );
+      await updateDoc(ref, {
+        categoryInterests,
+        totalCategoryOrders,
+        updatedAt: now,
+      });
+    } catch {
+      // Non-blocking engagement analytics update
+    }
+  },
+
   async createCustomerOrder(payload: {
     clientId?: string;
     clearCart?: boolean;
@@ -2230,6 +2571,31 @@ export const firestoreService = {
     const cleanState = String(payload.customerState || '').trim();
     const cleanPin = String(payload.customerPinCode || '').trim();
 
+    let nextCategoryInterests: Record<string, CategoryInterestEntry> = {
+      ...(matchedClient?.categoryInterests || {}),
+    };
+    let nextTotalCategoryOrders = safeNum(matchedClient?.totalCategoryOrders, 0);
+    const orderedCategories = new Map<string, number>();
+    for (const item of normalizedItems) {
+      const cat = String(item.productCategory || payload.productCategory || '').trim();
+      if (cat) {
+        orderedCategories.set(cat, (orderedCategories.get(cat) || 0) + 1);
+      }
+    }
+    if (orderedCategories.size > 0) {
+      for (const [cat, occurrences] of orderedCategories.entries()) {
+        const res = applyCategoryInterestDelta(
+          nextCategoryInterests,
+          cat,
+          'order',
+          occurrences,
+          now
+        );
+        nextCategoryInterests = res.categoryInterests;
+        nextTotalCategoryOrders = res.totalCategoryOrders;
+      }
+    }
+
     const client: Client = matchedClient
       ? stripUndefinedDeep({
           ...matchedClient,
@@ -2249,6 +2615,8 @@ export const firestoreService = {
             : Array.isArray(matchedClient.cart)
               ? matchedClient.cart
               : [],
+          categoryInterests: nextCategoryInterests,
+          totalCategoryOrders: nextTotalCategoryOrders,
           updatedAt: now,
         })
       : stripUndefinedDeep({
@@ -2261,6 +2629,8 @@ export const firestoreService = {
           state: cleanState,
           pinCode: cleanPin,
           cart: [],
+          categoryInterests: nextCategoryInterests,
+          totalCategoryOrders: nextTotalCategoryOrders,
           createdAt: now,
           updatedAt: now,
         });
@@ -2314,6 +2684,7 @@ export const firestoreService = {
       invoiceId: '',
       invoiceNumber: '',
       confirmedAt: '',
+      categoryOrdersTracked: orderedCategories.size > 0,
       createdAt: now,
       updatedAt: now,
     });
@@ -2531,15 +2902,55 @@ export const firestoreService = {
       });
     }
 
+    let nextClient = client;
+    if (!order.categoryOrdersTracked) {
+      let nextInterests: Record<string, CategoryInterestEntry> = {
+        ...(client.categoryInterests || {}),
+      };
+      let nextTotalOrders = safeNum(client.totalCategoryOrders, 0);
+      const trackedCats = new Map<string, number>();
+      for (const it of orderItems) {
+        const prodMatch = it.productId
+          ? products.find((p) => p.id === it.productId)
+          : products.find(
+              (p) => p.name.trim().toLowerCase() === it.productName.trim().toLowerCase()
+            );
+        const cat = String(
+          it.productCategory || order.productCategory || prodMatch?.category || ''
+        ).trim();
+        if (cat) {
+          trackedCats.set(cat, (trackedCats.get(cat) || 0) + 1);
+        }
+      }
+      for (const [cat, occurrences] of trackedCats.entries()) {
+        const res = applyCategoryInterestDelta(
+          nextInterests,
+          cat,
+          'order',
+          occurrences,
+          now
+        );
+        nextInterests = res.categoryInterests;
+        nextTotalOrders = res.totalCategoryOrders;
+      }
+      nextClient = stripUndefinedDeep({
+        ...client,
+        categoryInterests: nextInterests,
+        totalCategoryOrders: nextTotalOrders,
+        updatedAt: now,
+      });
+    }
+
     const updatedOrder: CustomerOrder = stripUndefinedDeep({
       ...order,
-      clientId: client.id,
+      clientId: nextClient.id,
       orderDate,
       estimatedDeliveryDate: deliveryDate,
       status: 'Confirmed',
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
       confirmedAt: now,
+      categoryOrdersTracked: true,
       updatedAt: now,
     });
 
@@ -2555,7 +2966,7 @@ export const firestoreService = {
 
     try {
       const batch = writeBatch(db);
-      batch.set(doc(db, CLIENTS_COL, client.id), client);
+      batch.set(doc(db, CLIENTS_COL, nextClient.id), nextClient);
       batch.set(doc(db, INVOICES_COL, invoice.id), invoice);
       batch.set(orderRef, updatedOrder);
       if (payment) {
@@ -2574,7 +2985,7 @@ export const firestoreService = {
       return {
         order: updatedOrder,
         invoice,
-        client,
+        client: nextClient,
         payment,
         products: sortDescByCreated(updatedProducts),
       };
@@ -2817,14 +3228,7 @@ export const firestoreService = {
       throw new Error('Your seller account is already approved. Please use Seller Login.');
     }
 
-    // Require Gmail OTP verification ONLY when creating a new seller account for the first time
-    if (!matchedExisting) {
-      const gmailCheck = validateGmailAddress(cleanEmail);
-      if (!gmailCheck.valid) {
-        throw new Error(gmailCheck.error);
-      }
-      await assertVerifiedEmailOtp(payload.otpId, gmailCheck.email, 'seller_register');
-    }
+    // Email OTP verification is temporarily disabled on Seller Registration; keep optional valid email if provided.
 
     if (!matchedExisting && !cleanPassword) {
       throw new Error('Please create a Seller Login Password (minimum 4 characters).');
