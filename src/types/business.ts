@@ -12,6 +12,8 @@ export type AppRoute =
   | 'view-panel-control'
   | 'orders'
   | 'seller-hub-manage'
+  | 'seller-products'
+  | 'customer-seller-contacts'
   | 'help-chat'
   | 'smart-offers-mail';
 

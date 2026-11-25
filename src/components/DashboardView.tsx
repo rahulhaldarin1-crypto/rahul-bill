@@ -9,7 +9,6 @@ import {
   Mail,
   Megaphone,
   Package,
-  Search,
   Settings,
   ShoppingBag,
   Store,
@@ -25,7 +24,6 @@ import { BrandLogo } from './BrandLogo';
 interface DashboardViewProps {
   workspace: WorkspaceData;
   onNavigate: (route: AppRoute) => void;
-  onOpenViewPanel?: () => void;
 }
 
 interface MenuCard {
@@ -42,7 +40,6 @@ interface MenuCard {
 export const DashboardView: React.FC<DashboardViewProps> = ({
   workspace,
   onNavigate,
-  onOpenViewPanel,
 }) => {
   const {
     settings,
@@ -295,29 +292,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="flex flex-wrap items-center justify-center gap-3 shrink-0">
           <button
             type="button"
-            onClick={() => onNavigate('client-bill')}
+            onClick={() => onNavigate('seller-products')}
             className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-3 text-sm font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <FilePlus2 className="w-4 h-4" />
-            <span>Create Client Bill</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate('orders')}
-            className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-white px-4 py-3 text-sm font-semibold text-[#1F122B] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <ShoppingBag className="w-4 h-4 text-[#DB2777]" />
+            <Package className="w-4 h-4" />
             <span>
-              Orders{pendingOrdersCount > 0 ? ` (${pendingOrdersCount})` : ''}
+              Seller Products
+              {pendingSellerProductsCount > 0
+                ? ` (${pendingSellerProductsCount})`
+                : ''}
             </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate('new-client')}
-            className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-white px-4 py-3 text-sm font-semibold text-[#1F122B] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <UserPlus className="w-4 h-4 text-[#DB2777]" />
-            <span>New Client</span>
           </button>
           <button
             type="button"
@@ -325,26 +309,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             className="inline-flex items-center gap-2 rounded-xl border border-[#F3D5E8] bg-[#FFF5FA] px-4 py-3 text-sm font-semibold text-[#9D174D] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Megaphone className="w-4 h-4 text-[#DB2777]" />
-            <span>View Panel Control</span>
+            <span>ADD Panel Control</span>
           </button>
           <button
             type="button"
-            onClick={() => onNavigate('smart-offers-mail')}
-            className="inline-flex items-center gap-2 rounded-xl border border-[#E9D5FF] bg-[#FAF5FF] px-4 py-3 text-sm font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={() => onNavigate('customer-seller-contacts')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-white px-4 py-3 text-sm font-semibold text-[#1F122B] hover:border-[#7E22CE] hover:text-[#7E22CE] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Mail className="w-4 h-4 text-[#7E22CE]" />
-            <span>Smart Offers Mail</span>
+            <Users className="w-4 h-4 text-[#7E22CE]" />
+            <span>Customer Seller Contact</span>
           </button>
-          {onOpenViewPanel && (
-            <button
-              type="button"
-              onClick={onOpenViewPanel}
-              className="inline-flex items-center gap-2 rounded-xl border border-[#E6D9EE] bg-white px-4 py-3 text-sm font-semibold text-[#7E22CE] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Search className="w-4 h-4" />
-              <span>View Panel</span>
-            </button>
-          )}
         </div>
       </section>
 

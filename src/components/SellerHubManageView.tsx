@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   BadgeCheck,
@@ -61,6 +61,7 @@ interface SellerHubManageViewProps {
   highlightConfig?: HighlightConfig;
   currencySymbol: string;
   defaultLowStock: number;
+  initialTab?: 'applications' | 'products' | 'highlights';
   onBack: () => void;
   onUpdateSellerStatus: (
     applicationId: string,
@@ -148,6 +149,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
   highlightConfig,
   currencySymbol,
   defaultLowStock,
+  initialTab,
   onBack,
   onUpdateSellerStatus,
   onSetSellerPassword,
@@ -161,7 +163,13 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<
     'applications' | 'products' | 'highlights'
-  >('applications');
+  >(initialTab || 'applications');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [appStatusFilter, setAppStatusFilter] = useState<
     'ALL' | SellerAccountStatus
   >('ALL');

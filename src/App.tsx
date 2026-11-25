@@ -22,6 +22,7 @@ import { AppBackground } from './components/AppBackground';
 import { BrandLogo } from './components/BrandLogo';
 import { ClientBillView } from './components/ClientBillView';
 import { ClientListView } from './components/ClientListView';
+import { CustomerSellerContactsView } from './components/CustomerSellerContactsView';
 import { DashboardView } from './components/DashboardView';
 import { DeliveryTrackingView } from './components/DeliveryTrackingView';
 import { HelpChatAdminView } from './components/HelpChatAdminView';
@@ -200,7 +201,7 @@ export default function App() {
 
     try {
       const curr = window.history.state as { ggType?: string } | null;
-      if (curr?.ggType !== 'admin-route' && curr?.ggType !== 'products-sub') {
+      if (curr?.ggType !== 'admin-route' && curr?.ggType !== 'products-sub' && curr?.ggType !== 'contacts-sub') {
         window.history.replaceState(
           {
             ggType: 'admin-route',
@@ -221,7 +222,7 @@ export default function App() {
         clientId?: string | null;
       } | null;
 
-      if (state?.ggType === 'products-sub') {
+      if (state?.ggType === 'products-sub' || state?.ggType === 'contacts-sub') {
         return;
       }
 
@@ -1415,8 +1416,9 @@ export default function App() {
           />
         )}
 
-        {route === 'seller-hub-manage' && (
+        {(route === 'seller-hub-manage' || route === 'seller-products') && (
           <SellerHubManageView
+            initialTab={route === 'seller-products' ? 'products' : 'applications'}
             sellerApplications={workspace.sellerApplications || []}
             products={workspace.products}
             highlightRequests={workspace.highlightRequests || []}
@@ -1435,6 +1437,27 @@ export default function App() {
             onSaveHighlightConfig={handleSaveHighlightConfig}
             onUpdateHighlightRequestStatus={handleUpdateHighlightRequestStatus}
             onDeleteHighlightRequest={handleDeleteHighlightRequest}
+          />
+        )}
+
+        {route === 'customer-seller-contacts' && (
+          <CustomerSellerContactsView
+            clients={workspace.clients}
+            sellerApplications={workspace.sellerApplications || []}
+            invoices={workspace.invoices}
+            orders={workspace.orders || []}
+            products={workspace.products}
+            currencySymbol={currencySymbol}
+            onBack={goBack}
+            onMailContact={(target) => {
+              setDirectMailTarget({
+                email: String(target.email || '').trim().toLowerCase(),
+                name: target.name,
+                clientId: target.clientId,
+                nonce: Date.now(),
+              });
+              navigateTo('smart-offers-mail');
+            }}
           />
         )}
 
