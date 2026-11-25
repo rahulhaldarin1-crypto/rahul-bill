@@ -18,6 +18,7 @@ import {
   LifeBuoy,
   MapPin,
   Menu,
+  MessageCircle,
   MessageSquare,
   Minus,
   Package,
@@ -76,6 +77,17 @@ import {
   uploadMediaToCloudinary,
 } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
+import {
+  BANGLADESH_CHARGE_NOTICE,
+  buildBangladeshWhatsAppOrderUrl,
+  convertInrToBdt,
+  displayCustomerPhone,
+  fetchGeoRegion,
+  formatBdt,
+  parseProductVariantOptions,
+  resolveBangladeshConfig,
+  useBangladeshDetection,
+} from '../utils/region';
 import { auth, getRedirectResult } from '../firebase';
 import { AppBackground } from './AppBackground';
 import { BrandLogo } from './BrandLogo';
@@ -337,6 +349,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     'detail'
   );
   const [orderQty, setOrderQty] = useState('1');
+  const [selectedVariantSize, setSelectedVariantSize] = useState('');
   const [addingToCart, setAddingToCart] = useState(false);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -359,6 +372,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [placedOrder, setPlacedOrder] = useState<CustomerOrder | null>(null);
 
   const sym = settings?.currencySymbol || '₹';
+  const { isBangladesh: geoIsBangladesh } = useBangladeshDetection();
+  const isBangladesh =
+    geoIsBangladesh ||
+    String(loggedInCustomer?.detectedCountry || '').trim().toUpperCase() ===
+      'BD';
+  const bdConfig = resolveBangladeshConfig(settings);
+  const bdtRate = bdConfig.inrToBdtRate;
 
   const triggerStoreNotice = (msg: string) => {
     setStoreNotice(msg);
@@ -939,10 +959,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           const found =
             shoppingItemsRef.current.find((i) => i.id === customerState.selectedProductId) || null;
           setSelectedProduct(found);
+          setSelectedVariantSize(
+            found ? parseProductVariantOptions(found.size)[0] || '' : ''
+          );
           setModalStep(customerState.modalStep || 'detail');
           setOrderError('');
         } else {
           setSelectedProduct(null);
+          setSelectedVariantSize('');
           setPlacedOrder(null);
           setOrderError('');
         }
@@ -1075,9 +1099,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   };
 
   const prefillCheckoutFromClient = (client: Client) => {
+    const cleanMob = displayCustomerPhone(client.mobile);
+    const cleanWa = displayCustomerPhone(client.whatsapp || client.mobile);
     setCustomerName(client.name || '');
-    setCustomerPhone(stripPlus91Prefix(client.mobile));
-    setCustomerWhatsapp(stripPlus91Prefix(client.whatsapp || client.mobile));
+    setCustomerPhone(stripPlus91Prefix(cleanMob));
+    setCustomerWhatsapp(stripPlus91Prefix(cleanWa));
     setCustomerAddress(client.address || '');
     setCustomerCity(client.city || '');
     setCustomerState(client.state || '');
@@ -1370,11 +1396,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         }
         if (!active || !result?.user) return;
         const user = result.user;
+        const geo = await fetchGeoRegion().catch(() => ({
+          countryCode: null,
+          isBangladesh: false,
+        }));
         const resolved = await api.resolveGoogleCustomerAccount({
           uid: user.uid,
           email: user.email,
           displayName: user.displayName,
           photoURL: user.photoURL,
+          detectedCountry: geo.isBangladesh ? 'BD' : undefined,
+          isBangladesh: geo.isBangladesh,
         });
         if (!active) return;
         if (!resolved.needsOnboarding && resolved.client) {
@@ -1387,7 +1419,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           email: String(user.email || '').trim().toLowerCase(),
           displayName: String(resolved.client?.name || user.displayName || ''),
           photoURL: resolved.client?.profilePhotoDataUrl || user.photoURL || '',
-          existingMobile: resolved.client?.mobile,
+          existingMobile: displayCustomerPhone(resolved.client?.mobile),
         });
         setAuthNotice('Complete your 10-second profile setup to continue.');
         setAuthModalOpen(true);
@@ -1471,6 +1503,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       });
     }
     setSelectedProduct(item);
+    setSelectedVariantSize(parseProductVariantOptions(item.size)[0] || '');
     setActiveImageIndex(0);
     setModalStep('detail');
     setOrderQty('1');
@@ -1515,6 +1548,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       handledQueryProductRef.current = true;
       setPortalView('shop');
       setSelectedProduct(match);
+      setSelectedVariantSize(parseProductVariantOptions(match.size)[0] || '');
       setActiveImageIndex(0);
       setModalStep('detail');
       setOrderQty('1');
@@ -2145,6 +2179,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           <span className="text-sm sm:text-base font-bold text-[#1F122B]">
                             {formatCurrency(item.price, sym)}
                           </span>
+                          {isBangladesh && (
+                            <span className="text-xs sm:text-sm font-bold text-[#0F766E]">
+                              · {formatBdt(convertInrToBdt(item.price, bdtRate))}
+                            </span>
+                          )}
                           {item.originalPrice &&
                             item.originalPrice > item.price && (
                               <span className="text-[11px] text-[#8E7C9E] line-through">
@@ -2426,6 +2465,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             <span className="text-sm sm:text-base font-bold text-[#1F122B]">
                               {formatCurrency(item.price, sym)}
                             </span>
+                            {isBangladesh && (
+                              <span className="text-xs sm:text-sm font-bold text-[#0F766E]">
+                                · {formatBdt(convertInrToBdt(item.price, bdtRate))}
+                              </span>
+                            )}
                             {item.originalPrice &&
                               item.originalPrice > item.price && (
                                 <span className="text-[11px] text-[#8E7C9E] line-through">
@@ -3002,6 +3046,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                     <span className="text-sm sm:text-base font-bold text-[#1F122B]">
                                       {formatCurrency(item.price, sym)}
                                     </span>
+                                    {isBangladesh && (
+                                      <span className="text-xs sm:text-sm font-bold text-[#0F766E]">
+                                        · {formatBdt(convertInrToBdt(item.price, bdtRate))}
+                                      </span>
+                                    )}
                                     {item.originalPrice &&
                                       item.originalPrice > item.price && (
                                         <span className="text-[11px] text-[#8E7C9E] line-through">
@@ -3294,11 +3343,21 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       <span className="text-2xl font-bold text-[#1F122B]">
                         {formatCurrency(selectedProduct.price, sym)}
                       </span>
+                      {isBangladesh && (
+                        <span className="text-xl font-bold text-[#0F766E]">
+                          · {formatBdt(convertInrToBdt(selectedProduct.price, bdtRate))}
+                        </span>
+                      )}
                       {selectedProduct.originalPrice &&
                         selectedProduct.originalPrice > selectedProduct.price && (
                           <>
                             <span className="text-sm text-[#8E7C9E] line-through">
                               {formatCurrency(selectedProduct.originalPrice, sym)}
+                              {isBangladesh
+                                ? ` / ${formatBdt(
+                                    convertInrToBdt(selectedProduct.originalPrice, bdtRate)
+                                  )}`
+                                : ''}
                             </span>
                             <span className="text-xs font-bold text-[#15803D]">
                               {Math.round(
@@ -3410,33 +3469,60 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
                   {(selectedProduct.size ||
                     selectedProduct.color ||
-                    selectedProduct.stockQty !== undefined) && (
-                    <div className="rounded-2xl border border-[#EFE2F5] bg-white p-3.5 space-y-1 text-xs text-[#4A3B59]">
-                      {selectedProduct.size && (
-                        <div>
-                          Size: <strong>{selectedProduct.size}</strong>
-                        </div>
-                      )}
-                      {selectedProduct.color && (
-                        <div>
-                          Color: <strong>{selectedProduct.color}</strong>
-                        </div>
-                      )}
-                      {selectedProduct.stockQty !== undefined && (
-                        <div
-                          className={
-                            selectedProduct.stockQty > 0
-                              ? 'text-[#15803D] font-semibold'
-                              : 'text-[#B45309] font-semibold'
-                          }
-                        >
-                          {selectedProduct.stockQty > 0
-                            ? `In Stock (${selectedProduct.stockQty} available)`
-                            : 'Made to order / Limited stock'}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                    selectedProduct.stockQty !== undefined) && (() => {
+                    const sizeOptions = parseProductVariantOptions(
+                      selectedProduct.size
+                    );
+                    return (
+                      <div className="rounded-2xl border border-[#EFE2F5] bg-white p-3.5 space-y-2 text-xs text-[#4A3B59]">
+                        {sizeOptions.length > 0 && (
+                          <div className="space-y-1.5">
+                            <div className="font-semibold text-[#4A3B59]">
+                              Select Size / Variant:
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {sizeOptions.map((opt) => {
+                                const activeOpt =
+                                  (selectedVariantSize || sizeOptions[0]) === opt;
+                                return (
+                                  <button
+                                    key={opt}
+                                    type="button"
+                                    onClick={() => setSelectedVariantSize(opt)}
+                                    className={`rounded-lg border px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer ${
+                                      activeOpt
+                                        ? 'border-[#DB2777] bg-[#FDF2F8] text-[#9D174D]'
+                                        : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                                    }`}
+                                  >
+                                    {opt}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        {selectedProduct.color && (
+                          <div>
+                            Color: <strong>{selectedProduct.color}</strong>
+                          </div>
+                        )}
+                        {selectedProduct.stockQty !== undefined && (
+                          <div
+                            className={
+                              selectedProduct.stockQty > 0
+                                ? 'text-[#15803D] font-semibold'
+                                : 'text-[#B45309] font-semibold'
+                            }
+                          >
+                            {selectedProduct.stockQty > 0
+                              ? `In Stock (${selectedProduct.stockQty} available)`
+                              : 'Made to order / Limited stock'}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {selectedProduct.description && (
                     <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 space-y-1.5">
@@ -3488,6 +3574,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  {isBangladesh && (
+                    <div className="rounded-2xl border border-[#99F6E4] bg-[#F0FDFA] px-4 py-3 text-xs sm:text-sm font-bold text-[#0F766E]">
+                      {BANGLADESH_CHARGE_NOTICE}
+                    </div>
+                  )}
 
                   {orderError && (
                     <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-medium text-[#BE123C]">
@@ -4291,7 +4383,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             </div>
           </div>
 
-          {/* Sticky Bottom Action Bar on Product Details View (Equal-Width Add to Cart | Buy Now) */}
+          {/* Sticky Bottom Action Bar on Product Details View */}
           {modalStep === 'detail' && (
             <div className="shrink-0 sticky bottom-0 z-30 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.08)] px-3 sm:px-6 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
               <div className="max-w-5xl mx-auto grid grid-cols-2 gap-3">
@@ -4299,7 +4391,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   type="button"
                   disabled={addingToCart}
                   onClick={() =>
-                    handleAddToCartAction(selectedProduct, parsedQty)
+                    handleAddToCartAction(
+                      {
+                        ...selectedProduct,
+                        size: selectedVariantSize || selectedProduct.size,
+                      },
+                      parsedQty
+                    )
                   }
                   className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl border-2 border-[#7E22CE] bg-white px-4 text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60 whitespace-nowrap"
                 >
@@ -4307,14 +4405,48 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   <span>{addingToCart ? 'Adding...' : 'Add to Cart'}</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={openCheckoutStep}
-                  className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
-                >
-                  <ShoppingBag className="w-4 h-4 shrink-0" />
-                  <span>Buy Now</span>
-                </button>
+                {isBangladesh ? (
+                  <a
+                    href={buildBangladeshWhatsAppOrderUrl({
+                      whatsappNumber: bdConfig.whatsappNumber,
+                      inrToBdtRate: bdtRate,
+                      items: [
+                        {
+                          id: selectedProduct.id,
+                          productId:
+                            selectedProduct.catalogProductId || selectedProduct.id,
+                          name: selectedProduct.name,
+                          priceInr: selectedProduct.price,
+                          quantity: parsedQty,
+                          selectedVariant:
+                            selectedVariantSize || selectedProduct.size,
+                          color: selectedProduct.color,
+                          sellerId: selectedProduct.sellerId,
+                          sellerName: selectedProduct.sellerName,
+                        },
+                      ],
+                      customer: loggedInCustomer,
+                      productUrl: `${window.location.origin}/?product=${encodeURIComponent(
+                        selectedProduct.id
+                      )}`,
+                    })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] px-4 text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <MessageCircle className="w-4 h-4 shrink-0" />
+                    <span>Order on WhatsApp</span>
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={openCheckoutStep}
+                    className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <ShoppingBag className="w-4 h-4 shrink-0" />
+                    <span>Buy Now</span>
+                  </button>
+                )}
               </div>
             </div>
           )}

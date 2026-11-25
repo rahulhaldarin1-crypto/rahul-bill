@@ -19,6 +19,7 @@ import {
 } from './firebase';
 import { AdminLockView } from './components/AdminLockView';
 import { AppBackground } from './components/AppBackground';
+import { BangladeshControlView } from './components/BangladeshControlView';
 import { BrandLogo } from './components/BrandLogo';
 import { ClientBillView } from './components/ClientBillView';
 import { ClientListView } from './components/ClientListView';
@@ -40,6 +41,7 @@ import { ViewPanelControlView } from './components/ViewPanelControlView';
 import {
   AdminPaymentSettings,
   AppRoute,
+  BangladeshConfig,
   BusinessSettings,
   Client,
   CustomerOrder,
@@ -735,6 +737,7 @@ export default function App() {
       ...next,
       viewPanel: next.viewPanel ?? workspace.settings.viewPanel,
       highlightConfig: next.highlightConfig ?? workspace.settings.highlightConfig,
+      bangladeshConfig: next.bangladeshConfig ?? workspace.settings.bangladeshConfig,
       lastAdminOtpVerifiedAt:
         next.lastAdminOtpVerifiedAt ?? workspace.settings.lastAdminOtpVerifiedAt,
     };
@@ -765,6 +768,19 @@ export default function App() {
     const saved = await api.updateSettings(merged);
     setWorkspace((prev) => ({ ...prev, settings: saved }));
     showToast('View Panel updated & synced.');
+  };
+
+  const handleSaveBangladeshConfig = async (nextConfig: BangladeshConfig) => {
+    const merged = mergeBusinessSettings({
+      ...workspace.settings,
+      bangladeshConfig: {
+        ...nextConfig,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    const saved = await api.updateSettings(merged);
+    setWorkspace((prev) => ({ ...prev, settings: saved }));
+    showToast('Bangladesh Converter & WhatsApp settings saved & synced live.');
   };
 
   const handleSaveHighlightConfig = async (nextConfig: HighlightConfig) => {
@@ -1482,6 +1498,28 @@ export default function App() {
             directTarget={directMailTarget}
             onClearDirectTarget={() => setDirectMailTarget(null)}
             onBack={goBack}
+          />
+        )}
+
+        {route === 'bangladesh-control' && (
+          <BangladeshControlView
+            settings={workspace.settings}
+            clients={workspace.clients}
+            products={workspace.products}
+            approvedSellerIds={(workspace.sellerApplications || [])
+              .filter((a) => a.status === 'approved' && a.accountActivated !== false)
+              .map((a) => a.id)}
+            onBack={goBack}
+            onSaveBangladeshConfig={handleSaveBangladeshConfig}
+            onMailCustomer={(client) => {
+              setDirectMailTarget({
+                email: String(client.email || '').trim().toLowerCase(),
+                name: client.name,
+                clientId: client.id,
+                nonce: Date.now(),
+              });
+              navigateTo('smart-offers-mail');
+            }}
           />
         )}
       </main>

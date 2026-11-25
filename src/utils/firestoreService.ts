@@ -79,6 +79,10 @@ import {
   validateEnglishName,
   validateGmailAddress,
 } from './calculations';
+import {
+  detectClientBangladeshFallback,
+  fetchGeoRegion,
+} from './region';
 
 const SETTINGS_COL = 'settings';
 const SETTINGS_DOC = 'business';
@@ -2167,6 +2171,8 @@ export const firestoreService = {
     email?: string | null;
     displayName?: string | null;
     photoURL?: string | null;
+    detectedCountry?: string;
+    isBangladesh?: boolean;
   }): Promise<{ client: Client | null; needsOnboarding: boolean }> {
     const cleanUid = String(payload.uid || '').trim();
     const cleanEmail = String(payload.email || '').trim().toLowerCase();
@@ -2199,17 +2205,29 @@ export const firestoreService = {
       return { client: null, needsOnboarding: true };
     }
 
+    const isBdAccount = Boolean(
+      payload.isBangladesh ||
+        String(payload.detectedCountry || '').toUpperCase() === 'BD' ||
+        String(matched.detectedCountry || '').toUpperCase() === 'BD'
+    );
+
     const phoneValid = normalizeAsianPhone(matched.mobile).valid;
-    const isComplete = phoneValid && matched.profileCompleted !== false;
+    const hasName = Boolean(String(matched.name || '').trim());
+    const hasPhoto = Boolean(String(matched.profilePhotoDataUrl || cleanPhoto).trim());
+    const isComplete = isBdAccount
+      ? hasName && hasPhoto && matched.profileCompleted !== false
+      : phoneValid && matched.profileCompleted !== false;
 
     if (!isComplete) {
       return { client: matched, needsOnboarding: true };
     }
 
+    const desiredCountry = isBdAccount ? 'BD' : matched.detectedCountry;
     const needsSync =
       matched.authUid !== cleanUid ||
       (cleanEmail && String(matched.email || '').trim().toLowerCase() !== cleanEmail) ||
       (!matched.profilePhotoDataUrl && cleanPhoto) ||
+      (desiredCountry && matched.detectedCountry !== desiredCountry) ||
       matched.profileCompleted !== true;
 
     if (needsSync) {
@@ -2219,6 +2237,7 @@ export const firestoreService = {
         authUid: cleanUid,
         email: cleanEmail || matched.email || '',
         profilePhotoDataUrl: matched.profilePhotoDataUrl || cleanPhoto || '',
+        detectedCountry: desiredCountry,
         profileCompleted: true,
         referralCode:
           matched.referralCode ||
@@ -2244,14 +2263,24 @@ export const firestoreService = {
     uid: string;
     email?: string | null;
     name: string;
-    mobile: string;
+    mobile?: string;
     profilePhotoDataUrl?: string;
     referredBy?: string;
+    detectedCountry?: string;
+    isBangladesh?: boolean;
   }): Promise<Client> {
     const cleanUid = String(payload.uid || '').trim();
     const cleanEmail = String(payload.email || '').trim().toLowerCase();
+    const isBdFlow = Boolean(
+      payload.isBangladesh ??
+        (String(payload.detectedCountry || '').toUpperCase() === 'BD' ||
+          detectClientBangladeshFallback())
+    );
     const nameCheck = validateEnglishName(payload.name, 'Full Name');
-    const phoneCheck = normalizeAsianPhone(payload.mobile);
+    const rawMobile = String(payload.mobile || '').trim();
+    const cleanPhotoInput = String(
+      payload.profilePhotoDataUrl !== undefined ? payload.profilePhotoDataUrl : ''
+    ).trim();
 
     if (!cleanUid) {
       throw new Error('Please sign in with Google first.');
@@ -2259,14 +2288,24 @@ export const firestoreService = {
     if (!nameCheck.valid) {
       throw new Error(nameCheck.error);
     }
-    if (!phoneCheck.valid) {
-      throw new Error(
-        phoneCheck.error || 'Please enter a valid mobile number.'
+
+    let cleanPhone = '';
+    if (rawMobile && rawMobile.toLowerCase() !== 'not provided') {
+      const phoneCheck = normalizeAsianPhone(
+        rawMobile,
+        isBdFlow ? '+880' : '+91'
       );
+      if (!phoneCheck.valid) {
+        throw new Error(
+          phoneCheck.error || 'Please enter a valid mobile number.'
+        );
+      }
+      cleanPhone = phoneCheck.formatted;
+    } else if (!isBdFlow) {
+      throw new Error('Please enter a valid mobile number.');
     }
 
     const cleanName = nameCheck.cleaned;
-    const cleanPhone = phoneCheck.formatted;
     const cleanReferredBy = String(payload.referredBy || '').trim().toUpperCase();
 
     let allClients: Client[] = [];
@@ -2284,11 +2323,18 @@ export const firestoreService = {
             (c) => String(c.email || '').trim().toLowerCase() === cleanEmail
           )
         : undefined) ||
-      allClients.find(
-        (c) =>
-          phoneNumbersMatch(c.mobile, cleanPhone) ||
-          phoneNumbersMatch(c.whatsapp, cleanPhone)
-      );
+      (cleanPhone
+        ? allClients.find(
+            (c) =>
+              phoneNumbersMatch(c.mobile, cleanPhone) ||
+              phoneNumbersMatch(c.whatsapp, cleanPhone)
+          )
+        : undefined);
+
+    const finalPhotoUrl = cleanPhotoInput || String(matched?.profilePhotoDataUrl || '').trim();
+    if (isBdFlow && !finalPhotoUrl) {
+      throw new Error('Please upload a profile photo to complete your account.');
+    }
 
     const now = new Date().toISOString();
     const id = matched ? matched.id : `cli-${crypto.randomUUID()}`;
@@ -2313,6 +2359,14 @@ export const firestoreService = {
       }
     }
 
+    const resolvedCountry = isBdFlow
+      ? 'BD'
+      : payload.detectedCountry || matched?.detectedCountry;
+    const existingCleanWhatsapp =
+      matched?.whatsapp && matched.whatsapp.toLowerCase() !== 'not provided'
+        ? formatPhoneWithPlus91(matched.whatsapp)
+        : '';
+
     const client: Client = stripUndefinedDeep({
       ...(matched || {}),
       id,
@@ -2320,17 +2374,14 @@ export const firestoreService = {
       email: cleanEmail || matched?.email || '',
       authUid: cleanUid,
       profileCompleted: true,
+      detectedCountry: resolvedCountry,
       mobile: cleanPhone,
-      whatsapp: matched?.whatsapp ? formatPhoneWithPlus91(matched.whatsapp) : cleanPhone,
+      whatsapp: existingCleanWhatsapp || cleanPhone,
       address: matched?.address || '',
       city: matched?.city || '',
       state: matched?.state || '',
       pinCode: matched?.pinCode || '',
-      profilePhotoDataUrl: String(
-        payload.profilePhotoDataUrl !== undefined
-          ? payload.profilePhotoDataUrl
-          : matched?.profilePhotoDataUrl || ''
-      ),
+      profilePhotoDataUrl: finalPhotoUrl,
       cart: Array.isArray(matched?.cart) ? matched.cart : [],
       favoriteProductIds: Array.isArray(matched?.favoriteProductIds)
         ? matched.favoriteProductIds
@@ -2347,6 +2398,23 @@ export const firestoreService = {
       await setDoc(doc(db, CLIENTS_COL, client.id), client);
       return client;
     } catch (error) {
+      if (isBdFlow && !cleanPhone && isPermissionDeniedError(error)) {
+        const fallbackClient: Client = stripUndefinedDeep({
+          ...client,
+          mobile: 'Not provided',
+          whatsapp: client.whatsapp || 'Not provided',
+        });
+        try {
+          await setDoc(doc(db, CLIENTS_COL, fallbackClient.id), fallbackClient);
+          return fallbackClient;
+        } catch (fallbackErr) {
+          handleFirestoreError(
+            fallbackErr,
+            OperationType.WRITE,
+            `${CLIENTS_COL}/${fallbackClient.id}`
+          );
+        }
+      }
       handleFirestoreError(error, OperationType.WRITE, `${CLIENTS_COL}/${client.id}`);
     }
   },
@@ -3265,6 +3333,17 @@ export const firestoreService = {
     bankDocDataUrl: string;
     bankAccountDetails?: string;
   }): Promise<SellerApplication> {
+    if (!payload.existingId) {
+      const geo = await fetchGeoRegion().catch(() => ({
+        isBangladesh: detectClientBangladeshFallback(),
+      }));
+      if (geo.isBangladesh || detectClientBangladeshFallback()) {
+        throw new Error(
+          'Seller account registration is currently restricted to India only and is not available in Bangladesh.'
+        );
+      }
+    }
+
     const cleanAuthUid = String(payload.authUid || '').trim();
     const cleanName = String(payload.name || '').trim();
     const cleanEmail = String(payload.email || '').trim().toLowerCase();

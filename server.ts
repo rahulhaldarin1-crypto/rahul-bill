@@ -316,6 +316,21 @@ async function startServer(): Promise<void> {
     res.json({ status: 'ok', app: 'Glamour Galleria' });
   });
 
+  // Geo country detection route (mirrors /api/geo Vercel serverless function)
+  app.get('/api/geo', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Vary', 'x-vercel-ip-country');
+    const rawHeader = req.headers['x-vercel-ip-country'];
+    const headerStr = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    const countryCode = String(headerStr || '').trim().toUpperCase();
+    res.json({
+      countryCode: countryCode || null,
+      isBangladesh: countryCode === 'BD',
+      source: countryCode ? 'vercel-ip-country' : 'none',
+    });
+  });
+
   // 6-DIGIT EMAIL OTP DELIVERY & VERIFICATION (SMTP)
   const ADMIN_OTP_EMAIL = 'rahulhaldar.in@gmail.com';
   const OTP_EXPIRY_MS = 5 * 60 * 1000;

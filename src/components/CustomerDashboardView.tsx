@@ -53,6 +53,15 @@ import {
 } from '../utils/calculations';
 import { getOptimizedMediaUrl, uploadMediaToCloudinary } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
+import {
+  BANGLADESH_CHARGE_NOTICE,
+  buildBangladeshWhatsAppOrderUrl,
+  convertInrToBdt,
+  displayCustomerPhone,
+  formatBdt,
+  resolveBangladeshConfig,
+  useBangladeshDetection,
+} from '../utils/region';
 import { CustomerAvatar } from './CustomerAvatar';
 import { ScaledInvoicePreview } from './ScaledInvoicePreview';
 
@@ -85,6 +94,13 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   onLogout,
   onClientUpdated,
 }) => {
+  const { isBangladesh: geoBangladesh } = useBangladeshDetection();
+  const isBangladesh =
+    geoBangladesh ||
+    String(client.detectedCountry || '').trim().toUpperCase() === 'BD';
+  const bdConfig = resolveBangladeshConfig(settings);
+  const bdtRate = bdConfig.inrToBdtRate;
+
   const [activeTab, setActiveTab] = useState<CustomerDashboardTab>(initialTab);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [profileError, setProfileError] = useState('');
@@ -96,7 +112,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const [savedState, setSavedState] = useState(client.state || '');
   const [savedPin, setSavedPin] = useState(client.pinCode || '');
   const [savedWhatsapp, setSavedWhatsapp] = useState(() =>
-    stripPlus91Prefix(client.whatsapp || client.mobile)
+    stripPlus91Prefix(displayCustomerPhone(client.whatsapp || client.mobile))
   );
   const [savingAddress, setSavingAddress] = useState(false);
   const [addressError, setAddressError] = useState('');
@@ -107,10 +123,10 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
   const [checkoutName, setCheckoutName] = useState(client.name);
   const [checkoutPhone, setCheckoutPhone] = useState(() =>
-    stripPlus91Prefix(client.mobile)
+    stripPlus91Prefix(displayCustomerPhone(client.mobile))
   );
   const [checkoutWhatsapp, setCheckoutWhatsapp] = useState(() =>
-    stripPlus91Prefix(client.whatsapp || client.mobile)
+    stripPlus91Prefix(displayCustomerPhone(client.whatsapp || client.mobile))
   );
   const [checkoutAddress, setCheckoutAddress] = useState(client.address);
   const [checkoutCity, setCheckoutCity] = useState(client.city);
@@ -138,9 +154,13 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
 
   useEffect(() => {
     setCheckoutName((prev) => prev || client.name);
-    setCheckoutPhone((prev) => prev || stripPlus91Prefix(client.mobile));
+    setCheckoutPhone(
+      (prev) => prev || stripPlus91Prefix(displayCustomerPhone(client.mobile))
+    );
     setCheckoutWhatsapp(
-      (prev) => prev || stripPlus91Prefix(client.whatsapp || client.mobile)
+      (prev) =>
+        prev ||
+        stripPlus91Prefix(displayCustomerPhone(client.whatsapp || client.mobile))
     );
     setCheckoutAddress((prev) => prev || client.address);
     setCheckoutCity((prev) => prev || client.city);
@@ -150,7 +170,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     setSavedCity(client.city || '');
     setSavedState(client.state || '');
     setSavedPin(client.pinCode || '');
-    setSavedWhatsapp(stripPlus91Prefix(client.whatsapp || client.mobile));
+    setSavedWhatsapp(
+      stripPlus91Prefix(displayCustomerPhone(client.whatsapp || client.mobile))
+    );
   }, [client]);
 
   const sym = settings?.currencySymbol || '₹';
@@ -671,10 +693,17 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                 {client.name}
               </h1>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#5B4B6B]">
-                <span className="inline-flex items-center gap-1 font-mono-num font-semibold">
-                  <Phone className="w-3.5 h-3.5 text-[#7E22CE]" />
-                  {client.mobile}
-                </span>
+                {displayCustomerPhone(client.mobile) && (
+                  <span className="inline-flex items-center gap-1 font-mono-num font-semibold">
+                    <Phone className="w-3.5 h-3.5 text-[#7E22CE]" />
+                    {displayCustomerPhone(client.mobile)}
+                  </span>
+                )}
+                {client.email && (
+                  <span className="text-xs text-[#6B5B7B]">
+                    {client.email}
+                  </span>
+                )}
                 {client.address && (
                   <span className="inline-flex items-center gap-1">
                     <MapPin className="w-3.5 h-3.5 text-[#DB2777]" />
@@ -1015,19 +1044,26 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
 
                             <div className="flex items-center gap-2.5">
                               <div className="text-right font-mono-num">
-                                <span className="text-sm font-bold text-[#7E22CE]">
-                                  {formatCurrency(lineTotal, sym)}
-                                </span>
-                                {item.originalPrice &&
-                                  item.originalPrice > item.price && (
-                                    <span className="ml-1.5 text-[11px] text-[#8E7C9E] line-through">
-                                      {formatCurrency(
-                                        item.originalPrice *
-                                          Math.max(1, item.quantity || 1),
-                                        sym
-                                      )}
+                                <div className="flex items-baseline justify-end gap-1.5 flex-wrap">
+                                  <span className="text-sm font-bold text-[#7E22CE]">
+                                    {formatCurrency(lineTotal, sym)}
+                                  </span>
+                                  {isBangladesh && (
+                                    <span className="text-xs font-bold text-[#0F766E]">
+                                      · {formatBdt(convertInrToBdt(lineTotal, bdtRate))}
                                     </span>
                                   )}
+                                  {item.originalPrice &&
+                                    item.originalPrice > item.price && (
+                                      <span className="text-[11px] text-[#8E7C9E] line-through">
+                                        {formatCurrency(
+                                          item.originalPrice *
+                                            Math.max(1, item.quantity || 1),
+                                          sym
+                                        )}
+                                      </span>
+                                    )}
+                                </div>
                               </div>
                               <button
                                 type="button"
@@ -1046,24 +1082,96 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   })}
                 </div>
 
-                <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 flex items-center justify-between">
+                <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 flex items-center justify-between gap-3">
                   <span className="text-sm font-semibold text-[#4A3B59]">
                     Cart Total ({cartItemCount} units)
                   </span>
-                  <span className="font-mono-num text-lg font-bold text-[#7E22CE]">
-                    {formatCurrency(cartSubtotal, sym)}
-                  </span>
+                  <div className="text-right font-mono-num">
+                    <div className="text-lg font-bold text-[#7E22CE]">
+                      {formatCurrency(cartSubtotal, sym)}
+                    </div>
+                    {isBangladesh && (
+                      <div className="text-sm font-bold text-[#0F766E]">
+                        {formatBdt(convertInrToBdt(cartSubtotal, bdtRate))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Cart Checkout Form */}
-              <form
-                onSubmit={handlePlaceCartOrder}
-                className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 sm:p-5 space-y-4"
-              >
-                <div className="text-sm font-bold text-[#1F122B]">
-                  Delivery &amp; Payment Checkout
+              {/* Cart Checkout Form (Bangladesh WhatsApp Order vs India COD/UPI) */}
+              {isBangladesh ? (
+                <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 sm:p-5 space-y-4">
+                  <div className="text-sm font-bold text-[#1F122B]">
+                    Order from Bangladesh via WhatsApp
+                  </div>
+
+                  <div className="rounded-xl border border-[#EFE2F5] bg-white p-3.5 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between text-[#5B4B6B]">
+                      <span>Items Subtotal ({cartItemCount} units)</span>
+                      <span className="font-mono-num font-bold text-[#1F122B]">
+                        {formatCurrency(cartSubtotal, sym)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[#0F766E]">
+                      <span>Bangladesh Price (BDT)</span>
+                      <span className="font-mono-num text-sm font-bold">
+                        {formatBdt(convertInrToBdt(cartSubtotal, bdtRate))}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-3.5 py-2.5 text-xs font-semibold text-[#92400E]">
+                    {BANGLADESH_CHARGE_NOTICE}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
+                      Order Note / Size Note (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={checkoutNote}
+                      onChange={(e) => setCheckoutNote(e.target.value)}
+                      placeholder="Size, delivery area in Bangladesh, or note"
+                      className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                    />
+                  </div>
+
+                  <a
+                    href={buildBangladeshWhatsAppOrderUrl({
+                      whatsappNumber: bdConfig.whatsappNumber,
+                      inrToBdtRate: bdtRate,
+                      items: cart.map((item) => ({
+                        id: item.id,
+                        productId: item.productId,
+                        name: item.name,
+                        priceInr: item.price,
+                        quantity: Math.max(1, item.quantity || 1),
+                        selectedVariant: item.size,
+                        color: item.color,
+                        sellerId: item.sellerId,
+                        sellerName: item.sellerName,
+                      })),
+                      customer: client,
+                      note: checkoutNote,
+                    })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#15803D] to-[#0F766E] py-3 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity whitespace-nowrap"
+                  >
+                    <Phone className="w-4 h-4 shrink-0" />
+                    <span>Order Cart on WhatsApp</span>
+                  </a>
                 </div>
+              ) : (
+                <form
+                  onSubmit={handlePlaceCartOrder}
+                  className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 sm:p-5 space-y-4"
+                >
+                  <div className="text-sm font-bold text-[#1F122B]">
+                    Delivery &amp; Payment Checkout
+                  </div>
 
                 {checkoutError && (
                   <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
@@ -1420,6 +1528,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   </span>
                 </button>
               </form>
+              )}
             </div>
           )}
         </section>

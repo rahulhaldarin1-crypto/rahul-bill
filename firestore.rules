@@ -36,7 +36,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'mobile', 'createdAt', 'updatedAt'])
         && data.id is string && data.id.size() <= 128
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
-        && data.mobile is string && data.mobile.size() >= 1 && data.mobile.size() <= 40;
+        && data.mobile is string && data.mobile.size() >= 0 && data.mobile.size() <= 40;
     }
 
     function isValidProduct(data) {

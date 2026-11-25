@@ -2,6 +2,7 @@ import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 import {
   AdminPaymentSettings,
+  BangladeshConfig,
   BusinessSettings,
   HighlightConfig,
   Invoice,
@@ -606,6 +607,14 @@ export const DEFAULT_ADMIN_PAYMENT_SETTINGS: AdminPaymentSettings = {
   updatedAt: '',
 };
 
+export const DEFAULT_INR_TO_BDT_RATE = 1.45;
+
+export const DEFAULT_BANGLADESH_CONFIG: BangladeshConfig = {
+  inrToBdtRate: DEFAULT_INR_TO_BDT_RATE,
+  whatsappNumber: WHATSAPP_SUPPORT_PHONE,
+  updatedAt: '',
+};
+
 export const DEFAULT_SETTINGS: BusinessSettings = {
   businessName: 'Glamour Galleria',
   tagline: 'Your Style, Our Priority',
@@ -631,6 +640,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   lowStockThreshold: 5,
   viewPanel: DEFAULT_VIEW_PANEL_CONFIG,
   highlightConfig: DEFAULT_HIGHLIGHT_CONFIG,
+  bangladeshConfig: DEFAULT_BANGLADESH_CONFIG,
 };
 
 export function mergeAdminPaymentSettings(
@@ -817,6 +827,21 @@ export function mergeBusinessSettings(
         ? rawHc.offerSeats
         : DEFAULT_HIGHLIGHT_CONFIG.offerSeats,
       updatedAt: rawHc?.updatedAt || '',
+    },
+    bangladeshConfig: {
+      inrToBdtRate:
+        Number.isFinite(Number(raw?.bangladeshConfig?.inrToBdtRate)) &&
+        Number(raw?.bangladeshConfig?.inrToBdtRate) > 0
+          ? Number(Number(raw?.bangladeshConfig?.inrToBdtRate).toFixed(4))
+          : DEFAULT_BANGLADESH_CONFIG.inrToBdtRate,
+      whatsappNumber:
+        String(
+          raw?.bangladeshConfig?.whatsappNumber ||
+            raw?.whatsapp ||
+            DEFAULT_BANGLADESH_CONFIG.whatsappNumber
+        )
+          .replace(/[^\d]/g, '') || DEFAULT_BANGLADESH_CONFIG.whatsappNumber,
+      updatedAt: String(raw?.bangladeshConfig?.updatedAt || ''),
     },
   };
 }

@@ -10,6 +10,10 @@ import {
   validateEnglishName,
 } from '../utils/calculations';
 import { uploadMediaToCloudinary } from '../utils/cloudinary';
+import {
+  displayCustomerPhone,
+  useBangladeshDetection,
+} from '../utils/region';
 import { CustomerAvatar } from './CustomerAvatar';
 
 export interface GoogleOnboardingSeed {
@@ -35,6 +39,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const { isBangladesh } = useBangladeshDetection();
   const [step, setStep] = useState<'signin' | 'onboarding'>('signin');
   const [error, setError] = useState('');
   const [signingIn, setSigningIn] = useState(false);
@@ -62,16 +67,24 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
           .replace(/\s+/g, ' ')
           .trim()
       );
-      const parsedPhone = parseAsianPhoneParts(initialOnboardingUser.existingMobile || '');
-      setCountryCode(parsedPhone.dialCode);
-      setMobile(parsedPhone.nationalNumber);
+      const cleanExistingPhone = displayCustomerPhone(
+        initialOnboardingUser.existingMobile
+      );
+      if (cleanExistingPhone) {
+        const parsedPhone = parseAsianPhoneParts(cleanExistingPhone);
+        setCountryCode(parsedPhone.dialCode);
+        setMobile(parsedPhone.nationalNumber);
+      } else {
+        setCountryCode(isBangladesh ? '+880' : '+91');
+        setMobile('');
+      }
       setProfilePhoto(initialOnboardingUser.photoURL || '');
       setStep('onboarding');
     } else {
-      setCountryCode('+91');
+      setCountryCode(isBangladesh ? '+880' : '+91');
       setStep('signin');
     }
-  }, [open, initialOnboardingUser]);
+  }, [open, initialOnboardingUser, isBangladesh]);
 
   if (!open) return null;
 
@@ -99,6 +112,8 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
         email: user.email,
         displayName: user.displayName,
         photoURL: user.photoURL,
+        detectedCountry: isBangladesh ? 'BD' : undefined,
+        isBangladesh,
       });
 
       if (!resolved.needsOnboarding && resolved.client) {
@@ -116,9 +131,15 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       setGoogleUid(user.uid);
       setGoogleEmail(String(user.email || '').trim().toLowerCase());
       setFullName(rawDisplayName);
-      const parsedPhone = parseAsianPhoneParts(resolved.client?.mobile || '');
-      setCountryCode(parsedPhone.dialCode);
-      setMobile(parsedPhone.nationalNumber);
+      const cleanExistingPhone = displayCustomerPhone(resolved.client?.mobile);
+      if (cleanExistingPhone) {
+        const parsedPhone = parseAsianPhoneParts(cleanExistingPhone);
+        setCountryCode(parsedPhone.dialCode);
+        setMobile(parsedPhone.nationalNumber);
+      } else {
+        setCountryCode(isBangladesh ? '+880' : '+91');
+        setMobile('');
+      }
       setProfilePhoto(
         resolved.client?.profilePhotoDataUrl || user.photoURL || ''
       );
@@ -181,17 +202,30 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     e.preventDefault();
     setError('');
 
+    if (isBangladesh && !profilePhoto.trim()) {
+      setError('Please upload or keep your profile photo to complete setup.');
+      return;
+    }
+
     const nameCheck = validateEnglishName(fullName, 'Full Name');
     if (!nameCheck.valid) {
       setError(nameCheck.error || 'Please enter your full name in English.');
       return;
     }
 
-    const phoneCheck = normalizeAsianPhone(mobile, countryCode);
-    if (!phoneCheck.valid) {
-      setError(
-        phoneCheck.error || 'Please enter a valid mobile number.'
-      );
+    const trimmedMobile = mobile.trim();
+    let formattedPhone = '';
+    if (trimmedMobile) {
+      const phoneCheck = normalizeAsianPhone(trimmedMobile, countryCode);
+      if (!phoneCheck.valid) {
+        setError(
+          phoneCheck.error || 'Please enter a valid mobile number.'
+        );
+        return;
+      }
+      formattedPhone = phoneCheck.formatted;
+    } else if (!isBangladesh) {
+      setError('Please enter a valid mobile number.');
       return;
     }
 
@@ -210,9 +244,11 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
         uid: googleUid,
         email: googleEmail,
         name: nameCheck.cleaned,
-        mobile: phoneCheck.formatted,
+        mobile: formattedPhone,
         profilePhotoDataUrl: profilePhoto,
         referredBy,
+        detectedCountry: isBangladesh ? 'BD' : undefined,
+        isBangladesh,
       });
       onSuccess(client);
     } catch (err) {
@@ -242,7 +278,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
             <p className="text-xs text-[#6B5B7B] mt-0.5">
               {step === 'signin'
                 ? 'Continue seamlessly with your Google account.'
-                : 'Quick one-time setup — confirm your name, mobile number, and optional photo.'}
+                : isBangladesh
+                  ? 'Quick Bangladesh setup — confirm your profile photo and name.'
+                  : 'Quick one-time setup — confirm your name, mobile number, and optional photo.'}
             </p>
           </div>
           <button
@@ -300,7 +338,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
               </button>
 
               <p className="text-[11px] text-center text-[#6B5B7B] leading-relaxed">
-                New customers complete a 10-second profile setup with just Name, Mobile Number, and an optional Profile Photo. Returning customers go straight into their account.
+                {isBangladesh
+                  ? 'New Bangladesh customers complete a quick setup with only a Profile Photo and Name. Returning customers go straight into their account.'
+                  : 'New customers complete a 10-second profile setup with just Name, Mobile Number, and an optional Profile Photo. Returning customers go straight into their account.'}
               </p>
             </div>
           ) : (
@@ -312,7 +352,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 </div>
               )}
 
-              {/* 1. Optional Profile Photo Upload (pre-filled with Google photo) */}
+              {/* 1. Profile Photo Upload (pre-filled with Google photo; required for BD) */}
               <div className="flex items-center gap-3.5 rounded-2xl border border-[#F4ECF8] bg-[#FDF9FC] p-3">
                 <CustomerAvatar
                   photoDataUrl={profilePhoto}
@@ -321,7 +361,14 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="text-xs font-semibold text-[#1F122B]">
-                    Profile Photo
+                    Profile Photo{' '}
+                    {isBangladesh ? (
+                      <span className="text-[#DB2777]">*</span>
+                    ) : (
+                      <span className="text-[11px] font-normal text-[#6B5B7B]">
+                        (Optional)
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8B4FE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
@@ -341,7 +388,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                         className="sr-only"
                       />
                     </label>
-                    {profilePhoto && (
+                    {profilePhoto && !isBangladesh && (
                       <button
                         type="button"
                         onClick={() => setProfilePhoto('')}
@@ -365,15 +412,22 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                   autoFocus
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Enter your full name in English (e.g. Priya Sharma)"
+                  placeholder="Enter your full name in English"
                   className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 />
               </div>
 
-              {/* 3. Mobile Number with Asian Country Code Dropdown */}
+              {/* 3. Mobile Number (Optional for Bangladesh visitors) */}
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Mobile Number <span className="text-[#DB2777]">*</span>
+                  Mobile Number{' '}
+                  {isBangladesh ? (
+                    <span className="text-[11px] font-normal text-[#6B5B7B]">
+                      (Optional)
+                    </span>
+                  ) : (
+                    <span className="text-[#DB2777]">*</span>
+                  )}
                 </label>
                 <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
                   <div className="relative inline-flex items-center bg-[#F6EFFA] border-r border-[#E6D9EE] shrink-0 max-w-[148px]">
@@ -397,17 +451,23 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                   <input
                     type="tel"
                     inputMode="tel"
-                    required
+                    required={!isBangladesh}
                     value={mobile}
                     onChange={(e) => setMobile(e.target.value)}
-                    placeholder={countryCode === '+91' ? '9876543210' : 'Enter mobile number'}
+                    placeholder={
+                      countryCode === '+880'
+                        ? '01712345678 (optional)'
+                        : countryCode === '+91'
+                          ? '9876543210'
+                          : 'Enter mobile number'
+                    }
                     className="w-full min-w-0 bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
                   />
                 </div>
               </div>
 
               <p className="text-[11px] text-[#6B5B7B]">
-                No address needed right now — you can save your delivery address later in your Account or during checkout.
+                No address needed right now — you can save your details later in your Account.
               </p>
 
               <button
@@ -418,8 +478,8 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 <UserCheck className="w-4 h-4" />
                 <span>
                   {submittingProfile
-                    ? 'Saving Profile...'
-                    : 'Save Profile & Continue'}
+                    ? 'Saving Account...'
+                    : 'Save & Continue'}
                 </span>
               </button>
             </form>
@@ -429,3 +489,4 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
     </div>
   );
 };
+

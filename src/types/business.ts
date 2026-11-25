@@ -15,7 +15,8 @@ export type AppRoute =
   | 'seller-products'
   | 'customer-seller-contacts'
   | 'help-chat'
-  | 'smart-offers-mail';
+  | 'smart-offers-mail'
+  | 'bangladesh-control';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -188,6 +189,12 @@ export interface SellerPublicPaymentProfile {
 
 export type SellerPublicStoreProfile = SellerPublicPaymentProfile;
 
+export interface BangladeshConfig {
+  inrToBdtRate: number;
+  whatsappNumber: string;
+  updatedAt?: string;
+}
+
 export interface BusinessSettings {
   businessName: string;
   tagline: string;
@@ -212,6 +219,7 @@ export interface BusinessSettings {
   lowStockThreshold: number;
   viewPanel?: ViewPanelConfig;
   highlightConfig?: HighlightConfig;
+  bangladeshConfig?: BangladeshConfig;
   lastAdminOtpVerifiedAt?: string;
 }
 
@@ -250,6 +258,7 @@ export interface Client {
   state: string;
   city: string;
   pinCode: string;
+  detectedCountry?: string;
   profilePhotoDataUrl?: string;
   passwordHash?: string;
   passwordSalt?: string;

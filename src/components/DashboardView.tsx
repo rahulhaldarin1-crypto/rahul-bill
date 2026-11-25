@@ -5,6 +5,7 @@ import {
   BarChart3,
   CreditCard,
   FilePlus2,
+  Globe,
   LifeBuoy,
   Mail,
   Megaphone,
@@ -318,6 +319,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <Users className="w-4 h-4 text-[#7E22CE]" />
             <span>Customer Seller Contact</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('bangladesh-control')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#99F6E4] bg-[#F0FDFA] px-4 py-3 text-sm font-semibold text-[#0F766E] hover:border-[#0F766E] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Globe className="w-4 h-4 text-[#0F766E]" />
+            <span>Bangladesh</span>
           </button>
         </div>
       </section>

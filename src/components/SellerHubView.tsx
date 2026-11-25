@@ -62,6 +62,7 @@ import {
   getOptimizedMediaUrl,
   uploadMediaToCloudinary,
 } from '../utils/cloudinary';
+import { useBangladeshDetection } from '../utils/region';
 import { ProductsView } from './ProductsView';
 
 interface SellerHubViewProps {
@@ -109,6 +110,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   onDeleteProduct,
   onApplicationSubmitted,
 }) => {
+  const { isBangladesh } = useBangladeshDetection();
   const [sellerSessionId, setSellerSessionIdState] = useState<string | null>(
     () => getSellerSessionId()
   );
@@ -495,6 +497,16 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       return;
     }
 
+    if (isBangladesh) {
+      setGoogleSellerAuth(null);
+      setEditingRejected(false);
+      setHubTab('login');
+      setLoginError(
+        'Seller account registration is currently restricted to India only and is not available in Bangladesh.'
+      );
+      return;
+    }
+
     const cleanEmail = String(user.email || '').trim().toLowerCase();
     const cleanName = String(user.displayName || '').trim();
     const cleanPhoto = String(user.photoURL || '').trim();
@@ -711,6 +723,13 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     e.preventDefault();
     setError('');
     setSuccessMsg('');
+
+    if (isBangladesh && !editingRejected) {
+      setError(
+        'Seller account registration is currently restricted to India only and is not available in Bangladesh.'
+      );
+      return;
+    }
 
     const dobCheck = validateAdultDateOfBirth(dateOfBirth);
     if (!dobCheck.valid) {
@@ -2654,19 +2673,21 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             )}
           </div>
 
-          <div className="pt-3 border-t border-[#F4ECF8] flex flex-wrap items-center justify-between gap-2 text-xs text-[#6B5B7B]">
-            <span>New to Seller Hub?</span>
-            <button
-              type="button"
-              onClick={() => {
-                setLoginForgotMode(false);
-                setHubTab('apply');
-              }}
-              className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
-            >
-              Open Seller Account
-            </button>
-          </div>
+          {!isBangladesh && (
+            <div className="pt-3 border-t border-[#F4ECF8] flex flex-wrap items-center justify-between gap-2 text-xs text-[#6B5B7B]">
+              <span>New to Seller Hub?</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginForgotMode(false);
+                  setHubTab('apply');
+                }}
+                className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
+              >
+                Open Seller Account
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -2684,13 +2705,37 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                 : 'Open a Verified Seller Account'}
             </h1>
             <p className="text-xs sm:text-sm text-[#6B5B7B]">
-              {!editingRejected && !googleSellerAuth
-                ? 'Connect with Google first — no separate password or Email OTP required. Then complete your Seller KYC details.'
-                : 'Must be at least 18 years old. Once submitted, you will receive your private Pending Seller ID and can sign in anytime with Google.'}
+              {isBangladesh && !editingRejected
+                ? 'Seller registration is restricted to India only.'
+                : !editingRejected && !googleSellerAuth
+                  ? 'Connect with Google first — no separate password or Email OTP required. Then complete your Seller KYC details.'
+                  : 'Must be at least 18 years old. Once submitted, you will receive your private Pending Seller ID and can sign in anytime with Google.'}
             </p>
           </div>
 
-          {!editingRejected && !googleSellerAuth ? (
+          {isBangladesh && !editingRejected ? (
+            <div className="rounded-3xl border border-[#FBCFE8] bg-[#FFF5FA] p-6 sm:p-8 max-w-lg mx-auto space-y-4 shadow-sm text-center">
+              <div className="w-12 h-12 rounded-2xl bg-[#FFF1F2] border border-[#FECDD3] text-[#BE123C] flex items-center justify-center mx-auto">
+                <ShieldAlert className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5">
+                <h2 className="font-display-serif text-lg font-bold text-[#1F122B]">
+                  Seller Registration Restricted to India Only
+                </h2>
+                <p className="text-xs sm:text-sm text-[#5B4B6B] leading-relaxed">
+                  Opening a new Seller account is currently only available in India and is disabled for Bangladesh visitors. You can still browse all products and order directly via WhatsApp.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onBackToShop}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2.5 text-xs font-bold text-white hover:opacity-95 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Shopping</span>
+              </button>
+            </div>
+          ) : !editingRejected && !googleSellerAuth ? (
             <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-6 sm:p-8 max-w-lg mx-auto space-y-4 shadow-sm text-center">
               {error && (
                 <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C] text-left">

@@ -133,6 +133,8 @@ export const api = {
     email?: string | null;
     displayName?: string | null;
     photoURL?: string | null;
+    detectedCountry?: string;
+    isBangladesh?: boolean;
   }) {
     return firestoreService.resolveGoogleCustomerAccount(payload);
   },
@@ -141,9 +143,11 @@ export const api = {
     uid: string;
     email?: string | null;
     name: string;
-    mobile: string;
+    mobile?: string;
     profilePhotoDataUrl?: string;
     referredBy?: string;
+    detectedCountry?: string;
+    isBangladesh?: boolean;
   }) {
     return firestoreService.completeGoogleCustomerOnboarding(payload);
   },
