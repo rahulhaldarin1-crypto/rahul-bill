@@ -257,6 +257,8 @@ export const api = {
     productCategory?: string;
     productSize?: string;
     productColor?: string;
+    sourceUrl?: string;
+    sourcePlatform?: Product['sourcePlatform'];
     quantity: number;
     unitPrice: number;
     paymentMethod: CustomerOrderPaymentMethod;

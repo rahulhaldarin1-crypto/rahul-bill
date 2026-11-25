@@ -2552,6 +2552,8 @@ export const firestoreService = {
     productCategory?: string;
     productSize?: string;
     productColor?: string;
+    sourceUrl?: string;
+    sourcePlatform?: Product['sourcePlatform'];
     quantity: number;
     unitPrice: number;
     paymentMethod: CustomerOrderPaymentMethod;
@@ -2616,6 +2618,8 @@ export const firestoreService = {
               imageDataUrl: it.imageDataUrl ? String(it.imageDataUrl) : '',
               sellerId: it.sellerId ? String(it.sellerId) : '',
               sellerName: it.sellerName ? String(it.sellerName).trim() : '',
+              sourceUrl: it.sourceUrl ? String(it.sourceUrl).trim() : undefined,
+              sourcePlatform: it.sourcePlatform,
             });
           })
         : [
@@ -2638,6 +2642,8 @@ export const firestoreService = {
                 ).toFixed(2)
               ),
               sellerId: payload.sellerId ? String(payload.sellerId) : '',
+              sourceUrl: payload.sourceUrl ? String(payload.sourceUrl).trim() : undefined,
+              sourcePlatform: payload.sourcePlatform,
             }),
           ];
 
@@ -2809,6 +2815,13 @@ export const firestoreService = {
       productCategory: normalizedItems[0].productCategory || '',
       productSize: normalizedItems[0].productSize || '',
       productColor: normalizedItems[0].productColor || '',
+      sourceUrl:
+        (payload.sourceUrl ? String(payload.sourceUrl).trim() : '') ||
+        normalizedItems.find((i) => i.sourceUrl)?.sourceUrl ||
+        undefined,
+      sourcePlatform:
+        payload.sourcePlatform ||
+        normalizedItems.find((i) => i.sourcePlatform)?.sourcePlatform,
       quantity: totalQty,
       unitPrice:
         normalizedItems.length === 1 ? normalizedItems[0].unitPrice : subtotal,

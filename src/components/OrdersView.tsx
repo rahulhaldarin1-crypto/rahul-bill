@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   CreditCard,
   Download,
+  ExternalLink,
   FileText,
   Image as ImageIcon,
   MapPin,
@@ -131,6 +132,58 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     return matched.imageDataUrl || '';
   };
 
+  const getSafeHttpHref = (raw?: string): string | null => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return parsed.toString();
+      }
+    } catch {
+      // ignore invalid url
+    }
+    return null;
+  };
+
+  const resolveOrderSourceUrl = (order: CustomerOrder): string | null => {
+    const direct = getSafeHttpHref(order.sourceUrl);
+    if (direct) return direct;
+
+    if (Array.isArray(order.items)) {
+      for (const item of order.items) {
+        const itemHref = getSafeHttpHref(item.sourceUrl);
+        if (itemHref) return itemHref;
+        const matched =
+          (item.productId
+            ? products.find((p) => p.id === item.productId)
+            : undefined) ||
+          (item.productName
+            ? products.find(
+                (p) =>
+                  p.name.trim().toLowerCase() ===
+                  item.productName.trim().toLowerCase()
+              )
+            : undefined);
+        const prodHref = getSafeHttpHref(matched?.sourceUrl);
+        if (prodHref) return prodHref;
+      }
+    }
+
+    const fallbackMatched =
+      (order.productId
+        ? products.find((p) => p.id === order.productId)
+        : undefined) ||
+      (order.productName
+        ? products.find(
+            (p) =>
+              p.name.trim().toLowerCase() ===
+              order.productName.trim().toLowerCase()
+          )
+        : undefined);
+    return getSafeHttpHref(fallbackMatched?.sourceUrl);
+  };
+
   const handleDownloadProductImage = async (
     src: string,
     orderNum: string,
@@ -248,6 +301,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             const isPending = order.status === 'Pending';
             const isConfirmed = order.status === 'Confirmed';
             const isCancelled = order.status === 'Cancelled';
+            const resellHref = resolveOrderSourceUrl(order);
 
             const addressLine = [
               order.customerAddress,
@@ -574,6 +628,18 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               : 'Confirm Order & Generate Bill'}
                           </span>
                         </button>
+                        {resellHref && (
+                          <a
+                            href={resellHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
+                            title="Open original supplier product page to place resell order"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>Resell</span>
+                          </a>
+                        )}
                         <button
                           type="button"
                           disabled={cancellingId === order.id}
@@ -584,6 +650,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           <span>Cancel</span>
                         </button>
                       </>
+                    )}
+
+                    {!isPending && resellHref && (
+                      <a
+                        href={resellHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-3.5 py-2 text-xs font-semibold text-[#7E22CE] hover:bg-[#F3E8FF] whitespace-nowrap shrink-0 cursor-pointer"
+                        title="Open original supplier product page"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Resell</span>
+                      </a>
                     )}
 
                     {linkedInvoice && (

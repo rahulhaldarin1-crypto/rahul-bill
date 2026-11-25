@@ -535,11 +535,14 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         imageDataUrl: item.imageDataUrl,
         sellerId: matchedProduct?.sellerId || item.sellerId,
         sellerName: matchedProduct?.sellerName || item.sellerName,
+        sourceUrl: matchedProduct?.sourceUrl || item.sourceUrl,
+        sourcePlatform: matchedProduct?.sourcePlatform || item.sourcePlatform,
       };
     });
 
     const totalUnits = orderItems.reduce((s, i) => s + i.quantity, 0);
     const first = orderItems[0];
+    const firstWithSource = orderItems.find((it) => Boolean(it.sourceUrl));
     const singleGroup = payeeGroups.length === 1 ? payeeGroups[0].details : null;
     const upiIdUsed = singleGroup
       ? singleGroup.upiId || (singleGroup.bankAccountNo || singleGroup.qrDataUrl ? 'Bank/QR' : DEFAULT_ADMIN_UPI_ID)
@@ -579,6 +582,8 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         productCategory: first?.productCategory,
         productSize: first?.productSize,
         productColor: first?.productColor,
+        sourceUrl: firstWithSource?.sourceUrl,
+        sourcePlatform: firstWithSource?.sourcePlatform,
         quantity: totalUnits,
         unitPrice: first?.unitPrice || 0,
         paymentMethod,

@@ -6,6 +6,7 @@ import fs from 'fs';
 import nodemailer from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { handleFetchProduct } from './api/fetch-product';
 
 dotenv.config();
 
@@ -329,6 +330,19 @@ async function startServer(): Promise<void> {
       isBangladesh: countryCode === 'BD',
       source: countryCode ? 'vercel-ip-country' : 'none',
     });
+  });
+
+  // Product URL metadata & image proxy route (mirrors /api/fetch-product Vercel function)
+  app.all('/api/fetch-product', (req: Request, res: Response) => {
+    void handleFetchProduct(
+      {
+        method: req.method,
+        headers: req.headers as Record<string, string | string[] | undefined>,
+        query: req.query as Record<string, string | string[] | undefined>,
+        body: req.body,
+      },
+      res
+    );
   });
 
   // 6-DIGIT EMAIL OTP DELIVERY & VERIFICATION (SMTP)

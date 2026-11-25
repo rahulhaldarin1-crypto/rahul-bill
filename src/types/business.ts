@@ -236,6 +236,8 @@ export interface CustomerCartItem {
   imageDataUrl?: string;
   sellerId?: string;
   sellerName?: string;
+  sourceUrl?: string;
+  sourcePlatform?: ProductSourcePlatform;
 }
 
 export interface CategoryInterestEntry {
@@ -275,6 +277,7 @@ export interface Client {
 }
 
 export type SellerApprovalStatus = 'pending' | 'approved' | 'rejected';
+export type ProductSourcePlatform = 'meesho' | 'flipkart' | 'other';
 
 export interface Product {
   id: string;
@@ -296,6 +299,8 @@ export interface Product {
   size: string;
   color: string;
   description?: string;
+  sourceUrl?: string;
+  sourcePlatform?: ProductSourcePlatform;
   sellerId?: string;
   sellerName?: string;
   sellerPhone?: string;
@@ -408,6 +413,8 @@ export interface CustomerOrderItem {
   imageDataUrl?: string;
   sellerId?: string;
   sellerName?: string;
+  sourceUrl?: string;
+  sourcePlatform?: ProductSourcePlatform;
 }
 
 export interface CustomerOrder {
@@ -430,6 +437,8 @@ export interface CustomerOrder {
   productCategory?: string;
   productSize?: string;
   productColor?: string;
+  sourceUrl?: string;
+  sourcePlatform?: ProductSourcePlatform;
   quantity: number;
   unitPrice: number;
   subtotal?: number;

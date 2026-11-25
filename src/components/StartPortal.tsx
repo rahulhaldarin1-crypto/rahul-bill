@@ -157,6 +157,8 @@ interface PublicShopProduct {
   description?: string;
   sellerId?: string;
   sellerName?: string;
+  sourceUrl?: string;
+  sourcePlatform?: Product['sourcePlatform'];
   sellerPaymentUpiId?: string;
   sellerPaymentBankAccountName?: string;
   sellerPaymentBankName?: string;
@@ -492,6 +494,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             description: prod.description,
             sellerId: prod.sellerId,
             sellerName: prod.sellerName,
+            sourceUrl: prod.sourceUrl,
+            sourcePlatform: prod.sourcePlatform,
             sellerPaymentUpiId: prod.sellerPaymentUpiId,
             sellerPaymentBankAccountName: prod.sellerPaymentBankAccountName,
             sellerPaymentBankName: prod.sellerPaymentBankName,
@@ -1085,6 +1089,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           imageDataUrl: product.imageDataUrls[0] || product.imageDataUrl || '',
           sellerId: product.sellerId,
           sellerName: product.sellerName,
+          sourceUrl: product.sourceUrl,
+          sourcePlatform: product.sourcePlatform,
         });
       }
 
@@ -1825,6 +1831,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               '',
             sellerId: selectedProduct.sellerId,
             sellerName: selectedProduct.sellerName,
+            sourceUrl: selectedProduct.sourceUrl,
+            sourcePlatform: selectedProduct.sourcePlatform,
           },
         ],
         productId: selectedProduct.catalogProductId,
@@ -1832,6 +1840,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         productCategory: selectedProduct.category,
         productSize: selectedProduct.size,
         productColor: selectedProduct.color,
+        sourceUrl: selectedProduct.sourceUrl,
+        sourcePlatform: selectedProduct.sourcePlatform,
         quantity: parsedQty,
         unitPrice: selectedProduct.price,
         paymentMethod,

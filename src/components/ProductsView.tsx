@@ -4,7 +4,10 @@ import {
   ChevronDown,
   ChevronUp,
   CreditCard,
+  Crop,
   Download,
+  Link2,
+  Loader2,
   Package,
   Pencil,
   Plus,
@@ -16,7 +19,11 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import { CloudinaryMediaRecord, Product } from '../types/business';
+import {
+  CloudinaryMediaRecord,
+  Product,
+  ProductSourcePlatform,
+} from '../types/business';
 import {
   DEFAULT_PRODUCT_CATEGORY,
   downloadImageAsset,
@@ -30,6 +37,7 @@ import {
 } from '../utils/cloudinary';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
 import { ConfirmModal } from './ConfirmModal';
+import { ImageCropModal } from './ImageCropModal';
 
 export interface SellerProductContext {
   sellerId: string;
@@ -55,6 +63,25 @@ interface ProductsViewProps {
 
 const MAX_PRODUCT_IMAGES = 5;
 const ALLOWED_CATEGORIES_SET = new Set<string>(PRODUCT_CATEGORIES);
+const CUSTOM_CATEGORY_VALUE = '__CUSTOM__';
+
+function detectClientPlatform(rawUrl: string): ProductSourcePlatform {
+  try {
+    const host = new URL(rawUrl).hostname.toLowerCase();
+    if (host === 'meesho.com' || host.endsWith('.meesho.com')) return 'meesho';
+    if (
+      host === 'flipkart.com' ||
+      host.endsWith('.flipkart.com') ||
+      host === 'fkrt.it' ||
+      host === 'fkrt.co'
+    ) {
+      return 'flipkart';
+    }
+  } catch {
+    // ignore invalid url
+  }
+  return 'other';
+}
 
 export const ProductsView: React.FC<ProductsViewProps> = ({
   products,
@@ -98,6 +125,18 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [size, setSize] = useState('');
   const [color, setColor] = useState('');
   const [description, setDescription] = useState('');
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const [importUrl, setImportUrl] = useState('');
+  const [fetchingUrl, setFetchingUrl] = useState(false);
+  const [importNotice, setImportNotice] = useState<{
+    kind: 'success' | 'warning';
+    text: string;
+  } | null>(null);
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [sourcePlatform, setSourcePlatform] = useState<
+    ProductSourcePlatform | undefined
+  >(undefined);
+  const [cropModalIndex, setCropModalIndex] = useState<number | null>(null);
   const [uploadingImgProgress, setUploadingImgProgress] = useState<number | null>(null);
   const [uploadingVideoProgress, setUploadingVideoProgress] = useState<number | null>(null);
   const [togglingHighlightId, setTogglingHighlightId] = useState<string | null>(null);
@@ -218,6 +257,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setSize('');
     setColor('');
     setDescription('');
+    setIsCustomCategory(false);
+    setImportUrl('');
+    setFetchingUrl(false);
+    setImportNotice(null);
+    setSourceUrl('');
+    setSourcePlatform(undefined);
+    setCropModalIndex(null);
     setPaymentSectionOpen(false);
     setSellerPaymentUpiId('');
     setSellerPaymentBankAccountName('');
@@ -249,9 +295,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setVideoUrl(prod.videoUrl || '');
     setMediaRecords(Array.isArray(prod.mediaRecords) ? prod.mediaRecords : []);
     const cat = (prod.category || '').trim();
-    setCategory(
-      ALLOWED_CATEGORIES_SET.has(cat) ? cat : DEFAULT_PRODUCT_CATEGORY
-    );
+    const isPresetCategory = ALLOWED_CATEGORIES_SET.has(cat);
+    if (cat && !isPresetCategory) {
+      setIsCustomCategory(true);
+      setCategory(cat);
+    } else {
+      setIsCustomCategory(false);
+      setCategory(isPresetCategory ? cat : DEFAULT_PRODUCT_CATEGORY);
+    }
     setPurchasePrice(formatNumericFieldValue(prod.purchasePrice));
     setSellingPrice(formatNumericFieldValue(prod.sellingPrice));
     setOriginalPrice(formatNumericFieldValue(prod.originalPrice));
@@ -261,6 +312,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setSize(prod.size || '');
     setColor(prod.color || '');
     setDescription(prod.description || '');
+    setImportUrl(prod.sourceUrl || '');
+    setFetchingUrl(false);
+    setImportNotice(null);
+    setSourceUrl(prod.sourceUrl || '');
+    setSourcePlatform(prod.sourcePlatform);
+    setCropModalIndex(null);
     const hasCustomPayment = Boolean(
       prod.sellerPaymentUpiId ||
         prod.sellerPaymentBankAccountName ||
@@ -452,6 +509,143 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setImageDataUrls((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const handleFetchProductFromUrl = async () => {
+    const trimmed = importUrl.trim();
+    if (!trimmed) {
+      setImportNotice({
+        kind: 'warning',
+        text: 'Please paste a Meesho, Flipkart, or product URL first.',
+      });
+      return;
+    }
+
+    let normalizedInput = trimmed;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        setImportNotice({
+          kind: 'warning',
+          text: 'Only http:// or https:// links are supported.',
+        });
+        return;
+      }
+      normalizedInput = parsed.toString();
+    } catch {
+      setImportNotice({
+        kind: 'warning',
+        text: 'Please enter a valid full URL starting with https://',
+      });
+      return;
+    }
+
+    setError('');
+    setImportNotice(null);
+    setFetchingUrl(true);
+    try {
+      const res = await fetch('/api/fetch-product', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: normalizedInput }),
+      });
+
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        partial?: boolean;
+        warning?: string;
+        error?: string;
+        data?: {
+          title?: string;
+          description?: string;
+          price?: number | null;
+          originalPrice?: number | null;
+          sizes?: string;
+          imageUrls?: string[];
+          sourceUrl?: string;
+          sourcePlatform?: ProductSourcePlatform;
+        };
+      };
+
+      const extracted = payload.data;
+      const resolvedUrl = extracted?.sourceUrl || normalizedInput;
+      const resolvedPlatform =
+        extracted?.sourcePlatform || detectClientPlatform(resolvedUrl);
+
+      setSourceUrl(resolvedUrl);
+      setSourcePlatform(resolvedPlatform);
+
+      if (!res.ok) {
+        setImportNotice({
+          kind: 'warning',
+          text:
+            payload.error ||
+            'Could not auto-fill from this link. The URL is linked—please enter product details manually.',
+        });
+        return;
+      }
+
+      if (extracted) {
+        if (extracted.title) {
+          setName(extracted.title);
+        }
+        if (extracted.description) {
+          setDescription(extracted.description);
+        }
+        if (
+          typeof extracted.price === 'number' &&
+          Number.isFinite(extracted.price) &&
+          extracted.price > 0
+        ) {
+          setSellingPrice(String(Math.round(extracted.price)));
+        }
+        if (
+          typeof extracted.originalPrice === 'number' &&
+          Number.isFinite(extracted.originalPrice) &&
+          extracted.originalPrice > 0
+        ) {
+          setOriginalPrice(String(Math.round(extracted.originalPrice)));
+        }
+        if (extracted.sizes) {
+          setSize(extracted.sizes);
+        }
+        if (Array.isArray(extracted.imageUrls) && extracted.imageUrls.length > 0) {
+          setImageDataUrls((prev) => {
+            const combined = [...prev];
+            for (const url of extracted.imageUrls || []) {
+              if (combined.length >= MAX_PRODUCT_IMAGES) break;
+              if (!combined.includes(url)) {
+                combined.push(url);
+              }
+            }
+            return combined.slice(0, MAX_PRODUCT_IMAGES);
+          });
+        }
+      }
+
+      if (payload.ok && !payload.partial) {
+        setImportNotice({
+          kind: 'success',
+          text: 'Product details & photos fetched! Review fields or use Crop / Edit on any photo before saving.',
+        });
+      } else {
+        setImportNotice({
+          kind: 'warning',
+          text:
+            payload.warning ||
+            'Partial details or blocked response from target site. You can edit all fields and upload photos below.',
+        });
+      }
+    } catch {
+      setSourceUrl(normalizedInput);
+      setSourcePlatform(detectClientPlatform(normalizedInput));
+      setImportNotice({
+        kind: 'warning',
+        text: 'Network error while fetching URL. Your link is saved—please fill in details manually.',
+      });
+    } finally {
+      setFetchingUrl(false);
+    }
+  };
+
   const handlePaymentQrChange = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -491,6 +685,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setError('');
     if (!name.trim()) {
       setError('Product name is required.');
+      return;
+    }
+    if (isCustomCategory && !category.trim()) {
+      setError('Please enter your custom category name.');
       return;
     }
     const finalCategory = category.trim() || DEFAULT_PRODUCT_CATEGORY;
@@ -541,6 +739,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           size: size.trim(),
           color: color.trim(),
           description: description.trim(),
+          ...(sourceUrl.trim() ? { sourceUrl: sourceUrl.trim() } : {}),
+          ...(sourceUrl.trim() && sourcePlatform
+            ? { sourcePlatform }
+            : {}),
           sellerId: sellerContext ? sellerContext.sellerId : editing?.sellerId,
           sellerName: sellerContext ? sellerContext.sellerName : editing?.sellerName,
           sellerPhone: sellerContext ? sellerContext.sellerPhone : editing?.sellerPhone,
@@ -609,6 +811,17 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     return products.find((p) => p.id === viewingProduct.id) || viewingProduct;
   }, [products, viewingProduct]);
 
+  const filterCategoryOptions = useMemo(() => {
+    const customCats: string[] = [];
+    for (const p of products) {
+      const cat = (p.category || '').trim();
+      if (cat && !ALLOWED_CATEGORIES_SET.has(cat) && !customCats.includes(cat)) {
+        customCats.push(cat);
+      }
+    }
+    return [...PRODUCT_CATEGORIES, ...customCats];
+  }, [products]);
+
   const inputClass =
     'w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none';
 
@@ -645,6 +858,77 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           onSubmit={handleSubmit}
           className="rounded-2xl border border-[#D8B4FE] bg-white p-4 sm:p-6 space-y-4 shadow-sm"
         >
+          {/* Product URL Auto-Fill Box */}
+          <div className="rounded-2xl border border-[#E6D9EE] bg-[#FDF9FE] p-3.5 sm:p-4 space-y-2">
+            <label
+              htmlFor="product-url-autofill"
+              className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]"
+            >
+              <Link2 className="w-3.5 h-3.5 text-[#DB2777]" />
+              <span>Import from Product URL (Meesho / Flipkart)</span>
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                id="product-url-autofill"
+                type="url"
+                value={importUrl}
+                onChange={(e) => setImportUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleFetchProductFromUrl();
+                  }
+                }}
+                placeholder="Paste Meesho, Flipkart, or product link (https://...)"
+                className={inputClass}
+              />
+              <button
+                type="button"
+                disabled={fetchingUrl}
+                onClick={() => void handleFetchProductFromUrl()}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+              >
+                {fetchingUrl ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Fetching...</span>
+                  </>
+                ) : (
+                  <span>Fetch</span>
+                )}
+              </button>
+            </div>
+            {importNotice && (
+              <div
+                className={`rounded-xl border px-3 py-2 text-[11px] font-medium ${
+                  importNotice.kind === 'success'
+                    ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                    : 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                }`}
+              >
+                {importNotice.text}
+              </div>
+            )}
+            {sourceUrl && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#6B5B7B]">
+                <span className="truncate max-w-full">
+                  Linked Source ({sourcePlatform || 'other'}): {sourceUrl}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSourceUrl('');
+                    setSourcePlatform(undefined);
+                    setImportUrl('');
+                    setImportNotice(null);
+                  }}
+                  className="text-[#BE123C] font-semibold hover:underline shrink-0 cursor-pointer"
+                >
+                  Unlink URL
+                </button>
+              </div>
+            )}
+          </div>
 
           {error && (
             <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
@@ -725,19 +1009,30 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                         <X className="w-3 h-3" />
                       </button>
                     </div>
-                    {idx > 0 ? (
+                    <div className="flex items-center border-t border-[#F4ECF8] divide-x divide-[#F4ECF8]">
+                      {idx > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setAsMainImage(idx)}
+                          className="flex-1 py-1.5 px-1 text-[10px] font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] cursor-pointer truncate"
+                        >
+                          Set Main
+                        </button>
+                      ) : (
+                        <div className="flex-1 py-1.5 px-1 text-center text-[10px] font-semibold text-[#15803D] bg-[#F0FDF4] truncate">
+                          Main
+                        </div>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setAsMainImage(idx)}
-                        className="py-1.5 text-[11px] font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] border-t border-[#F4ECF8] cursor-pointer"
+                        onClick={() => setCropModalIndex(idx)}
+                        className="inline-flex items-center justify-center gap-1 py-1.5 px-2 text-[10px] font-semibold text-[#DB2777] hover:bg-[#FDF2F8] cursor-pointer shrink-0"
+                        title="Crop or edit photo before upload"
                       >
-                        Set as Main
+                        <Crop className="w-3 h-3" />
+                        <span>Crop / Edit</span>
                       </button>
-                    ) : (
-                      <div className="py-1.5 text-center text-[11px] font-semibold text-[#15803D] bg-[#F0FDF4] border-t border-[#DCFCE7]">
-                        Primary Card Photo
-                      </div>
-                    )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -818,8 +1113,17 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 Category <span className="text-[#DB2777]">*</span>
               </label>
               <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
+                value={isCustomCategory ? CUSTOM_CATEGORY_VALUE : category}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === CUSTOM_CATEGORY_VALUE) {
+                    setIsCustomCategory(true);
+                    setCategory('');
+                  } else {
+                    setIsCustomCategory(false);
+                    setCategory(val);
+                  }
+                }}
                 className={inputClass}
               >
                 {PRODUCT_CATEGORIES.map((c) => (
@@ -827,7 +1131,20 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     {c}
                   </option>
                 ))}
+                <option value={CUSTOM_CATEGORY_VALUE}>
+                  Custom Category (Type Manually)
+                </option>
               </select>
+              {isCustomCategory && (
+                <input
+                  type="text"
+                  required
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  placeholder="Type custom category name..."
+                  className={`${inputClass} mt-2`}
+                />
+              )}
             </div>
 
             <div>
@@ -1160,6 +1477,30 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             </div>
           </div>
         </form>
+
+        {cropModalIndex !== null && imageDataUrls[cropModalIndex] && (
+          <ImageCropModal
+            open={true}
+            imageSrc={imageDataUrls[cropModalIndex]}
+            imageIndex={cropModalIndex}
+            uploadRole={sellerContext ? 'seller' : 'admin'}
+            uploadAppSource={sellerContext ? 'glamour-galleria' : 'ggadminpanel'}
+            uploadFolder={
+              sellerContext
+                ? 'glamour-galleria/seller/products'
+                : 'ggadminpanel/admin/products'
+            }
+            uploadedByUid={sellerContext?.sellerId || 'admin'}
+            relatedEntityId={editing?.id}
+            onClose={() => setCropModalIndex(null)}
+            onSaved={(record, targetIdx) => {
+              setImageDataUrls((prev) =>
+                prev.map((item, i) => (i === targetIdx ? record.secureUrl : item))
+              );
+              setMediaRecords((prev) => [...prev, record]);
+            }}
+          />
+        )}
       </div>
     );
   }
@@ -1578,7 +1919,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           className="rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none cursor-pointer"
         >
           <option value="ALL">All Categories</option>
-          {PRODUCT_CATEGORIES.map((c) => (
+          {filterCategoryOptions.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>

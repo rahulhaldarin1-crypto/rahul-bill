@@ -447,9 +447,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
     setEditingProduct(prod);
     setEditName(prod.name);
     const cat = (prod.category || '').trim();
-    setEditCategory(
-      ALLOWED_CATEGORIES_SET.has(cat) ? cat : DEFAULT_PRODUCT_CATEGORY
-    );
+    setEditCategory(cat || DEFAULT_PRODUCT_CATEGORY);
     setEditPurchasePrice(formatNumericFieldValue(prod.purchasePrice));
     setEditSellingPrice(formatNumericFieldValue(prod.sellingPrice));
     setEditOriginalPrice(formatNumericFieldValue(prod.originalPrice));
@@ -498,7 +496,7 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
           imageDataUrls: existingGallery,
           ...(editingProduct.videoUrl ? { videoUrl: editingProduct.videoUrl } : {}),
           ...(editingProduct.mediaRecords ? { mediaRecords: editingProduct.mediaRecords } : {}),
-          category: editCategory,
+          category: editCategory.trim() || DEFAULT_PRODUCT_CATEGORY,
           purchasePrice: Number(editPurchasePrice) || 0,
           sellingPrice: selling,
           originalPrice: Number(editOriginalPrice) || 0,
@@ -511,6 +509,10 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
           size: editSize.trim(),
           color: editColor.trim(),
           description: editDescription.trim(),
+          ...(editingProduct.sourceUrl ? { sourceUrl: editingProduct.sourceUrl } : {}),
+          ...(editingProduct.sourcePlatform
+            ? { sourcePlatform: editingProduct.sourcePlatform }
+            : {}),
           sellerId: editingProduct.sellerId,
           sellerName: editingProduct.sellerName,
           sellerPhone: editingProduct.sellerPhone,
@@ -2058,6 +2060,9 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                   onChange={(e) => setEditCategory(e.target.value)}
                   className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 >
+                  {editCategory && !ALLOWED_CATEGORIES_SET.has(editCategory) && (
+                    <option value={editCategory}>{editCategory}</option>
+                  )}
                   {PRODUCT_CATEGORIES.map((cat) => (
                     <option key={cat} value={cat}>
                       {cat}
