@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -221,6 +221,107 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  type SellerLayer =
+    | 'base'
+    | 'apply'
+    | 'forgot'
+    | 'editing-rejected'
+    | 'store-profile'
+    | 'seller-payment'
+    | 'highlight';
+
+  const currentSellerLayer: SellerLayer = highlightTargetProduct
+    ? 'highlight'
+    : editingRejected
+      ? 'editing-rejected'
+      : loggedInSeller && storeProfileOpen
+        ? 'store-profile'
+        : loggedInSeller && sellerPaymentOpen
+          ? 'seller-payment'
+          : !loggedInSeller && loginForgotMode
+            ? 'forgot'
+            : !loggedInSeller && hubTab === 'apply'
+              ? 'apply'
+              : 'base';
+
+  const sellerLayerRef = useRef<SellerLayer>('base');
+  const sellerSubDepthRef = useRef(0);
+  const skipSellerPushRef = useRef(false);
+
+  useEffect(() => {
+    const prevLayer = sellerLayerRef.current;
+    if (skipSellerPushRef.current) {
+      skipSellerPushRef.current = false;
+      sellerLayerRef.current = currentSellerLayer;
+      return;
+    }
+    if (prevLayer !== currentSellerLayer) {
+      if (currentSellerLayer !== 'base') {
+        try {
+          window.history.pushState(
+            { ggType: 'seller-sub', layer: currentSellerLayer },
+            ''
+          );
+          sellerSubDepthRef.current += 1;
+        } catch {
+          // ignore history errors
+        }
+      }
+      sellerLayerRef.current = currentSellerLayer;
+    }
+  }, [currentSellerLayer]);
+
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      const state = e.state as { ggType?: string; layer?: SellerLayer } | null;
+      if (state?.ggType === 'products-sub') {
+        return;
+      }
+      const activeLayer = sellerLayerRef.current;
+      if (activeLayer === 'base' && sellerSubDepthRef.current === 0) {
+        return;
+      }
+      if (state?.ggType === 'seller-sub' && state.layer === activeLayer) {
+        // Popped back from child ProductsView onto the same SellerHubView layer
+        return;
+      }
+
+      sellerSubDepthRef.current = Math.max(0, sellerSubDepthRef.current - 1);
+      skipSellerPushRef.current = true;
+
+      if (state?.ggType === 'seller-sub' && state.layer) {
+        const nextLayer = state.layer;
+        sellerLayerRef.current = nextLayer;
+        if (nextLayer !== 'highlight') setHighlightTargetProduct(null);
+        setStoreProfileOpen(nextLayer === 'store-profile');
+        setSellerPaymentOpen(nextLayer === 'seller-payment');
+        setEditingRejected(nextLayer === 'editing-rejected');
+        setLoginForgotMode(nextLayer === 'forgot');
+        if (nextLayer === 'apply') setHubTab('apply');
+        else if (nextLayer === 'base') setHubTab('login');
+      } else {
+        sellerLayerRef.current = 'base';
+        setHighlightTargetProduct(null);
+        setStoreProfileOpen(false);
+        setSellerPaymentOpen(false);
+        setEditingRejected(false);
+        setLoginForgotMode(false);
+        setHubTab('login');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const closeSellerSubLayer = (fallback: () => void) => {
+    if (sellerSubDepthRef.current > 0) {
+      window.history.back();
+      return;
+    }
+    fallback();
+  };
 
   const maxAdultDob = useMemo(() => getMaxAdultDobIso(), []);
 
@@ -1336,7 +1437,13 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => setStoreProfileOpen((prev) => !prev)}
+              onClick={() => {
+                if (storeProfileOpen) {
+                  closeSellerSubLayer(() => setStoreProfileOpen(false));
+                } else {
+                  setStoreProfileOpen(true);
+                }
+              }}
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-3.5 py-2 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
             >
               <Store className="w-3.5 h-3.5" />
@@ -1515,7 +1622,13 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => setSellerPaymentOpen((prev) => !prev)}
+              onClick={() => {
+                if (sellerPaymentOpen) {
+                  closeSellerSubLayer(() => setSellerPaymentOpen(false));
+                } else {
+                  setSellerPaymentOpen(true);
+                }
+              }}
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-3.5 py-2 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
             >
               <QrCode className="w-3.5 h-3.5" />
@@ -1985,7 +2098,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setHighlightTargetProduct(null)}
+                  onClick={() => closeSellerSubLayer(() => setHighlightTargetProduct(null))}
                   className="p-1.5 rounded-lg text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
                 >
                   <X className="w-4 h-4" />
@@ -2288,7 +2401,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
               <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#F4ECF8]">
                 <button
                   type="button"
-                  onClick={() => setHighlightTargetProduct(null)}
+                  onClick={() => closeSellerSubLayer(() => setHighlightTargetProduct(null))}
                   className="rounded-xl border border-[#E6D9EE] px-4 py-2 text-xs font-semibold text-[#5B4B6B] cursor-pointer"
                 >
                   Cancel
@@ -2454,10 +2567,12 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setLoginForgotMode(false);
-                      setLoginError('');
-                    }}
+                    onClick={() =>
+                      closeSellerSubLayer(() => {
+                        setLoginForgotMode(false);
+                        setLoginError('');
+                      })
+                    }
                     className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#6D28D9] hover:underline cursor-pointer"
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
@@ -2896,7 +3011,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                 {editingRejected && (
                   <button
                     type="button"
-                    onClick={() => setEditingRejected(false)}
+                    onClick={() => closeSellerSubLayer(() => setEditingRejected(false))}
                     className="rounded-xl border border-[#E6D9EE] bg-white px-4 py-2.5 text-xs font-semibold text-[#4A3B59] cursor-pointer"
                   >
                     Cancel

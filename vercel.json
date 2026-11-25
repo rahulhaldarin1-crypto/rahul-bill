@@ -1,7 +1,26 @@
 {
+  "functions": {
+    "api/product-page.ts": {
+      "includeFiles": "dist/index.html"
+    }
+  },
   "rewrites": [
     {
-      "source": "/((?!api/|manifest\\.json|sw\\.js|pwa-.*\\.png|apple-touch-icon\\.png|icon\\.svg).*)",
+      "source": "/product/:slug(.*)",
+      "destination": "/api/product-page?slug=:slug"
+    },
+    {
+      "source": "/((?!api/|manifest\\.json|sw\\.js|pwa-.*\\.png|apple-touch-icon\\.png|icon\\.svg|index\\.html|assets/).*)",
+      "has": [
+        {
+          "type": "query",
+          "key": "product"
+        }
+      ],
+      "destination": "/api/product-page"
+    },
+    {
+      "source": "/((?!api/|manifest\\.json|sw\\.js|pwa-.*\\.png|apple-touch-icon\\.png|icon\\.svg|index\\.html).*)",
       "destination": "/index.html"
     }
   ],

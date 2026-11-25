@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FilePlus2,
   Home,
   LifeBuoy,
-  Lock,
+  LogOut,
   Mail,
   Package,
   Settings,
@@ -174,6 +174,9 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>('dashboard');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const routeRef = useRef<AppRoute>('dashboard');
+  const selectedClientIdRef = useRef<string | null>(null);
+  const adminDepthRef = useRef(0);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [billClientId, setBillClientId] = useState<string | null>(null);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
@@ -185,6 +188,81 @@ export default function App() {
   } | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    routeRef.current = route;
+    selectedClientIdRef.current = selectedClientId;
+  }, [route, selectedClientId]);
+
+  // Mobile hardware / browser Back button navigation across Admin Panel routes
+  useEffect(() => {
+    if (!adminOnlyMode || !adminUnlocked) return;
+
+    try {
+      const curr = window.history.state as { ggType?: string } | null;
+      if (curr?.ggType !== 'admin-route' && curr?.ggType !== 'products-sub') {
+        window.history.replaceState(
+          {
+            ggType: 'admin-route',
+            route: routeRef.current,
+            clientId: selectedClientIdRef.current,
+          },
+          ''
+        );
+      }
+    } catch {
+      // ignore history errors
+    }
+
+    const handlePopState = (e: PopStateEvent) => {
+      const state = e.state as {
+        ggType?: string;
+        route?: AppRoute;
+        clientId?: string | null;
+      } | null;
+
+      if (state?.ggType === 'products-sub') {
+        return;
+      }
+
+      if (state?.ggType === 'admin-route') {
+        const targetRoute = state.route || 'dashboard';
+        const targetClientId = state.clientId ?? null;
+        if (
+          targetRoute === routeRef.current &&
+          targetClientId === selectedClientIdRef.current
+        ) {
+          // Returning from a child sub-view (e.g. ProductsView Detail/Edit) onto this same admin route
+          return;
+        }
+        adminDepthRef.current = Math.max(0, adminDepthRef.current - 1);
+        setDirectMailTarget(null);
+        setSelectedClientId(targetClientId);
+        setRoute(targetRoute);
+        setHistory((h) => (h.length > 0 ? h.slice(0, -1) : h));
+        return;
+      }
+
+      if (routeRef.current !== 'dashboard' || selectedClientIdRef.current !== null) {
+        adminDepthRef.current = 0;
+        setDirectMailTarget(null);
+        setSelectedClientId(null);
+        setRoute('dashboard');
+        setHistory([]);
+        try {
+          window.history.replaceState(
+            { ggType: 'admin-route', route: 'dashboard', clientId: null },
+            ''
+          );
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [adminOnlyMode, adminUnlocked]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -389,6 +467,21 @@ export default function App() {
           ...prev.slice(-24),
           { route, clientId: selectedClientId },
         ]);
+        if (adminOnlyMode && adminUnlocked) {
+          try {
+            window.history.pushState(
+              {
+                ggType: 'admin-route',
+                route: nextRoute,
+                clientId: nextClientId,
+              },
+              ''
+            );
+            adminDepthRef.current += 1;
+          } catch {
+            // ignore history errors
+          }
+        }
       }
 
       if (options?.editClient !== undefined) {
@@ -417,11 +510,15 @@ export default function App() {
       setRoute(nextRoute);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
-    [route, selectedClientId]
+    [route, selectedClientId, adminOnlyMode, adminUnlocked]
   );
 
   const goBack = useCallback(() => {
     setDirectMailTarget(null);
+    if (adminOnlyMode && adminUnlocked && adminDepthRef.current > 0) {
+      window.history.back();
+      return;
+    }
     if (history.length > 0) {
       const prev = history[history.length - 1];
       setHistory((h) => h.slice(0, -1));
@@ -431,7 +528,7 @@ export default function App() {
     }
     setSelectedClientId(null);
     setRoute('dashboard');
-  }, [history]);
+  }, [history, adminOnlyMode, adminUnlocked]);
 
   // CRUD HANDLERS
   const handleSaveClient = async (
@@ -864,8 +961,11 @@ export default function App() {
     setAdminUnlocked(false);
     setWorkspace(createEmptyWorkspace());
     setWorkspaceLoaded(false);
+    adminDepthRef.current = 0;
+    setHistory([]);
+    setSelectedClientId(null);
     setRoute('dashboard');
-    showToast('Admin Panel locked.');
+    showToast('Logged out of Admin Panel.');
   };
 
   const handleCustomerLogin = useCallback(
@@ -1085,7 +1185,7 @@ export default function App() {
             })}
           </nav>
 
-          {/* Zone 3: Seller Hub Manage, Help Chat, New Bill & Lock Admin */}
+          {/* Zone 3: Seller Hub Manage, Help Chat & New Bill */}
           <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto shrink-0">
             <button
               type="button"
@@ -1153,9 +1253,10 @@ export default function App() {
               type="button"
               onClick={handleLockAdmin}
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              title="Logout Admin Session"
             >
-              <Lock className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline">Lock Admin</span>
+              <LogOut className="w-3.5 h-3.5 shrink-0" />
+              <span>Logout</span>
             </button>
           </div>
         </div>
@@ -1282,10 +1383,12 @@ export default function App() {
           <SettingsView
             workspace={workspace}
             paymentSettings={workspace.paymentSettings}
+            adminEmail={auth.currentUser?.email || ''}
             onBack={goBack}
             onSaveSettings={handleSaveSettings}
             onSavePaymentSettings={handleSavePaymentSettings}
             onRestoreBackup={handleRestoreBackup}
+            onSignOut={handleLockAdmin}
           />
         )}
 

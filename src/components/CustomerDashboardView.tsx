@@ -46,7 +46,7 @@ import {
   EffectivePaymentDetails,
   exportInvoiceElementToPdf,
   formatCurrency,
-  normalizeIndianPhone,
+  normalizeAsianPhone,
   resolveEffectivePaymentDetails,
   stripPlus91Prefix,
   validateEnglishName,
@@ -452,20 +452,20 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       );
       return;
     }
-    const phoneCheck = normalizeIndianPhone(checkoutPhone);
+    const phoneCheck = normalizeAsianPhone(checkoutPhone);
     if (!phoneCheck.valid) {
       setCheckoutError(
-        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+        phoneCheck.error || 'Please enter a valid mobile number.'
       );
       return;
     }
 
     let formattedWhatsapp = phoneCheck.formatted;
     if (checkoutWhatsapp.trim()) {
-      const waCheck = normalizeIndianPhone(checkoutWhatsapp);
+      const waCheck = normalizeAsianPhone(checkoutWhatsapp);
       if (!waCheck.valid) {
         setCheckoutError(
-          `WhatsApp Number: ${waCheck.error || 'Please enter a valid 10-digit Indian mobile number.'}`
+          `WhatsApp Number: ${waCheck.error || 'Please enter a valid mobile number.'}`
         );
         return;
       }

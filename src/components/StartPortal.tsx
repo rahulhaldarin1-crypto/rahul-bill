@@ -65,7 +65,7 @@ import {
   buildUpiDeepLink,
   formatCurrency,
   isProductHighlightActive,
-  normalizeIndianPhone,
+  normalizeAsianPhone,
   resolveEffectivePaymentDetails,
   stripPlus91Prefix,
   validateEnglishName,
@@ -774,6 +774,234 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     return shoppingItems.filter((item) => item.sellerId === viewingSellerId);
   }, [shoppingItems, viewingSellerId]);
 
+  type CustomerPortalView =
+    | 'shop'
+    | 'account'
+    | 'seller-hub'
+    | 'help-center'
+    | 'refer-earn'
+    | 'seller-profile'
+    | 'favorites';
+  type CustomerSheetType = 'menu' | 'categories' | 'sort' | 'gender' | 'filters' | null;
+
+  interface CustomerHistorySnapshot {
+    ggType: 'customer-state';
+    portalView: CustomerPortalView;
+    viewingSellerId: string | null;
+    accountTab: CustomerDashboardTab;
+    selectedProductId: string | null;
+    modalStep: 'detail' | 'checkout' | 'success';
+    authModalOpen: boolean;
+    activeSheet: CustomerSheetType;
+  }
+
+  const activeSheet: CustomerSheetType = menuSheetOpen
+    ? 'menu'
+    : categoriesSheetOpen
+      ? 'categories'
+      : sortSheetOpen
+        ? 'sort'
+        : genderSheetOpen
+          ? 'gender'
+          : filtersSheetOpen
+            ? 'filters'
+            : null;
+
+  const buildCustomerSig = (s: CustomerHistorySnapshot) =>
+    `${s.portalView}|${s.viewingSellerId || ''}|${s.portalView === 'account' ? s.accountTab : ''}|${s.selectedProductId || ''}|${s.selectedProductId ? s.modalStep : ''}|${s.authModalOpen ? 'auth' : ''}|${s.activeSheet || ''}`;
+
+  const currentCustomerSnapshot: CustomerHistorySnapshot = useMemo(
+    () => ({
+      ggType: 'customer-state',
+      portalView,
+      viewingSellerId,
+      accountTab,
+      selectedProductId: selectedProduct?.id || null,
+      modalStep: selectedProduct ? modalStep : 'detail',
+      authModalOpen,
+      activeSheet,
+    }),
+    [
+      portalView,
+      viewingSellerId,
+      accountTab,
+      selectedProduct?.id,
+      modalStep,
+      authModalOpen,
+      activeSheet,
+    ]
+  );
+
+  const shoppingItemsRef = useRef(shoppingItems);
+  shoppingItemsRef.current = shoppingItems;
+  const prevCustomerSnapRef = useRef<CustomerHistorySnapshot>(currentCustomerSnapshot);
+  const customerDepthRef = useRef(0);
+  const skipCustomerPushRef = useRef(false);
+  const customerInitializedRef = useRef(false);
+
+  // Stamp initial customer-state & synchronize sub-views/modals/sheets with browser history
+  useEffect(() => {
+    const currUrl = window.location.pathname + window.location.search + window.location.hash;
+    if (!customerInitializedRef.current) {
+      customerInitializedRef.current = true;
+      prevCustomerSnapRef.current = currentCustomerSnapshot;
+      try {
+        const existing = window.history.state as { ggType?: string } | null;
+        if (
+          existing?.ggType !== 'customer-state' &&
+          existing?.ggType !== 'seller-sub' &&
+          existing?.ggType !== 'products-sub'
+        ) {
+          window.history.replaceState(currentCustomerSnapshot, '', currUrl);
+        }
+      } catch {
+        // ignore history errors
+      }
+      return;
+    }
+
+    if (skipCustomerPushRef.current) {
+      skipCustomerPushRef.current = false;
+      prevCustomerSnapRef.current = currentCustomerSnapshot;
+      return;
+    }
+
+    const prev = prevCustomerSnapRef.current;
+    const prevSig = buildCustomerSig(prev);
+    const nextSig = buildCustomerSig(currentCustomerSnapshot);
+    if (prevSig === nextSig) return;
+
+    const replacingSheet =
+      prev.activeSheet !== null &&
+      currentCustomerSnapshot.activeSheet === null &&
+      (prev.portalView !== currentCustomerSnapshot.portalView ||
+        prev.selectedProductId !== currentCustomerSnapshot.selectedProductId ||
+        prev.authModalOpen !== currentCustomerSnapshot.authModalOpen);
+    const replacingOrderSuccess =
+      prev.selectedProductId === currentCustomerSnapshot.selectedProductId &&
+      prev.modalStep === 'checkout' &&
+      currentCustomerSnapshot.modalStep === 'success';
+    const replacingAuthTransition =
+      prev.authModalOpen &&
+      !currentCustomerSnapshot.authModalOpen &&
+      (prev.portalView !== currentCustomerSnapshot.portalView ||
+        prev.modalStep !== currentCustomerSnapshot.modalStep ||
+        prev.selectedProductId !== currentCustomerSnapshot.selectedProductId);
+
+    try {
+      if (replacingSheet || replacingOrderSuccess || replacingAuthTransition) {
+        window.history.replaceState(currentCustomerSnapshot, '', currUrl);
+      } else {
+        window.history.pushState(currentCustomerSnapshot, '', currUrl);
+        customerDepthRef.current += 1;
+      }
+    } catch {
+      // ignore history errors
+    }
+
+    prevCustomerSnapRef.current = currentCustomerSnapshot;
+  }, [currentCustomerSnapshot]);
+
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      const state = e.state as
+        | (Omit<CustomerHistorySnapshot, 'ggType'> & { ggType?: string })
+        | null;
+      if (state?.ggType === 'products-sub' || state?.ggType === 'seller-sub') {
+        return;
+      }
+
+      if (state?.ggType === 'customer-state') {
+        const customerState: CustomerHistorySnapshot = {
+          ...state,
+          ggType: 'customer-state',
+        };
+        const incomingSig = buildCustomerSig(customerState);
+        if (incomingSig === buildCustomerSig(prevCustomerSnapRef.current)) {
+          // Child overlay (SellerHubView or ProductsView) popped back onto this customer-state level
+          return;
+        }
+        customerDepthRef.current = Math.max(0, customerDepthRef.current - 1);
+        skipCustomerPushRef.current = true;
+        prevCustomerSnapRef.current = customerState;
+
+        setPortalView(customerState.portalView || 'shop');
+        setViewingSellerId(customerState.viewingSellerId ?? null);
+        if (customerState.accountTab) setAccountTab(customerState.accountTab);
+        setAuthModalOpen(Boolean(customerState.authModalOpen));
+        setMenuSheetOpen(customerState.activeSheet === 'menu');
+        setCategoriesSheetOpen(customerState.activeSheet === 'categories');
+        setSortSheetOpen(customerState.activeSheet === 'sort');
+        setGenderSheetOpen(customerState.activeSheet === 'gender');
+        setFiltersSheetOpen(customerState.activeSheet === 'filters');
+
+        if (customerState.selectedProductId) {
+          const found =
+            shoppingItemsRef.current.find((i) => i.id === customerState.selectedProductId) || null;
+          setSelectedProduct(found);
+          setModalStep(customerState.modalStep || 'detail');
+          setOrderError('');
+        } else {
+          setSelectedProduct(null);
+          setPlacedOrder(null);
+          setOrderError('');
+        }
+        return;
+      }
+
+      const rootSig = 'shop||||||';
+      if (buildCustomerSig(prevCustomerSnapRef.current) !== rootSig) {
+        customerDepthRef.current = 0;
+        const rootSnap: CustomerHistorySnapshot = {
+          ggType: 'customer-state',
+          portalView: 'shop',
+          viewingSellerId: null,
+          accountTab: 'cart',
+          selectedProductId: null,
+          modalStep: 'detail',
+          authModalOpen: false,
+          activeSheet: null,
+        };
+        skipCustomerPushRef.current = true;
+        prevCustomerSnapRef.current = rootSnap;
+        setPortalView('shop');
+        setViewingSellerId(null);
+        setSelectedProduct(null);
+        setPlacedOrder(null);
+        setOrderError('');
+        setAuthModalOpen(false);
+        setMenuSheetOpen(false);
+        setCategoriesSheetOpen(false);
+        setSortSheetOpen(false);
+        setGenderSheetOpen(false);
+        setFiltersSheetOpen(false);
+        try {
+          window.history.replaceState(
+            rootSnap,
+            '',
+            window.location.pathname + window.location.search + window.location.hash
+          );
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const popCustomerOverlayOrReset = (
+    matchCondition: boolean,
+    fallback: () => void
+  ) => {
+    if (matchCondition && customerDepthRef.current > 0) {
+      window.history.back();
+      return;
+    }
+    fallback();
+  };
+
   const handleCopyCode = async (id: string, code: string) => {
     try {
       await navigator.clipboard.writeText(code);
@@ -1259,10 +1487,29 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   useEffect(() => {
     if (handledQueryProductRef.current || shoppingItems.length === 0) return;
     const params = new URLSearchParams(window.location.search);
-    const sharedProductId = params.get('product');
-    if (!sharedProductId) return;
+    const queryProdId = (params.get('product') || '').trim();
+    const pathMatch = window.location.pathname.match(/^\/product\/([^/]+)/i);
+    const pathSlugOrId = pathMatch ? decodeURIComponent(pathMatch[1]).trim() : '';
+    const sharedProductKey = queryProdId || pathSlugOrId;
+    if (!sharedProductKey) return;
+
+    const toSlug = (val: string) =>
+      val
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    const targetLower = sharedProductKey.toLowerCase();
+    const targetSlug = toSlug(sharedProductKey);
+
     const match = shoppingItems.find(
-      (i) => i.id === sharedProductId || i.catalogProductId === sharedProductId
+      (i) =>
+        i.id === sharedProductKey ||
+        i.catalogProductId === sharedProductKey ||
+        i.id.toLowerCase() === targetLower ||
+        (i.catalogProductId || '').toLowerCase() === targetLower ||
+        `cat-${sharedProductKey}`.toLowerCase() === i.id.toLowerCase() ||
+        (Boolean(targetSlug) && toSlug(i.name) === targetSlug)
     );
     if (match) {
       handledQueryProductRef.current = true;
@@ -1276,14 +1523,88 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   }, [shoppingItems]);
 
+  useEffect(() => {
+    const upsertMeta = (
+      attrName: 'name' | 'property',
+      attrValue: string,
+      content: string
+    ) => {
+      let tag = document.head.querySelector<HTMLMetaElement>(
+        `meta[${attrName}="${attrValue}"]`
+      );
+      if (!tag) {
+        tag = document.createElement('meta');
+        tag.setAttribute(attrName, attrValue);
+        document.head.appendChild(tag);
+      }
+      tag.setAttribute('content', content);
+    };
+
+    const origin = window.location.origin;
+    const defaultTitle = 'Glamour Galleria - Online Shopping';
+    const defaultDescription =
+      'Glamour Galleria - Online Shopping. Your Style, Our Priority.';
+    const defaultImage = `${origin}/pwa-512x512.png`;
+
+    if (selectedProduct) {
+      const cleanedDesc = String(selectedProduct.description || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const priceText = formatCurrency(selectedProduct.price, sym);
+      const productDescription =
+        cleanedDesc || `${selectedProduct.name} — ${priceText} on Glamour Galleria.`;
+      const productImages =
+        Array.isArray(selectedProduct.imageDataUrls) &&
+        selectedProduct.imageDataUrls.length > 0
+          ? selectedProduct.imageDataUrls
+          : selectedProduct.imageDataUrl
+            ? [selectedProduct.imageDataUrl]
+            : [];
+      const primaryHttpImage =
+        productImages.find((u) => /^https?:\/\//i.test(u)) || defaultImage;
+      const shareUrl = `${origin}/?product=${encodeURIComponent(selectedProduct.id)}`;
+
+      document.title = `${selectedProduct.name} | Glamour Galleria`;
+      upsertMeta('name', 'description', productDescription);
+      upsertMeta('property', 'og:title', selectedProduct.name);
+      upsertMeta('property', 'og:description', productDescription);
+      upsertMeta('property', 'og:type', 'product');
+      upsertMeta('property', 'og:url', shareUrl);
+      upsertMeta('property', 'og:image', primaryHttpImage);
+      upsertMeta('name', 'twitter:card', 'summary_large_image');
+      upsertMeta('name', 'twitter:title', selectedProduct.name);
+      upsertMeta('name', 'twitter:description', productDescription);
+      upsertMeta('name', 'twitter:image', primaryHttpImage);
+    } else {
+      document.title = defaultTitle;
+      upsertMeta('name', 'description', defaultDescription);
+      upsertMeta('property', 'og:title', defaultTitle);
+      upsertMeta('property', 'og:description', defaultDescription);
+      upsertMeta('property', 'og:type', 'website');
+      upsertMeta('property', 'og:url', `${origin}/`);
+      upsertMeta('property', 'og:image', defaultImage);
+      upsertMeta('name', 'twitter:card', 'summary_large_image');
+      upsertMeta('name', 'twitter:title', defaultTitle);
+      upsertMeta('name', 'twitter:description', defaultDescription);
+      upsertMeta('name', 'twitter:image', defaultImage);
+    }
+  }, [selectedProduct, sym]);
+
   const closeProductModal = () => {
     setSelectedProduct(null);
     setOrderError('');
     setPlacedOrder(null);
+    const nextSnap: CustomerHistorySnapshot = {
+      ...prevCustomerSnapRef.current,
+      selectedProductId: null,
+      modalStep: 'detail',
+    };
     if (window.location.search.includes('product=')) {
       const url = new URL(window.location.href);
       url.searchParams.delete('product');
-      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+      window.history.replaceState(nextSnap, '', url.pathname + url.search + url.hash);
+    } else if (/^\/product\//i.test(window.location.pathname)) {
+      window.history.replaceState(nextSnap, '', '/');
     }
   };
 
@@ -1407,20 +1728,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       setOrderError(nameCheck.error || 'Please enter your full name in English.');
       return;
     }
-    const phoneCheck = normalizeIndianPhone(customerPhone);
+    const phoneCheck = normalizeAsianPhone(customerPhone);
     if (!phoneCheck.valid) {
       setOrderError(
-        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+        phoneCheck.error || 'Please enter a valid mobile number.'
       );
       return;
     }
 
     let formattedWhatsapp = phoneCheck.formatted;
     if (customerWhatsapp.trim()) {
-      const waCheck = normalizeIndianPhone(customerWhatsapp);
+      const waCheck = normalizeAsianPhone(customerWhatsapp);
       if (!waCheck.valid) {
         setOrderError(
-          `WhatsApp Number: ${waCheck.error || 'Please enter a valid 10-digit Indian mobile number.'}`
+          `WhatsApp Number: ${waCheck.error || 'Please enter a valid mobile number.'}`
         );
         return;
       }
@@ -2748,10 +3069,25 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   type="button"
                   onClick={() => {
                     if (modalStep === 'checkout') {
-                      setModalStep('detail');
-                      setOrderError('');
+                      popCustomerOverlayOrReset(
+                        prevCustomerSnapRef.current.modalStep === 'checkout',
+                        () => {
+                          setModalStep('detail');
+                          setOrderError('');
+                        }
+                      );
                     } else {
-                      closeProductModal();
+                      if (
+                        window.location.search.includes('product=') ||
+                        /^\/product\//i.test(window.location.pathname)
+                      ) {
+                        closeProductModal();
+                        return;
+                      }
+                      popCustomerOverlayOrReset(
+                        Boolean(prevCustomerSnapRef.current.selectedProductId),
+                        closeProductModal
+                      );
                     }
                   }}
                   aria-label="Back"
@@ -3992,7 +4328,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Store Menu"
-          onClick={() => setMenuSheetOpen(false)}
+          onClick={() =>
+            popCustomerOverlayOrReset(
+              prevCustomerSnapRef.current.activeSheet === 'menu',
+              () => setMenuSheetOpen(false)
+            )
+          }
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -4005,7 +4346,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setMenuSheetOpen(false)}
+                onClick={() =>
+                  popCustomerOverlayOrReset(
+                    prevCustomerSnapRef.current.activeSheet === 'menu',
+                    () => setMenuSheetOpen(false)
+                  )
+                }
                 aria-label="Close menu"
                 className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
               >
@@ -4109,7 +4455,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Browse Categories"
-          onClick={() => setCategoriesSheetOpen(false)}
+          onClick={() =>
+            popCustomerOverlayOrReset(
+              prevCustomerSnapRef.current.activeSheet === 'categories',
+              () => setCategoriesSheetOpen(false)
+            )
+          }
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -4122,7 +4473,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setCategoriesSheetOpen(false)}
+                onClick={() =>
+                  popCustomerOverlayOrReset(
+                    prevCustomerSnapRef.current.activeSheet === 'categories',
+                    () => setCategoriesSheetOpen(false)
+                  )
+                }
                 aria-label="Close categories"
                 className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
               >
@@ -4186,7 +4542,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Sort Products"
-          onClick={() => setSortSheetOpen(false)}
+          onClick={() =>
+            popCustomerOverlayOrReset(
+              prevCustomerSnapRef.current.activeSheet === 'sort',
+              () => setSortSheetOpen(false)
+            )
+          }
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -4199,7 +4560,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setSortSheetOpen(false)}
+                onClick={() =>
+                  popCustomerOverlayOrReset(
+                    prevCustomerSnapRef.current.activeSheet === 'sort',
+                    () => setSortSheetOpen(false)
+                  )
+                }
                 aria-label="Close sort"
                 className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
               >
@@ -4243,7 +4609,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Filter by Gender"
-          onClick={() => setGenderSheetOpen(false)}
+          onClick={() =>
+            popCustomerOverlayOrReset(
+              prevCustomerSnapRef.current.activeSheet === 'gender',
+              () => setGenderSheetOpen(false)
+            )
+          }
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -4256,7 +4627,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setGenderSheetOpen(false)}
+                onClick={() =>
+                  popCustomerOverlayOrReset(
+                    prevCustomerSnapRef.current.activeSheet === 'gender',
+                    () => setGenderSheetOpen(false)
+                  )
+                }
                 aria-label="Close gender filter"
                 className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
               >
@@ -4301,7 +4677,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Product Filters"
-          onClick={() => setFiltersSheetOpen(false)}
+          onClick={() =>
+            popCustomerOverlayOrReset(
+              prevCustomerSnapRef.current.activeSheet === 'filters',
+              () => setFiltersSheetOpen(false)
+            )
+          }
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -4314,7 +4695,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setFiltersSheetOpen(false)}
+                onClick={() =>
+                  popCustomerOverlayOrReset(
+                    prevCustomerSnapRef.current.activeSheet === 'filters',
+                    () => setFiltersSheetOpen(false)
+                  )
+                }
                 aria-label="Close filters"
                 className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
               >
@@ -4536,12 +4922,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         open={authModalOpen}
         noticeBanner={authNotice}
         initialOnboardingUser={pendingOnboardingUser}
-        onClose={() => {
-          setAuthModalOpen(false);
-          setPendingAction(null);
-          setPendingOnboardingUser(null);
-          setAuthNotice('');
-        }}
+        onClose={() =>
+          popCustomerOverlayOrReset(
+            prevCustomerSnapRef.current.authModalOpen,
+            () => {
+              setAuthModalOpen(false);
+              setPendingAction(null);
+              setPendingOnboardingUser(null);
+              setAuthNotice('');
+            }
+          )
+        }
         onSuccess={handleCustomerAuthSuccess}
       />
 

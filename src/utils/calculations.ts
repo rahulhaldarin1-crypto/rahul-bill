@@ -223,6 +223,178 @@ export function normalizeSupportName(name?: string): string {
     .toLowerCase();
 }
 
+export interface AsianCountryCode {
+  name: string;
+  dialCode: string;
+  iso: string;
+}
+
+export const ASIAN_COUNTRY_CODES: readonly AsianCountryCode[] = [
+  { name: 'India', dialCode: '+91', iso: 'IN' },
+  { name: 'Bangladesh', dialCode: '+880', iso: 'BD' },
+  { name: 'Afghanistan', dialCode: '+93', iso: 'AF' },
+  { name: 'Armenia', dialCode: '+374', iso: 'AM' },
+  { name: 'Azerbaijan', dialCode: '+994', iso: 'AZ' },
+  { name: 'Bahrain', dialCode: '+973', iso: 'BH' },
+  { name: 'Bhutan', dialCode: '+975', iso: 'BT' },
+  { name: 'Brunei', dialCode: '+673', iso: 'BN' },
+  { name: 'Cambodia', dialCode: '+855', iso: 'KH' },
+  { name: 'China', dialCode: '+86', iso: 'CN' },
+  { name: 'Cyprus', dialCode: '+357', iso: 'CY' },
+  { name: 'Georgia', dialCode: '+995', iso: 'GE' },
+  { name: 'Hong Kong', dialCode: '+852', iso: 'HK' },
+  { name: 'Indonesia', dialCode: '+62', iso: 'ID' },
+  { name: 'Iran', dialCode: '+98', iso: 'IR' },
+  { name: 'Iraq', dialCode: '+964', iso: 'IQ' },
+  { name: 'Israel', dialCode: '+972', iso: 'IL' },
+  { name: 'Japan', dialCode: '+81', iso: 'JP' },
+  { name: 'Jordan', dialCode: '+962', iso: 'JO' },
+  { name: 'Kazakhstan', dialCode: '+7', iso: 'KZ' },
+  { name: 'Kuwait', dialCode: '+965', iso: 'KW' },
+  { name: 'Kyrgyzstan', dialCode: '+996', iso: 'KG' },
+  { name: 'Laos', dialCode: '+856', iso: 'LA' },
+  { name: 'Lebanon', dialCode: '+961', iso: 'LB' },
+  { name: 'Macau', dialCode: '+853', iso: 'MO' },
+  { name: 'Malaysia', dialCode: '+60', iso: 'MY' },
+  { name: 'Maldives', dialCode: '+960', iso: 'MV' },
+  { name: 'Mongolia', dialCode: '+976', iso: 'MN' },
+  { name: 'Myanmar', dialCode: '+95', iso: 'MM' },
+  { name: 'Nepal', dialCode: '+977', iso: 'NP' },
+  { name: 'North Korea', dialCode: '+850', iso: 'KP' },
+  { name: 'Oman', dialCode: '+968', iso: 'OM' },
+  { name: 'Pakistan', dialCode: '+92', iso: 'PK' },
+  { name: 'Palestine', dialCode: '+970', iso: 'PS' },
+  { name: 'Philippines', dialCode: '+63', iso: 'PH' },
+  { name: 'Qatar', dialCode: '+974', iso: 'QA' },
+  { name: 'Saudi Arabia', dialCode: '+966', iso: 'SA' },
+  { name: 'Singapore', dialCode: '+65', iso: 'SG' },
+  { name: 'South Korea', dialCode: '+82', iso: 'KR' },
+  { name: 'Sri Lanka', dialCode: '+94', iso: 'LK' },
+  { name: 'Syria', dialCode: '+963', iso: 'SY' },
+  { name: 'Taiwan', dialCode: '+886', iso: 'TW' },
+  { name: 'Tajikistan', dialCode: '+992', iso: 'TJ' },
+  { name: 'Thailand', dialCode: '+66', iso: 'TH' },
+  { name: 'Timor-Leste', dialCode: '+670', iso: 'TL' },
+  { name: 'Turkey', dialCode: '+90', iso: 'TR' },
+  { name: 'Turkmenistan', dialCode: '+993', iso: 'TM' },
+  { name: 'United Arab Emirates', dialCode: '+971', iso: 'AE' },
+  { name: 'Uzbekistan', dialCode: '+998', iso: 'UZ' },
+  { name: 'Vietnam', dialCode: '+84', iso: 'VN' },
+  { name: 'Yemen', dialCode: '+967', iso: 'YE' },
+] as const;
+
+const ASIAN_DIAL_CODES_BY_LENGTH = [...ASIAN_COUNTRY_CODES].sort(
+  (a, b) => b.dialCode.length - a.dialCode.length
+);
+
+export function parseAsianPhoneParts(raw?: string): {
+  dialCode: string;
+  nationalNumber: string;
+} {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    return { dialCode: '+91', nationalNumber: '' };
+  }
+  if (trimmed.startsWith('+')) {
+    const compact = `+${trimmed.slice(1).replace(/[^\d]/g, '')}`;
+    const matched = ASIAN_DIAL_CODES_BY_LENGTH.find((c) =>
+      compact.startsWith(c.dialCode)
+    );
+    if (matched) {
+      return {
+        dialCode: matched.dialCode,
+        nationalNumber: compact.slice(matched.dialCode.length),
+      };
+    }
+  }
+  return {
+    dialCode: '+91',
+    nationalNumber: stripPlus91Prefix(trimmed),
+  };
+}
+
+export function normalizeAsianPhone(
+  raw?: string,
+  preferredDialCode = '+91'
+): {
+  valid: boolean;
+  formatted: string;
+  dialCode: string;
+  nationalDigits: string;
+  error?: string;
+} {
+  const trimmed = String(raw || '').trim();
+  const baseDialCode =
+    ASIAN_COUNTRY_CODES.find((c) => c.dialCode === preferredDialCode)?.dialCode ||
+    '+91';
+
+  if (!trimmed) {
+    return {
+      valid: false,
+      formatted: '',
+      dialCode: baseDialCode,
+      nationalDigits: '',
+      error:
+        baseDialCode === '+91'
+          ? 'Please enter a valid 10-digit Indian mobile number.'
+          : 'Please enter a valid mobile number.',
+    };
+  }
+
+  let activeDialCode = baseDialCode;
+  let localPart = trimmed;
+
+  if (trimmed.startsWith('+')) {
+    const parsed = parseAsianPhoneParts(trimmed);
+    const compactDigits = trimmed.slice(1).replace(/[^\d]/g, '');
+    if (`+${compactDigits}`.startsWith(parsed.dialCode)) {
+      activeDialCode = parsed.dialCode;
+      localPart = parsed.nationalNumber;
+    }
+  }
+
+  if (activeDialCode === '+91') {
+    const indCheck = normalizeIndianPhone(localPart);
+    return {
+      valid: indCheck.valid,
+      formatted: indCheck.formatted,
+      dialCode: '+91',
+      nationalDigits: indCheck.digits10,
+      error: indCheck.error,
+    };
+  }
+
+  const dialDigits = activeDialCode.replace(/[^\d]/g, '');
+  let digits = localPart.replace(/[^\d]/g, '');
+
+  if (
+    digits.startsWith(dialDigits) &&
+    digits.length >= dialDigits.length + 6
+  ) {
+    digits = digits.slice(dialDigits.length);
+  }
+  if (digits.startsWith('0') && digits.length >= 7) {
+    digits = digits.slice(1);
+  }
+
+  if (digits.length < 6 || digits.length > 13) {
+    return {
+      valid: false,
+      formatted: '',
+      dialCode: activeDialCode,
+      nationalDigits: digits,
+      error: `Please enter a valid mobile number for ${activeDialCode} (6 to 13 digits).`,
+    };
+  }
+
+  return {
+    valid: true,
+    formatted: `${activeDialCode}${digits}`,
+    dialCode: activeDialCode,
+    nationalDigits: digits,
+  };
+}
+
 export function normalizeIndianPhone(raw?: string): {
   valid: boolean;
   formatted: string;
@@ -264,9 +436,16 @@ export function normalizeIndianPhone(raw?: string): {
 }
 
 export function formatPhoneWithPlus91(raw?: string): string {
-  const parsed = normalizeIndianPhone(raw);
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('+') && !trimmed.startsWith('+91')) {
+    const asian = normalizeAsianPhone(trimmed);
+    if (asian.valid) return asian.formatted;
+    return trimmed;
+  }
+  const parsed = normalizeIndianPhone(trimmed);
   if (parsed.valid) return parsed.formatted;
-  return String(raw || '').trim();
+  return trimmed;
 }
 
 export function stripPlus91Prefix(raw?: string): string {
@@ -343,8 +522,17 @@ export function normalizePhoneDigits(phone?: string): string {
 }
 
 export function phoneNumbersMatch(a?: string, b?: string): boolean {
-  const na = normalizePhoneDigits(a);
-  const nb = normalizePhoneDigits(b);
+  const ta = String(a || '').trim();
+  const tb = String(b || '').trim();
+  if (ta.startsWith('+') && tb.startsWith('+')) {
+    const fa = ta.replace(/[^\d]/g, '');
+    const fb = tb.replace(/[^\d]/g, '');
+    if (fa.length >= 6 && fb.length >= 6) {
+      return fa === fb;
+    }
+  }
+  const na = normalizePhoneDigits(ta);
+  const nb = normalizePhoneDigits(tb);
   if (na.length < 6 || nb.length < 6) return false;
   return na === nb;
 }

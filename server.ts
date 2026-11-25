@@ -1384,6 +1384,112 @@ async function startServer(): Promise<void> {
     res.json({ results: matches.slice(0, 20) });
   });
 
+  const injectServerProductMetaIfNeeded = async (
+    html: string,
+    req: Request
+  ): Promise<string> => {
+    const queryProd = typeof req.query.product === 'string' ? req.query.product.trim() : '';
+    const pathMatch = req.path.match(/^\/product\/([^/?#]+)/i);
+    const pathSlug = pathMatch ? decodeURIComponent(pathMatch[1]).trim() : '';
+    const productKey = queryProd || pathSlug;
+    if (!productKey) return html;
+
+    const protoHeader = req.headers['x-forwarded-proto'];
+    const proto = Array.isArray(protoHeader)
+      ? protoHeader[0]
+      : protoHeader || req.protocol || 'https';
+    const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
+    const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+    const origin = host ? `${proto}://${host}` : 'https://glamour-galleria.vercel.app';
+
+    const cleanKey = productKey.startsWith('cat-') ? productKey.slice(4) : productKey;
+    const workspace = getActiveWorkspace();
+    let matchedName = '';
+    let matchedDesc = '';
+    let matchedPrice = 0;
+    let matchedImg = '';
+
+    const localProd = workspace.products.find(
+      (p) => p.id === cleanKey || `cat-${p.id}` === productKey
+    ) as Record<string, unknown> | undefined;
+    if (localProd) {
+      matchedName = String(localProd.name || '');
+      matchedDesc = String(localProd.description || '');
+      matchedPrice = Number(localProd.sellingPrice || 0);
+      const localArr = Array.isArray(localProd.imageDataUrls)
+        ? (localProd.imageDataUrls as unknown[]).map((u) => String(u || ''))
+        : [];
+      const singleUrl = String(localProd.imageDataUrl || '');
+      matchedImg =
+        localArr.find((u) => /^https?:\/\//i.test(u)) ||
+        (/^https?:\/\//i.test(singleUrl) ? singleUrl : '');
+    } else if (/^[a-zA-Z0-9_-]{1,128}$/.test(cleanKey)) {
+      try {
+        const resp = await fetch(
+          `https://firestore.googleapis.com/v1/projects/rahul-bill/databases/(default)/documents/products/${encodeURIComponent(cleanKey)}`
+        );
+        if (resp.ok) {
+          const data = (await resp.json()) as {
+            fields?: Record<string, { stringValue?: string; doubleValue?: number; integerValue?: string; arrayValue?: { values?: Array<{ stringValue?: string }> } }>;
+          };
+          const fields = data.fields || {};
+          matchedName = fields.name?.stringValue || '';
+          matchedDesc = fields.description?.stringValue || '';
+          matchedPrice = Number(
+            fields.sellingPrice?.doubleValue ?? fields.sellingPrice?.integerValue ?? 0
+          );
+          const arrUrls = (fields.imageDataUrls?.arrayValue?.values || [])
+            .map((v) => String(v.stringValue || ''))
+            .filter((u) => /^https?:\/\//i.test(u));
+          const singleUrl = String(fields.imageDataUrl?.stringValue || '');
+          matchedImg =
+            arrUrls[0] || (/^https?:\/\//i.test(singleUrl) ? singleUrl : '');
+        }
+      } catch {
+        // non-blocking fallback
+      }
+    }
+
+    if (!matchedName) return html;
+    const esc = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    const cleanDesc = matchedDesc.replace(/\s+/g, ' ').trim();
+    const finalDesc =
+      cleanDesc ||
+      (matchedPrice > 0
+        ? `${matchedName} — ₹${matchedPrice} on Glamour Galleria.`
+        : `${matchedName} on Glamour Galleria.`);
+    const finalImg = matchedImg || `${origin}/pwa-512x512.png`;
+    const canonical = pathSlug
+      ? `${origin}/product/${encodeURIComponent(productKey)}`
+      : `${origin}/?product=${encodeURIComponent(productKey)}`;
+
+    const stripped = html
+      .replace(/<title[^>]*>[\s\S]*?<\/title>\s*/gi, '')
+      .replace(/<meta[^>]+name=["']description["'][^>]*>\s*/gi, '')
+      .replace(/<meta[^>]+property=["']og:[^"']+["'][^>]*>\s*/gi, '')
+      .replace(/<meta[^>]+name=["']twitter:[^"']+["'][^>]*>\s*/gi, '');
+    const metaTags = [
+      `<title>${esc(`${matchedName} | Glamour Galleria`)}</title>`,
+      `<meta name="description" content="${esc(finalDesc)}" />`,
+      `<meta property="og:site_name" content="Glamour Galleria" />`,
+      `<meta property="og:title" content="${esc(matchedName)}" />`,
+      `<meta property="og:description" content="${esc(finalDesc)}" />`,
+      `<meta property="og:type" content="product" />`,
+      `<meta property="og:url" content="${esc(canonical)}" />`,
+      `<meta property="og:image" content="${esc(finalImg)}" />`,
+      `<meta name="twitter:card" content="summary_large_image" />`,
+      `<meta name="twitter:title" content="${esc(matchedName)}" />`,
+      `<meta name="twitter:description" content="${esc(finalDesc)}" />`,
+      `<meta name="twitter:image" content="${esc(finalImg)}" />`,
+    ].join('\n    ');
+    return stripped.replace('<head>', `<head>\n    ${metaTags}`);
+  };
+
   const isDev = process.env.NODE_ENV === 'development' || !fs.existsSync(DIST_INDEX);
   if (isDev) {
     const { createServer: createViteServer } = await import('vite');
@@ -1394,7 +1500,7 @@ async function startServer(): Promise<void> {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(DIST_DIR, { index: false }));
-    app.get('*', (_req: Request, res: Response) => {
+    app.get('*', async (req: Request, res: Response) => {
       const runtimeAppMode = (
         process.env.APP_MODE ||
         process.env.VITE_APP_MODE ||
@@ -1402,17 +1508,16 @@ async function startServer(): Promise<void> {
       )
         .trim()
         .toLowerCase();
+      let html = fs.readFileSync(DIST_INDEX, 'utf8');
+      html = await injectServerProductMetaIfNeeded(html, req);
       if (runtimeAppMode === 'admin' || runtimeAppMode === 'customer') {
-        const html = fs.readFileSync(DIST_INDEX, 'utf8');
-        const injected = html.replace(
+        html = html.replace(
           '</head>',
           `<script>window.__APP_MODE__=${JSON.stringify(runtimeAppMode)};</script></head>`
         );
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.send(injected);
-        return;
       }
-      res.sendFile(DIST_INDEX);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
     });
   }
 

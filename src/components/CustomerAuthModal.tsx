@@ -4,8 +4,9 @@ import { signInWithGoogleWithFallback } from '../firebase';
 import { Client } from '../types/business';
 import { api, formatApiError } from '../utils/api';
 import {
-  normalizeIndianPhone,
-  stripPlus91Prefix,
+  ASIAN_COUNTRY_CODES,
+  normalizeAsianPhone,
+  parseAsianPhoneParts,
   validateEnglishName,
 } from '../utils/calculations';
 import { uploadMediaToCloudinary } from '../utils/cloudinary';
@@ -43,6 +44,7 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   const [googleUid, setGoogleUid] = useState('');
   const [googleEmail, setGoogleEmail] = useState('');
   const [fullName, setFullName] = useState('');
+  const [countryCode, setCountryCode] = useState('+91');
   const [mobile, setMobile] = useState('');
   const [profilePhoto, setProfilePhoto] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -60,10 +62,13 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
           .replace(/\s+/g, ' ')
           .trim()
       );
-      setMobile(stripPlus91Prefix(initialOnboardingUser.existingMobile || ''));
+      const parsedPhone = parseAsianPhoneParts(initialOnboardingUser.existingMobile || '');
+      setCountryCode(parsedPhone.dialCode);
+      setMobile(parsedPhone.nationalNumber);
       setProfilePhoto(initialOnboardingUser.photoURL || '');
       setStep('onboarding');
     } else {
+      setCountryCode('+91');
       setStep('signin');
     }
   }, [open, initialOnboardingUser]);
@@ -111,7 +116,9 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       setGoogleUid(user.uid);
       setGoogleEmail(String(user.email || '').trim().toLowerCase());
       setFullName(rawDisplayName);
-      setMobile(stripPlus91Prefix(resolved.client?.mobile || ''));
+      const parsedPhone = parseAsianPhoneParts(resolved.client?.mobile || '');
+      setCountryCode(parsedPhone.dialCode);
+      setMobile(parsedPhone.nationalNumber);
       setProfilePhoto(
         resolved.client?.profilePhotoDataUrl || user.photoURL || ''
       );
@@ -180,10 +187,10 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
       return;
     }
 
-    const phoneCheck = normalizeIndianPhone(mobile);
+    const phoneCheck = normalizeAsianPhone(mobile, countryCode);
     if (!phoneCheck.valid) {
       setError(
-        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+        phoneCheck.error || 'Please enter a valid mobile number.'
       );
       return;
     }
@@ -363,24 +370,38 @@ export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
                 />
               </div>
 
-              {/* 3. Mobile Number */}
+              {/* 3. Mobile Number with Asian Country Code Dropdown */}
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
                   Mobile Number <span className="text-[#DB2777]">*</span>
                 </label>
                 <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
-                  <span className="inline-flex items-center gap-1 px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
-                    <Phone className="w-3.5 h-3.5 text-[#9333EA]" />
-                    +91
-                  </span>
+                  <div className="relative inline-flex items-center bg-[#F6EFFA] border-r border-[#E6D9EE] shrink-0 max-w-[148px]">
+                    <Phone className="w-3.5 h-3.5 text-[#9333EA] ml-2.5 shrink-0 pointer-events-none" />
+                    <select
+                      aria-label="Country code"
+                      value={countryCode}
+                      onChange={(e) => setCountryCode(e.target.value)}
+                      className="appearance-none bg-transparent pl-1.5 pr-6 py-2.5 text-xs font-mono-num font-bold text-[#6D28D9] focus:outline-none cursor-pointer truncate max-w-[126px]"
+                    >
+                      {ASIAN_COUNTRY_CODES.map((country) => (
+                        <option key={`${country.iso}-${country.dialCode}`} value={country.dialCode}>
+                          {country.name} ({country.dialCode})
+                        </option>
+                      ))}
+                    </select>
+                    <span className="pointer-events-none absolute right-2 text-[10px] text-[#7E22CE]">
+                      ▾
+                    </span>
+                  </div>
                   <input
                     type="tel"
                     inputMode="tel"
                     required
                     value={mobile}
                     onChange={(e) => setMobile(e.target.value)}
-                    placeholder="9876543210"
-                    className="w-full bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                    placeholder={countryCode === '+91' ? '9876543210' : 'Enter mobile number'}
+                    className="w-full min-w-0 bg-transparent px-3 py-2.5 text-sm font-mono-num text-[#1F122B] focus:outline-none"
                   />
                 </div>
               </div>

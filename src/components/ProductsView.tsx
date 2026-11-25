@@ -1,10 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   ArrowLeft,
   ChevronDown,
   ChevronUp,
   CreditCard,
+  Download,
   Package,
   Pencil,
   Plus,
@@ -19,6 +19,7 @@ import {
 import { CloudinaryMediaRecord, Product } from '../types/business';
 import {
   DEFAULT_PRODUCT_CATEGORY,
+  downloadImageAsset,
   formatCurrency,
   isProductHighlightActive,
   PRODUCT_CATEGORIES,
@@ -69,11 +70,18 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 }) => {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
+  const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
+  const [detailImageIndex, setDetailImageIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // History & scroll position refs for mobile hardware Back button + zero annoying scroll jumps
+  const subDepthRef = useRef(0);
+  const listScrollYRef = useRef(0);
+  const viewingProductIdRef = useRef<string | null>(null);
 
   // Form fields
   const [name, setName] = useState('');
@@ -93,6 +101,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [uploadingImgProgress, setUploadingImgProgress] = useState<number | null>(null);
   const [uploadingVideoProgress, setUploadingVideoProgress] = useState<number | null>(null);
   const [togglingHighlightId, setTogglingHighlightId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   // Per-Product Custom Payment Details (overrides Seller Account / Admin Payment System)
   const [paymentSectionOpen, setPaymentSectionOpen] = useState(false);
@@ -107,7 +116,93 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [sellerPaymentQrDataUrl, setSellerPaymentQrDataUrl] = useState('');
   const [uploadingQrProgress, setUploadingQrProgress] = useState<number | null>(null);
 
+  useEffect(() => {
+    viewingProductIdRef.current = viewingProduct?.id || null;
+  }, [viewingProduct?.id]);
+
+  const restoreListScroll = useCallback(() => {
+    const targetY = listScrollYRef.current;
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: targetY, behavior: 'auto' });
+    });
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      if (subDepthRef.current <= 0) return;
+      subDepthRef.current = Math.max(0, subDepthRef.current - 1);
+      const state = e.state as { ggType?: string; sub?: string; productId?: string } | null;
+
+      if (state?.ggType === 'products-sub' && state.sub === 'detail') {
+        setFormOpen(false);
+        setEditing(null);
+        setError('');
+        if (state.productId && !viewingProductIdRef.current) {
+          const found = products.find((p) => p.id === state.productId) || null;
+          setViewingProduct(found);
+        }
+        return;
+      }
+
+      setFormOpen(false);
+      setEditing(null);
+      setViewingProduct(null);
+      setDeleteTarget(null);
+      setError('');
+      restoreListScroll();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [products, restoreListScroll]);
+
+  const pushSubState = (sub: 'detail' | 'form', extra: Record<string, unknown>) => {
+    try {
+      window.history.pushState({ ggType: 'products-sub', sub, ...extra }, '');
+      subDepthRef.current += 1;
+    } catch {
+      // ignore history errors
+    }
+  };
+
+  const leaveCurrentSubView = useCallback(() => {
+    if (subDepthRef.current > 0) {
+      window.history.back();
+      return;
+    }
+    if (formOpen) {
+      setFormOpen(false);
+      setEditing(null);
+      setError('');
+      if (!viewingProduct) {
+        restoreListScroll();
+      }
+      return;
+    }
+    if (viewingProduct) {
+      setViewingProduct(null);
+      restoreListScroll();
+    }
+  }, [formOpen, viewingProduct, restoreListScroll]);
+
+  const openDetail = (prod: Product) => {
+    if (!viewingProduct && !formOpen) {
+      listScrollYRef.current = window.scrollY;
+    }
+    setViewingProduct(prod);
+    setDetailImageIndex(0);
+    setFormOpen(false);
+    setError('');
+    pushSubState('detail', { productId: prod.id });
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    });
+  };
+
   const openCreate = () => {
+    if (!viewingProduct && !formOpen) {
+      listScrollYRef.current = window.scrollY;
+    }
     setEditing(null);
     setName('');
     setImageDataUrls([]);
@@ -132,9 +227,16 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setSellerPaymentQrDataUrl('');
     setError('');
     setFormOpen(true);
+    pushSubState('form', { editingId: null });
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    });
   };
 
   const openEdit = (prod: Product) => {
+    if (!viewingProduct && !formOpen) {
+      listScrollYRef.current = window.scrollY;
+    }
     setEditing(prod);
     setName(prod.name);
     const existingImages =
@@ -176,6 +278,70 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setSellerPaymentQrDataUrl(prod.sellerPaymentQrDataUrl || '');
     setError('');
     setFormOpen(true);
+    pushSubState('form', { editingId: prod.id });
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    });
+  };
+
+  const downloadProductDetailsFile = (prod: Product) => {
+    const safeBase =
+      prod.name.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') ||
+      'product_details';
+    const profit = prod.sellingPrice - prod.purchasePrice;
+    const lines = [
+      `Product: ${prod.name}`,
+      `Category: ${prod.category}`,
+      prod.size ? `Size: ${prod.size}` : '',
+      prod.color ? `Color: ${prod.color}` : '',
+      `Purchase Price: ${formatCurrency(prod.purchasePrice, currencySymbol)}`,
+      `Selling Price: ${formatCurrency(prod.sellingPrice, currencySymbol)}`,
+      prod.originalPrice && prod.originalPrice > prod.sellingPrice
+        ? `MRP: ${formatCurrency(prod.originalPrice, currencySymbol)}`
+        : '',
+      `Profit Per Unit: ${formatCurrency(profit, currencySymbol)}`,
+      `Stock Quantity: ${prod.stockQty}`,
+      prod.sellerName ? `Seller: ${prod.sellerName}` : '',
+      prod.description ? `\nDescription:\n${prod.description}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeBase}_details.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  };
+
+  const handleDownloadProductCard = async (
+    prod: Product,
+    imageOverride?: string
+  ) => {
+    const gallery =
+      Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
+        ? prod.imageDataUrls
+        : prod.imageDataUrl
+          ? [prod.imageDataUrl]
+          : [];
+    const targetImage = imageOverride || gallery[0] || '';
+    setDownloadingId(prod.id);
+    setError('');
+    try {
+      if (targetImage) {
+        await downloadImageAsset(targetImage, prod.name);
+      } else {
+        downloadProductDetailsFile(prod);
+      }
+    } catch {
+      downloadProductDetailsFile(prod);
+    } finally {
+      setDownloadingId(null);
+    }
   };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -388,7 +554,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
         },
         editing?.id
       );
-      setFormOpen(false);
+      leaveCurrentSubView();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save product.');
     } finally {
@@ -417,14 +583,6 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     }
   };
 
-  const lowStockItems = useMemo(
-    () =>
-      products.filter(
-        (p) => p.stockQty <= (p.lowStockAlert || defaultLowStock || 5)
-      ),
-    [products, defaultLowStock]
-  );
-
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return products
@@ -446,79 +604,47 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       );
   }, [products, searchQuery, categoryFilter]);
 
+  const activeDetailProduct = useMemo(() => {
+    if (!viewingProduct) return null;
+    return products.find((p) => p.id === viewingProduct.id) || viewingProduct;
+  }, [products, viewingProduct]);
+
   const inputClass =
     'w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none';
 
-  return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 pb-24 md:pb-10">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          {!hideBackButton && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Back</span>
-            </button>
-          )}
-          <div>
-            <h1 className="font-display-serif text-2xl font-bold text-[#1F122B]">
-              {sellerContext ? `My Seller Products (${products.length})` : `Product Listing (${products.length})`}
-            </h1>
-            <p className="text-xs text-[#6B5B7B] mt-0.5">
-              {sellerContext
-                ? 'Add, edit & manage your seller catalog with up to 5 compressed photos. Approved items appear on the storefront.'
-                : 'Add, edit & manage women\'s products, perfumes & categories with up to 5 compressed photos synced to Firestore.'}
-            </p>
-          </div>
+  // Suppress unused prop warning while keeping interface backwards-compatible
+  void hideBackButton;
+  void onBack;
+
+  if (formOpen) {
+    return (
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-5 pb-24 md:pb-10">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={leaveCurrentSubView}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back</span>
+          </button>
+          <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+            {editing ? 'Edit Product' : 'Add New Product'}
+          </h2>
+          <button
+            type="button"
+            onClick={leaveCurrentSubView}
+            aria-label="Close form"
+            className="p-2 rounded-xl border border-[#E6D9EE] bg-white text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2.5 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add Product</span>
-        </button>
-      </div>
-
-      {/* Low Stock Alerts */}
-      {lowStockItems.length > 0 && (
-        <div className="rounded-2xl border border-[#FBCFE8] bg-[#FFF1F6] p-4 space-y-1.5">
-          <div className="flex items-center gap-2 text-sm font-bold text-[#BE185D]">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>Low Stock Alert ({lowStockItems.length} items)</span>
-          </div>
-          <p className="text-xs text-[#9D174D]">
-            {lowStockItems
-              .map((p) => `${p.name} (${p.stockQty} left)`)
-              .join(' · ')}
-          </p>
-        </div>
-      )}
-
-      {/* Add / Edit Product Drawer Card */}
-      {formOpen && (
         <form
           onSubmit={handleSubmit}
-          className="rounded-2xl border border-[#D8B4FE] bg-white p-5 sm:p-6 space-y-4 shadow-sm"
+          className="rounded-2xl border border-[#D8B4FE] bg-white p-4 sm:p-6 space-y-4 shadow-sm"
         >
-          <div className="flex items-center justify-between border-b border-[#F4ECF8] pb-3">
-            <h2 className="text-base font-bold text-[#1F122B]">
-              {editing ? 'Edit Product' : 'Add New Product'}
-            </h2>
-            <button
-              type="button"
-              onClick={() => setFormOpen(false)}
-              className="p-1.5 rounded-lg text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
 
           {error && (
             <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
@@ -1014,7 +1140,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             <div className="flex items-center gap-2.5">
               <button
                 type="button"
-                onClick={() => setFormOpen(false)}
+                onClick={leaveCurrentSubView}
                 className="px-4 py-2 rounded-xl border border-[#E6D9EE] text-xs font-semibold text-[#5B4B6B] cursor-pointer"
               >
                 Cancel
@@ -1034,7 +1160,404 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             </div>
           </div>
         </form>
-      )}
+      </div>
+    );
+  }
+
+  if (activeDetailProduct) {
+    const detailGallery =
+      Array.isArray(activeDetailProduct.imageDataUrls) &&
+      activeDetailProduct.imageDataUrls.length > 0
+        ? activeDetailProduct.imageDataUrls
+        : activeDetailProduct.imageDataUrl
+          ? [activeDetailProduct.imageDataUrl]
+          : [];
+    const safeIdx =
+      detailImageIndex >= 0 && detailImageIndex < detailGallery.length
+        ? detailImageIndex
+        : 0;
+    const currentPhoto = detailGallery[safeIdx] || '';
+    const detailIsLow =
+      activeDetailProduct.stockQty <=
+      (activeDetailProduct.lowStockAlert || defaultLowStock || 5);
+    const detailProfit =
+      activeDetailProduct.sellingPrice - activeDetailProduct.purchasePrice;
+    const detailHighlighted = isProductHighlightActive(activeDetailProduct);
+    const detailPendingHighlight = Boolean(
+      pendingHighlightProductIds?.has(activeDetailProduct.id)
+    );
+
+    return (
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-5 pb-24 md:pb-10">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <button
+            type="button"
+            onClick={leaveCurrentSubView}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3.5 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to Products</span>
+          </button>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {currentPhoto && (
+              <button
+                type="button"
+                disabled={downloadingId === activeDetailProduct.id}
+                onClick={() =>
+                  void handleDownloadProductCard(activeDetailProduct, currentPhoto)
+                }
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer disabled:opacity-60"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Image</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => downloadProductDetailsFile(activeDetailProduct)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Details</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => openEdit(activeDetailProduct)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3.5 py-2 text-xs font-semibold text-white hover:opacity-95 cursor-pointer"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              <span>Edit Product</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDeleteTarget(activeDetailProduct)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFE4E6] cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-[#EFE2F5] bg-white overflow-hidden shadow-sm grid grid-cols-1 lg:grid-cols-2">
+          {/* Left: Full Multi-Photo & Video Gallery */}
+          <div className="bg-[#FDF9FE] border-b lg:border-b-0 lg:border-r border-[#F4ECF8] p-4 sm:p-5 space-y-3">
+            <div className="aspect-square rounded-2xl border border-[#EFE2F5] bg-white relative flex items-center justify-center overflow-hidden">
+              {currentPhoto ? (
+                <img
+                  src={getOptimizedMediaUrl(currentPhoto, 'image')}
+                  alt={`${activeDetailProduct.name} photo ${safeIdx + 1}`}
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <Package className="w-16 h-16 text-[#C084FC]" />
+              )}
+              {detailHighlighted && (
+                <span className="absolute top-3 left-3 inline-flex items-center gap-1 rounded-md bg-[#DB2777] px-2.5 py-1 text-[11px] font-bold text-white">
+                  <Star className="w-3 h-3 fill-current" />
+                  <span>
+                    Highlighted
+                    {activeDetailProduct.highlightExpiresAt
+                      ? ` · till ${activeDetailProduct.highlightExpiresAt.slice(0, 10)}`
+                      : ''}
+                  </span>
+                </span>
+              )}
+              {!detailHighlighted && detailPendingHighlight && (
+                <span className="absolute top-3 left-3 inline-flex items-center gap-1 rounded-md bg-[#B45309] px-2.5 py-1 text-[11px] font-bold text-white">
+                  <Star className="w-3 h-3" />
+                  <span>Highlight Pending</span>
+                </span>
+              )}
+              {detailGallery.length > 0 && (
+                <span className="absolute bottom-3 right-3 rounded-lg bg-black/65 px-2.5 py-1 text-xs font-bold text-white font-mono-num">
+                  {safeIdx + 1} / {detailGallery.length}
+                </span>
+              )}
+            </div>
+
+            {detailGallery.length > 1 && (
+              <div className="grid grid-cols-5 gap-2">
+                {detailGallery.map((imgSrc, idx) => (
+                  <button
+                    key={`${idx}-${imgSrc.slice(0, 20)}`}
+                    type="button"
+                    onClick={() => setDetailImageIndex(idx)}
+                    className={`aspect-square rounded-xl overflow-hidden border-2 bg-white cursor-pointer ${
+                      idx === safeIdx
+                        ? 'border-[#DB2777] ring-2 ring-[#DB2777]/25'
+                        : 'border-[#E6D9EE] opacity-80 hover:opacity-100'
+                    }`}
+                  >
+                    <img
+                      src={getOptimizedMediaUrl(imgSrc, 'image')}
+                      alt={`Thumbnail ${idx + 1}`}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {activeDetailProduct.videoUrl && (
+              <div className="pt-2 space-y-1.5">
+                <div className="text-xs font-bold text-[#6D28D9] inline-flex items-center gap-1.5">
+                  <Video className="w-3.5 h-3.5" />
+                  <span>Product Video</span>
+                </div>
+                <div className="rounded-xl border border-[#E6D9EE] bg-black overflow-hidden">
+                  <video
+                    src={getOptimizedMediaUrl(activeDetailProduct.videoUrl, 'video')}
+                    controls
+                    playsInline
+                    preload="metadata"
+                    className="w-full max-h-64 object-contain"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right: Complete Product Info */}
+          <div className="p-5 sm:p-6 space-y-5">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[#7E22CE]">
+                <span>{activeDetailProduct.category}</span>
+                {activeDetailProduct.size && (
+                  <span>· Size {activeDetailProduct.size}</span>
+                )}
+                {activeDetailProduct.color && (
+                  <span>· {activeDetailProduct.color}</span>
+                )}
+              </div>
+              <h1 className="font-display-serif text-2xl font-bold text-[#1F122B]">
+                {activeDetailProduct.name}
+              </h1>
+
+              {activeDetailProduct.sellerId && (
+                <div className="text-xs font-medium flex flex-wrap items-center gap-2 pt-1">
+                  {!sellerContext && activeDetailProduct.sellerName && (
+                    <span className="text-[#5B4B6B]">
+                      Seller: <strong>{activeDetailProduct.sellerName}</strong> ·
+                    </span>
+                  )}
+                  <span
+                    className={
+                      activeDetailProduct.sellerApprovalStatus === 'approved'
+                        ? 'text-[#15803D] font-semibold'
+                        : activeDetailProduct.sellerApprovalStatus === 'rejected'
+                          ? 'text-[#BE123C] font-semibold'
+                          : 'text-[#B45309] font-semibold'
+                    }
+                  >
+                    {activeDetailProduct.sellerApprovalStatus === 'approved'
+                      ? 'Approved (Live)'
+                      : activeDetailProduct.sellerApprovalStatus === 'rejected'
+                        ? 'Rejected by Admin'
+                        : 'Pending Admin Approval'}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Pricing Grid */}
+            <div className="grid grid-cols-3 gap-3 rounded-2xl border border-[#EFE2F5] bg-[#FDF9FE] p-4">
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Buy Price</div>
+                <div className="font-mono-num text-sm sm:text-base font-semibold text-[#4A3B59] mt-0.5">
+                  {formatCurrency(activeDetailProduct.purchasePrice, currencySymbol)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Sell Price</div>
+                <div className="font-mono-num text-sm sm:text-base font-bold text-[#7E22CE] mt-0.5 flex flex-wrap items-baseline gap-1">
+                  <span>
+                    {formatCurrency(activeDetailProduct.sellingPrice, currencySymbol)}
+                  </span>
+                  {activeDetailProduct.originalPrice &&
+                    activeDetailProduct.originalPrice >
+                      activeDetailProduct.sellingPrice && (
+                      <span className="text-xs text-[#8E7C9E] line-through font-normal">
+                        {formatCurrency(
+                          activeDetailProduct.originalPrice,
+                          currencySymbol
+                        )}
+                      </span>
+                    )}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Unit Profit</div>
+                <div className="font-mono-num text-sm sm:text-base font-bold text-[#15803D] mt-0.5">
+                  {formatCurrency(detailProfit, currencySymbol)}
+                </div>
+              </div>
+            </div>
+
+            {/* Stock & Highlight Controls */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#EFE2F5] bg-white p-4">
+              <div>
+                <div className="text-[11px] text-[#6B5B7B]">Inventory Stock</div>
+                <div
+                  className={`font-mono-num text-sm font-bold mt-0.5 ${
+                    detailIsLow ? 'text-[#BE123C]' : 'text-[#1F122B]'
+                  }`}
+                >
+                  Stock: {activeDetailProduct.stockQty}
+                  {detailIsLow ? ' (Low Stock)' : ''}
+                </div>
+              </div>
+
+              {sellerContext ? (
+                onRequestHighlight && (
+                  <button
+                    type="button"
+                    onClick={() => onRequestHighlight(activeDetailProduct)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                      detailHighlighted
+                        ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
+                        : detailPendingHighlight
+                          ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                          : 'border-[#D8B4FE] bg-[#FAF5FF] text-[#7E22CE]'
+                    }`}
+                  >
+                    <Star
+                      className={`w-3.5 h-3.5 ${
+                        detailHighlighted ? 'fill-current' : ''
+                      }`}
+                    />
+                    <span>
+                      {detailHighlighted
+                        ? 'Highlighted'
+                        : detailPendingHighlight
+                          ? 'Highlight Pending'
+                          : 'Request Highlight'}
+                    </span>
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  disabled={togglingHighlightId === activeDetailProduct.id}
+                  onClick={() => void handleToggleHighlight(activeDetailProduct)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer disabled:opacity-60 ${
+                    activeDetailProduct.highlighted
+                      ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
+                      : 'border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#DB2777]'
+                  }`}
+                >
+                  <Star
+                    className={`w-3.5 h-3.5 ${
+                      activeDetailProduct.highlighted ? 'fill-current' : ''
+                    }`}
+                  />
+                  <span>
+                    {activeDetailProduct.highlighted
+                      ? 'Highlighted'
+                      : 'Highlight on Storefront'}
+                  </span>
+                </button>
+              )}
+            </div>
+
+            {activeDetailProduct.description && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-bold text-[#4A3B59]">Description</div>
+                <p className="text-sm text-[#4A3B59] whitespace-pre-line leading-relaxed rounded-2xl border border-[#F4ECF8] bg-[#FDFBFE] p-3.5">
+                  {activeDetailProduct.description}
+                </p>
+              </div>
+            )}
+
+            {(activeDetailProduct.sellerPaymentUpiId ||
+              activeDetailProduct.sellerPaymentBankAccountNo ||
+              activeDetailProduct.sellerPaymentQrDataUrl) && (
+              <div className="rounded-2xl border border-[#D8B4FE] bg-[#FAF5FF] p-4 space-y-2">
+                <div className="text-xs font-bold text-[#6D28D9] inline-flex items-center gap-1.5">
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>Custom Payment Details</span>
+                </div>
+                <div className="text-xs text-[#4A3B59] space-y-1 font-mono-num">
+                  {activeDetailProduct.sellerPaymentUpiId && (
+                    <div>UPI ID: {activeDetailProduct.sellerPaymentUpiId}</div>
+                  )}
+                  {activeDetailProduct.sellerPaymentBankName && (
+                    <div>Bank: {activeDetailProduct.sellerPaymentBankName}</div>
+                  )}
+                  {activeDetailProduct.sellerPaymentBankAccountName && (
+                    <div>
+                      Holder: {activeDetailProduct.sellerPaymentBankAccountName}
+                    </div>
+                  )}
+                  {activeDetailProduct.sellerPaymentBankAccountNo && (
+                    <div>
+                      Account: {activeDetailProduct.sellerPaymentBankAccountNo}
+                    </div>
+                  )}
+                  {activeDetailProduct.sellerPaymentBankIfscBranch && (
+                    <div>
+                      IFSC: {activeDetailProduct.sellerPaymentBankIfscBranch}
+                    </div>
+                  )}
+                </div>
+                {activeDetailProduct.sellerPaymentQrDataUrl && (
+                  <img
+                    src={getOptimizedMediaUrl(
+                      activeDetailProduct.sellerPaymentQrDataUrl,
+                      'image'
+                    )}
+                    alt="Product Payment QR"
+                    referrerPolicy="no-referrer"
+                    className="w-24 h-24 rounded-lg border border-[#E6D9EE] bg-white p-1 object-contain"
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <ConfirmModal
+          open={Boolean(deleteTarget)}
+          title="Delete Product"
+          message={`Are you sure you want to delete "${deleteTarget?.name}" from your catalog?`}
+          confirmLabel="Delete Product"
+          busy={busy}
+          onConfirm={async () => {
+            if (!deleteTarget) return;
+            setBusy(true);
+            try {
+              const targetId = deleteTarget.id;
+              await onDeleteProduct(targetId);
+              setDeleteTarget(null);
+              if (viewingProduct?.id === targetId) {
+                leaveCurrentSubView();
+              }
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-5 pb-24 md:pb-10">
+      {/* Full-width Add Product Gradient CTA at Top */}
+      <div>
+        <button
+          type="button"
+          onClick={openCreate}
+          className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-3 text-sm font-semibold text-white hover:opacity-95 shadow-sm cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Add Product</span>
+        </button>
+      </div>
 
       {/* Search & Category Filter */}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1063,7 +1586,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
         </select>
       </div>
 
-      {/* Product Grid */}
+      {/* Product Grid (Compact 2-Column Mobile Grid) */}
       {filteredProducts.length === 0 ? (
         <div className="rounded-2xl border border-[#EFE2F5] bg-white py-16 px-6 text-center">
           <h3 className="text-base font-bold text-[#1F122B] mb-1">
@@ -1084,7 +1607,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-2.5 sm:gap-4">
           {filteredProducts.map((prod) => {
             const isLow = prod.stockQty <= (prod.lowStockAlert || defaultLowStock || 5);
             const profitPerUnit = prod.sellingPrice - prod.purchasePrice;
@@ -1103,14 +1626,23 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             return (
               <div
                 key={prod.id}
-                className={`rounded-2xl border bg-white overflow-hidden flex flex-col justify-between ${
+                role="button"
+                tabIndex={0}
+                onClick={() => openDetail(prod)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openDetail(prod);
+                  }
+                }}
+                className={`rounded-2xl border bg-white overflow-hidden flex flex-col justify-between cursor-pointer hover:border-[#9333EA] hover:shadow-sm transition-all text-left ${
                   activeHighlight
                     ? 'border-[#DB2777] ring-1 ring-[#DB2777]/25'
                     : 'border-[#EFE2F5]'
                 }`}
               >
                 <div>
-                  <div className="h-44 bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative flex items-center justify-center overflow-hidden border-b border-[#F4ECF8]">
+                  <div className="h-32 sm:h-44 bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative flex items-center justify-center overflow-hidden border-b border-[#F4ECF8]">
                     {mainImg ? (
                       <img
                         src={getOptimizedMediaUrl(mainImg, 'image')}
@@ -1119,12 +1651,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                         className="w-full h-full object-cover"
                       />
                     ) : (
-                      <Package className="w-10 h-10 text-[#C084FC]" />
+                      <Package className="w-8 h-8 sm:w-10 sm:h-10 text-[#C084FC]" />
                     )}
                     {activeHighlight && (
-                      <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-[#DB2777] px-2 py-0.5 text-[10px] font-bold text-white">
-                        <Star className="w-3 h-3 fill-current" />
-                        <span>
+                      <span className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 rounded-md bg-[#DB2777] px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-white max-w-[calc(100%-12px)] truncate">
+                        <Star className="w-2.5 h-2.5 sm:w-3 sm:h-3 fill-current shrink-0" />
+                        <span className="truncate">
                           Highlighted
                           {prod.highlightExpiresAt
                             ? ` · till ${prod.highlightExpiresAt.slice(0, 10)}`
@@ -1133,41 +1665,41 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       </span>
                     )}
                     {!activeHighlight && hasPendingHighlight && (
-                      <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-md bg-[#B45309] px-2 py-0.5 text-[10px] font-bold text-white">
-                        <Star className="w-3 h-3" />
-                        <span>Highlight Pending</span>
+                      <span className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 rounded-md bg-[#B45309] px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-white">
+                        <Star className="w-2.5 h-2.5 sm:w-3 sm:h-3 shrink-0" />
+                        <span>Pending</span>
                       </span>
                     )}
-                    {(gallery.length > 1 || prod.videoUrl) && (
-                      <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                    {(gallery.length > 0 || prod.videoUrl) && (
+                      <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
                         {prod.videoUrl && (
-                          <span className="inline-flex items-center gap-1 rounded-lg bg-[#7E22CE]/90 px-2 py-0.5 text-[10px] font-bold text-white">
-                            <Video className="w-3 h-3" />
-                            <span>Video</span>
+                          <span className="inline-flex items-center gap-0.5 rounded-md bg-[#7E22CE]/90 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-white">
+                            <Video className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                            <span className="hidden sm:inline">Video</span>
                           </span>
                         )}
-                        {gallery.length > 1 && (
-                          <span className="rounded-lg bg-black/65 px-2 py-0.5 text-[10px] font-bold text-white font-mono-num">
-                            {gallery.length} photos
+                        {gallery.length > 0 && (
+                          <span className="rounded-md bg-black/65 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-white font-mono-num">
+                            {gallery.length} {gallery.length === 1 ? 'photo' : 'photos'}
                           </span>
                         )}
                       </div>
                     )}
                   </div>
 
-                  <div className="p-4 space-y-2.5">
-                    <div className="text-[11px] font-medium text-[#7E22CE]">
+                  <div className="p-2.5 sm:p-4 space-y-1.5 sm:space-y-2">
+                    <div className="text-[10px] sm:text-[11px] font-medium text-[#7E22CE] line-clamp-1">
                       {prod.category}
                       {prod.size ? ` · Size ${prod.size}` : ''}
                       {prod.color ? ` · ${prod.color}` : ''}
                     </div>
-                    <h3 className="text-base font-bold text-[#1F122B] leading-snug">
+                    <h3 className="text-xs sm:text-base font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2rem] sm:min-h-0">
                       {prod.name}
                     </h3>
                     {prod.sellerId && (
-                      <div className="text-[11px] font-medium flex flex-wrap items-center gap-1.5">
+                      <div className="text-[10px] sm:text-[11px] font-medium flex flex-wrap items-center gap-1">
                         {!sellerContext && prod.sellerName && (
-                          <span className="text-[#5B4B6B]">
+                          <span className="text-[#5B4B6B] truncate max-w-full">
                             Seller: <strong>{prod.sellerName}</strong> ·
                           </span>
                         )}
@@ -1181,10 +1713,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                           }
                         >
                           {prod.sellerApprovalStatus === 'approved'
-                            ? 'Approved (Live)'
+                            ? 'Approved'
                             : prod.sellerApprovalStatus === 'rejected'
-                              ? 'Rejected by Admin'
-                              : 'Pending Admin Approval'}
+                              ? 'Rejected'
+                              : 'Pending'}
                         </span>
                       </div>
                     )}
@@ -1192,33 +1724,32 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     {(prod.sellerPaymentUpiId ||
                       prod.sellerPaymentBankAccountNo ||
                       prod.sellerPaymentQrDataUrl) && (
-                      <div className="inline-flex items-center gap-1 rounded-md border border-[#D8B4FE] bg-[#FAF5FF] px-2 py-0.5 text-[10px] font-bold text-[#6D28D9]">
-                        <CreditCard className="w-3 h-3" />
-                        <span>
-                          Custom Payment
+                      <div className="inline-flex items-center gap-1 rounded-md border border-[#D8B4FE] bg-[#FAF5FF] px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-[#6D28D9] max-w-full truncate">
+                        <CreditCard className="w-2.5 h-2.5 sm:w-3 sm:h-3 shrink-0" />
+                        <span className="truncate">
                           {prod.sellerPaymentUpiId
-                            ? `: ${prod.sellerPaymentUpiId}`
-                            : ' (Bank/QR)'}
+                            ? `UPI: ${prod.sellerPaymentUpiId}`
+                            : 'Custom Pay'}
                         </span>
                       </div>
                     )}
 
-                    <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#F4ECF8] text-xs">
-                      <div>
+                    <div className="grid grid-cols-3 gap-1 sm:gap-2 pt-1.5 sm:pt-2 border-t border-[#F4ECF8] text-[10px] sm:text-xs">
+                      <div className="min-w-0">
                         <div className="text-[#6B5B7B]">Buy</div>
-                        <div className="font-mono-num font-semibold text-[#4A3B59]">
+                        <div className="font-mono-num font-semibold text-[#4A3B59] truncate">
                           {formatCurrency(prod.purchasePrice, currencySymbol)}
                         </div>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-[#6B5B7B]">Sell</div>
-                        <div className="font-mono-num font-bold text-[#7E22CE] flex flex-wrap items-baseline gap-1">
-                          <span>
+                        <div className="font-mono-num font-bold text-[#7E22CE] flex flex-wrap items-baseline gap-0.5">
+                          <span className="truncate">
                             {formatCurrency(prod.sellingPrice, currencySymbol)}
                           </span>
                           {prod.originalPrice &&
                             prod.originalPrice > prod.sellingPrice && (
-                              <span className="text-[11px] text-[#8E7C9E] line-through font-normal">
+                              <span className="text-[9px] sm:text-[11px] text-[#8E7C9E] line-through font-normal hidden sm:inline">
                                 {formatCurrency(
                                   prod.originalPrice,
                                   currencySymbol
@@ -1227,9 +1758,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                             )}
                         </div>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-[#6B5B7B]">Profit</div>
-                        <div className="font-mono-num font-semibold text-[#15803D]">
+                        <div className="font-mono-num font-semibold text-[#15803D] truncate">
                           {formatCurrency(profitPerUnit, currencySymbol)}
                         </div>
                       </div>
@@ -1237,9 +1768,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   </div>
                 </div>
 
-                <div className="px-4 py-3 bg-[#FDFBFE] border-t border-[#F4ECF8] flex items-center justify-between gap-2">
+                <div className="px-2.5 py-2 sm:px-4 sm:py-3 bg-[#FDFBFE] border-t border-[#F4ECF8] space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-2">
                   <div
-                    className={`font-mono-num text-xs font-bold ${
+                    className={`font-mono-num text-[10px] sm:text-xs font-bold ${
                       isLow ? 'text-[#BE123C]' : 'text-[#1F122B]'
                     }`}
                   >
@@ -1247,13 +1778,16 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     {isLow ? ' (Low)' : ''}
                   </div>
 
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center justify-between sm:justify-end gap-1">
                     {sellerContext ? (
                       onRequestHighlight && (
                         <button
                           type="button"
-                          onClick={() => onRequestHighlight(prod)}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors ${
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRequestHighlight(prod);
+                          }}
+                          className={`inline-flex items-center gap-1 px-1.5 sm:px-2.5 py-1 sm:py-1.5 rounded-lg border text-[10px] sm:text-[11px] font-semibold cursor-pointer transition-colors ${
                             activeHighlight
                               ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
                               : hasPendingHighlight
@@ -1263,11 +1797,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                           title="Pay & request Highlight for this product"
                         >
                           <Star
-                            className={`w-3.5 h-3.5 ${
+                            className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${
                               activeHighlight ? 'fill-current' : ''
                             }`}
                           />
-                          <span>
+                          <span className="hidden sm:inline">
                             {activeHighlight
                               ? 'Highlighted'
                               : hasPendingHighlight
@@ -1280,8 +1814,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       <button
                         type="button"
                         disabled={togglingHighlightId === prod.id}
-                        onClick={() => handleToggleHighlight(prod)}
-                        className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-60 ${
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleToggleHighlight(prod);
+                        }}
+                        className={`inline-flex items-center gap-1 px-1.5 sm:px-2 py-1 sm:py-1.5 rounded-lg border text-[10px] sm:text-[11px] font-semibold cursor-pointer transition-colors disabled:opacity-60 ${
                           prod.highlighted
                             ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#DB2777]'
                             : 'border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#DB2777]'
@@ -1293,29 +1830,51 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                         }
                       >
                         <Star
-                          className={`w-3.5 h-3.5 ${
+                          className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${
                             prod.highlighted ? 'fill-current' : ''
                           }`}
                         />
-                        <span>{prod.highlighted ? 'Highlighted' : 'Highlight'}</span>
+                        <span className="hidden sm:inline">
+                          {prod.highlighted ? 'Highlighted' : 'Highlight'}
+                        </span>
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => openEdit(prod)}
-                      className="p-1.5 rounded-lg border border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#7E22CE] cursor-pointer"
-                      title="Edit product"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(prod)}
-                      className="p-1.5 rounded-lg border border-[#E6D9EE] bg-white text-[#6B5B7B] hover:text-[#BE123C] cursor-pointer"
-                      title="Delete product"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={downloadingId === prod.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleDownloadProductCard(prod);
+                        }}
+                        className="p-1.5 rounded-lg border border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#7E22CE] cursor-pointer disabled:opacity-60"
+                        title="Download product image & details"
+                      >
+                        <Download className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEdit(prod);
+                        }}
+                        className="p-1.5 rounded-lg border border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#7E22CE] cursor-pointer"
+                        title="Edit product"
+                      >
+                        <Pencil className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteTarget(prod);
+                        }}
+                        className="p-1.5 rounded-lg border border-[#E6D9EE] bg-white text-[#6B5B7B] hover:text-[#BE123C] cursor-pointer"
+                        title="Delete product"
+                      >
+                        <Trash2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

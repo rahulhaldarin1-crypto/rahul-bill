@@ -68,6 +68,7 @@ import {
   isProductHighlightActive,
   mergeAdminPaymentSettings,
   mergeBusinessSettings,
+  normalizeAsianPhone,
   normalizeIndianPhone,
   normalizePhoneDigits,
   normalizeSupportName,
@@ -2198,7 +2199,7 @@ export const firestoreService = {
       return { client: null, needsOnboarding: true };
     }
 
-    const phoneValid = normalizeIndianPhone(matched.mobile).valid;
+    const phoneValid = normalizeAsianPhone(matched.mobile).valid;
     const isComplete = phoneValid && matched.profileCompleted !== false;
 
     if (!isComplete) {
@@ -2250,7 +2251,7 @@ export const firestoreService = {
     const cleanUid = String(payload.uid || '').trim();
     const cleanEmail = String(payload.email || '').trim().toLowerCase();
     const nameCheck = validateEnglishName(payload.name, 'Full Name');
-    const phoneCheck = normalizeIndianPhone(payload.mobile);
+    const phoneCheck = normalizeAsianPhone(payload.mobile);
 
     if (!cleanUid) {
       throw new Error('Please sign in with Google first.');
@@ -2260,7 +2261,7 @@ export const firestoreService = {
     }
     if (!phoneCheck.valid) {
       throw new Error(
-        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+        phoneCheck.error || 'Please enter a valid mobile number.'
       );
     }
 
@@ -2400,9 +2401,9 @@ export const firestoreService = {
     let cleanWhatsapp: string | undefined;
     const rawWa = String(payload.whatsapp || '').trim();
     if (rawWa) {
-      const waCheck = normalizeIndianPhone(rawWa);
+      const waCheck = normalizeAsianPhone(rawWa);
       if (!waCheck.valid) {
-        throw new Error('Please enter a valid 10-digit WhatsApp number.');
+        throw new Error('Please enter a valid WhatsApp number.');
       }
       cleanWhatsapp = waCheck.formatted;
     }
@@ -2494,28 +2495,28 @@ export const firestoreService = {
     customerNote?: string;
   }): Promise<{ order: CustomerOrder; client: Client }> {
     const nameCheck = validateEnglishName(payload.customerName, 'Full Name');
-    const phoneCheck = normalizeIndianPhone(payload.customerPhone);
+    const phoneCheck = normalizeAsianPhone(payload.customerPhone);
     const cleanAddress = String(payload.customerAddress || '').trim();
 
     if (!nameCheck.valid) throw new Error(nameCheck.error);
     const cleanName = nameCheck.cleaned;
     if (!phoneCheck.valid) {
       throw new Error(
-        phoneCheck.error || 'Please enter a valid 10-digit Indian mobile number.'
+        phoneCheck.error || 'Please enter a valid mobile number.'
       );
     }
     if (!cleanAddress) throw new Error('Please enter your delivery address.');
 
     const cleanPhone = phoneCheck.formatted;
-    const normalizedPhone = phoneCheck.digits10;
+    const normalizedPhone = phoneCheck.nationalDigits;
 
     let cleanWhatsapp = cleanPhone;
     const rawWa = String(payload.customerWhatsapp || '').trim();
     if (rawWa) {
-      const waCheck = normalizeIndianPhone(rawWa);
+      const waCheck = normalizeAsianPhone(rawWa);
       if (!waCheck.valid) {
         throw new Error(
-          'Please enter a valid 10-digit WhatsApp number (with or without +91).'
+          waCheck.error || 'Please enter a valid WhatsApp number.'
         );
       }
       cleanWhatsapp = waCheck.formatted;
