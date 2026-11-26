@@ -43,12 +43,19 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
+            const newId = "com.glamourgalleria.shopping";
             const cfgPath = "capacitor.config.ts";
             if (fs.existsSync(cfgPath)) {
               let content = fs.readFileSync(cfgPath, "utf8");
-              content = content.replace(/appId:\s*["\x27][^"\x27]+["\x27]/, "appId: \"com.glamourgalleria.app\"");
+              content = content.replace(/appId:\s*["\x27][^"\x27]+["\x27]/, `appId: "${newId}"`);
               content = content.replace(/appName:\s*["\x27][^"\x27]+["\x27]/, "appName: \"GG SHOPPING\"");
               fs.writeFileSync(cfgPath, content, "utf8");
+            }
+            const gradlePath = "android/app/build.gradle";
+            if (fs.existsSync(gradlePath)) {
+              let gradle = fs.readFileSync(gradlePath, "utf8");
+              gradle = gradle.replace(/applicationId\s+["\x27][^"\x27]+["\x27]/, `applicationId "${newId}"`);
+              fs.writeFileSync(gradlePath, gradle, "utf8");
             }
             const stringsPath = "android/app/src/main/res/values/strings.xml";
             if (fs.existsSync(stringsPath)) {
@@ -61,13 +68,19 @@ jobs:
           import glob, os, shutil, subprocess
 
           candidates = []
-          for pat in ["*logo*.png", "*logo*.jpg", "*logo*.jpeg", "*logo*.webp", "1795721722384.png", "*.png", "*.jpg", "*.jpeg", "*.webp"]:
+          for pat in [
+              "1795721722384.png",
+              "*logo*.png", "*logo*.jpg", "*logo*.jpeg", "*logo*.webp",
+              "public/*logo*.png", "public/*logo*.jpg", "public/*logo*.jpeg", "public/*logo*.webp",
+              "*.png", "*.jpg", "*.jpeg", "*.webp",
+              "public/*.png", "public/*.jpg", "public/*.jpeg", "public/*.webp",
+          ]:
               for f in sorted(glob.glob(pat)):
-                  if os.path.isfile(f) and f not in candidates:
+                  if os.path.isfile(f) and "android/" not in f and f not in candidates:
                       candidates.append(f)
 
           if not candidates:
-              raise SystemExit("No logo image file found in repository root.")
+              raise SystemExit("No logo image file found in repository.")
 
           logo = candidates[0]
           print("Using logo file:", logo)
@@ -100,6 +113,7 @@ jobs:
                       check=True,
                   )
           EOF
+          npx cap sync android
 
       - name: Build Android Debug APK
         working-directory: android
