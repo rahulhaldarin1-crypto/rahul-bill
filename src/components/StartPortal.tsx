@@ -1038,14 +1038,41 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   };
 
   const handleCopyCode = async (id: string, code: string) => {
+    const text = String(code || '').trim();
+    if (!text) return;
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(code);
+      if (
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.className = 'fixed -top-96 left-0 opacity-0 pointer-events-none';
+        document.body.appendChild(textarea);
+        textarea.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+      } catch {
+        copied = false;
+      }
+    }
+
+    if (copied) {
       setCopiedCodeId(id);
       setTimeout(() => {
         setCopiedCodeId((curr) => (curr === id ? null : curr));
       }, 2000);
-    } catch {
-      // ignore clipboard errors
     }
   };
 
@@ -3360,6 +3387,47 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         </button>
                       </div>
                     </div>
+
+                    {(() => {
+                      const detailProductNumber =
+                        selectedProduct.productNumber ||
+                        products.find(
+                          (p) =>
+                            p.id ===
+                            (selectedProduct.catalogProductId ||
+                              selectedProduct.id)
+                        )?.productNumber;
+                      if (!detailProductNumber) return null;
+                      const copyKey = `product-no-${selectedProduct.id}`;
+                      const isCopied = copiedCodeId === copyKey;
+                      return (
+                        <div className="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
+                          <span className="font-mono-num font-semibold text-[#6D28D9]">
+                            Product No: {detailProductNumber}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleCopyCode(copyKey, detailProductNumber)
+                            }
+                            className="inline-flex items-center gap-1 rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] px-2 py-0.5 text-[11px] font-semibold text-[#5B4B6B] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+                            title="Copy Product Number"
+                          >
+                            {isCopied ? (
+                              <>
+                                <Check className="w-3 h-3 text-[#15803D]" />
+                                <span className="text-[#15803D]">Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })()}
 
                     <div className="flex items-baseline gap-2.5 flex-wrap font-mono-num pt-1">
                       <span className="text-2xl font-bold text-[#1F122B]">
