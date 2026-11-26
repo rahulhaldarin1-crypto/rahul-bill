@@ -30,6 +30,7 @@ import {
   WorkspaceData,
 } from '../types/business';
 import { auth } from '../firebase';
+import { resolveApiUrl } from './appMode';
 import { firestoreService } from './firestoreService';
 
 export function formatApiError(err: unknown, fallback: string): string {
@@ -684,7 +685,7 @@ export const api = {
 
     const executeRequest = async (forceTokenRefresh: boolean) => {
       const idToken = await currentUser.getIdToken(forceTokenRefresh);
-      const res = await fetch('/api/offers/send', {
+      const res = await fetch(resolveApiUrl('/api/offers/send'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -120,7 +120,28 @@ async function verifyAuthorizedAdminToken(
   }
 }
 
+const ALLOWED_CORS_ORIGINS = new Set([
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'https://ggadminpanel-jade.vercel.app',
+  'https://glamour-galleria.vercel.app',
+]);
+
+function applyCorsHeaders(req: VercelRequest, res: VercelResponse): void {
+  const originHeader = req.headers.origin;
+  const origin = typeof originHeader === 'string' ? originHeader.trim() : '';
+  if (origin && ALLOWED_CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  applyCorsHeaders(req, res);
+
   if (req.method === 'OPTIONS') {
     res.setHeader('Allow', 'POST, OPTIONS');
     res.status(204).end();

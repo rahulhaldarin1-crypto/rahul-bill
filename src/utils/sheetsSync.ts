@@ -1,4 +1,5 @@
 import { Client, CustomerOrder, Invoice } from '../types/business';
+import { resolveApiUrl } from './appMode';
 
 export function isValidSheetsWebhookUrl(raw?: string | null): boolean {
   const trimmed = String(raw || '').trim();
@@ -17,7 +18,7 @@ export function postToGoogleSheetsWebhook(
 ): void {
   if (!isValidSheetsWebhookUrl(webhookUrl)) return;
   try {
-    void fetch('/api/sheets-sync', {
+    void fetch(resolveApiUrl('/api/sheets-sync'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

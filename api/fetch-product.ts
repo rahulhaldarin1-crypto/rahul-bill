@@ -658,14 +658,38 @@ function extractProductFromHtml(
   };
 }
 
+const ALLOWED_CORS_ORIGINS = new Set([
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'https://ggadminpanel-jade.vercel.app',
+  'https://glamour-galleria.vercel.app',
+]);
+
 export async function handleFetchProduct(
   req: ApiReqLike,
   res: ApiResLike
 ): Promise<unknown> {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
+  const originHeader = req.headers.origin;
+  const origin =
+    typeof originHeader === 'string'
+      ? originHeader.trim()
+      : Array.isArray(originHeader)
+      ? String(originHeader[0] || '').trim()
+      : '';
+  if (origin && ALLOWED_CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   // Mode 1: CORS-safe SSRF-guarded image proxy for the Crop/Edit canvas modal
   const method = String(req.method || 'GET').toUpperCase();
+  if (method === 'OPTIONS') {
+    return res.status(204).end();
+  }
   if (method === 'GET') {
     const rawProxy = req.query?.proxyImage;
     const proxyUrl = Array.isArray(rawProxy) ? rawProxy[0] : rawProxy;

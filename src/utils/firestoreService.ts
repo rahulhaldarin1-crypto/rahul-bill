@@ -52,6 +52,7 @@ import {
   hashCustomerPassword,
   verifyCustomerPassword,
 } from './adminAuth';
+import { resolveApiUrl } from './appMode';
 import {
   addDaysIsoDate,
   ADMIN_OTP_EMAIL,
@@ -5159,7 +5160,7 @@ export const firestoreService = {
       // ignore non-blocking cooldown read fallback; server also checks cooldown
     }
 
-    const response = await fetch('/api/otp/send', {
+    const response = await fetch(resolveApiUrl('/api/otp/send'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: targetEmail, purpose }),
@@ -5264,7 +5265,7 @@ export const firestoreService = {
       );
     }
 
-    const response = await fetch('/api/otp/verify', {
+    const response = await fetch(resolveApiUrl('/api/otp/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

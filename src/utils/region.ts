@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BangladeshConfig, BusinessSettings, Client } from '../types/business';
+import { resolveApiUrl } from './appMode';
 import { WHATSAPP_SUPPORT_PHONE } from './calculations';
 
 export const DEFAULT_INR_TO_BDT_RATE = 1.45;
@@ -56,7 +57,7 @@ export async function fetchGeoRegion(): Promise<GeoRegionResult> {
     cachedGeoPromise = (async () => {
       const clientFallback = detectClientBangladeshFallback();
       try {
-        const res = await fetch('/api/geo', {
+        const res = await fetch(resolveApiUrl('/api/geo'), {
           method: 'GET',
           cache: 'no-store',
           headers: { Accept: 'application/json' },

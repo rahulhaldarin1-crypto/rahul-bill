@@ -149,10 +149,36 @@ function sanitizeWebhookPayload<T>(value: T): T {
   return value;
 }
 
+const ALLOWED_CORS_ORIGINS = new Set([
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'https://ggadminpanel-jade.vercel.app',
+  'https://glamour-galleria.vercel.app',
+]);
+
 export async function handleSheetsSync(
   req: ApiReqLike,
   res: ApiResLike
 ): Promise<unknown> {
+  const originHeader = req.headers.origin;
+  const origin =
+    typeof originHeader === 'string'
+      ? originHeader.trim()
+      : Array.isArray(originHeader)
+      ? String(originHeader[0] || '').trim()
+      : '';
+  if (origin && ALLOWED_CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed.' });
   }

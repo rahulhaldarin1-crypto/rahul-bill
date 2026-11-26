@@ -11,6 +11,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { CloudinaryMediaRecord } from '../types/business';
+import { resolveApiUrl } from '../utils/appMode';
 import { resizeImageFileToDataUrl } from '../utils/calculations';
 import { uploadMediaToCloudinary } from '../utils/cloudinary';
 
@@ -160,7 +161,9 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
       }
 
       try {
-        const proxiedSrc = `/api/fetch-product?proxyImage=${encodeURIComponent(trimmed)}`;
+        const proxiedSrc = resolveApiUrl(
+          `/api/fetch-product?proxyImage=${encodeURIComponent(trimmed)}`
+        );
         const proxiedImg = await loadImg(proxiedSrc, false);
         if (!cancelled) {
           loadedImageRef.current = proxiedImg;
