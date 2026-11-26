@@ -809,6 +809,8 @@ export function mergeBusinessSettings(
       shopping: {
         ...DEFAULT_VIEW_PANEL_CONFIG.shopping,
         ...(rawVp?.shopping || {}),
+        enabled: rawVp?.shopping?.enabled !== false,
+        includeCatalogProducts: rawVp?.shopping?.includeCatalogProducts !== false,
         items: Array.isArray(rawVp?.shopping?.items)
           ? rawVp.shopping.items
           : DEFAULT_VIEW_PANEL_CONFIG.shopping.items,

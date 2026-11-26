@@ -1,11 +1,11 @@
 /* Glamour Galleria Safe Service Worker (PWABuilder / TWA compatible)
  * Bypass rules ensure Firebase Auth, Google OAuth redirects, live Firestore,
- * Cloudinary uploads/media, and /api/* routes are never cached or intercepted.
+ * Cloudinary uploads/media, /api/* routes, and hashed Vite /assets/* bundles
+ * are never served stale or corrupted with an HTML fallback.
  */
 
-const CACHE_NAME = 'glamour-galleria-shell-v1';
+const CACHE_NAME = 'glamour-galleria-shell-v2';
 const SHELL_URLS = [
-  '/',
   '/manifest.json',
   '/pwa-192x192.png',
   '/pwa-512x512.png',
@@ -52,10 +52,12 @@ function shouldBypassRequest(request) {
     return true;
   }
 
-  // Never intercept Firebase Auth handlers, Firebase reserved paths, or API routes
+  // Never intercept Firebase Auth handlers, Firebase reserved paths, API routes,
+  // or Vite content-hashed /assets/* bundles (always fetch CSS/JS directly from network/CDN)
   if (
     url.pathname.startsWith('/__/') ||
-    url.pathname.startsWith('/api/')
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/assets/')
   ) {
     return true;
   }
@@ -79,12 +81,18 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Navigation requests: Network-first with offline fallback to cached shell
+  // Navigation requests: Network-first so mobile browsers always receive the latest hashed CSS/JS refs
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
+      fetch(request, { cache: 'no-cache' })
         .then((response) => {
-          if (response && response.ok && response.type === 'basic') {
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (
+            response &&
+            response.ok &&
+            response.type === 'basic' &&
+            contentType.includes('text/html')
+          ) {
             const copy = response.clone();
             void caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
           }
@@ -98,13 +106,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Same-origin static assets (/assets/*, icons, manifest): Network-first for manifest, SWR for static assets
+  // Same-origin manifest & PWA icons
   const url = new URL(request.url);
   if (url.pathname === '/manifest.json') {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          if (response && response.ok) {
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (response && response.ok && !contentType.includes('text/html')) {
             const copy = response.clone();
             void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
           }
@@ -115,11 +124,8 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  const isStaticAsset =
-    url.pathname.startsWith('/assets/') ||
-    /\.(?:js|css|png|jpg|jpeg|webp|svg|ico|woff2?)$/i.test(url.pathname);
-
-  if (!isStaticAsset) {
+  const isIconAsset = /\.(?:png|jpg|jpeg|webp|svg|ico)$/i.test(url.pathname);
+  if (!isIconAsset) {
     return;
   }
 
@@ -127,7 +133,15 @@ self.addEventListener('fetch', (event) => {
     caches.match(request).then((cachedResponse) => {
       const networkFetch = fetch(request)
         .then((networkResponse) => {
-          if (networkResponse && networkResponse.ok && networkResponse.type === 'basic') {
+          const contentType = (
+            networkResponse.headers.get('content-type') || ''
+          ).toLowerCase();
+          if (
+            networkResponse &&
+            networkResponse.ok &&
+            networkResponse.type === 'basic' &&
+            !contentType.includes('text/html')
+          ) {
             const copy = networkResponse.clone();
             void caches
               .open(CACHE_NAME)
@@ -135,7 +149,7 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         })
-        .catch(() => cachedResponse);
+        .catch(() => cachedResponse || Response.error());
 
       return cachedResponse || networkFetch;
     })

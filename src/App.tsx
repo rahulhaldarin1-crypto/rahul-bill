@@ -95,6 +95,10 @@ export default function App() {
     useState<AdminPaymentSettings>(() => ({ ...DEFAULT_ADMIN_PAYMENT_SETTINGS }));
   const [customerProducts, setCustomerProducts] = useState<Product[]>([]);
   const [approvedSellerIds, setApprovedSellerIds] = useState<string[]>([]);
+  const [blockedSellerIds, setBlockedSellerIds] = useState<string[]>([]);
+  const [sellersLoaded, setSellersLoaded] = useState<boolean>(false);
+  const [storefrontLoadError, setStorefrontLoadError] = useState<boolean>(false);
+  const [storefrontRetryNonce, setStorefrontRetryNonce] = useState<number>(0);
   const [sellerPaymentProfiles, setSellerPaymentProfiles] = useState<
     Record<string, SellerPublicPaymentProfile>
   >({});
@@ -339,76 +343,124 @@ export default function App() {
           if (active) setLoading(false);
         });
     } else {
+      let realtimeProductsArrived = false;
+      let realtimeSettingsArrived = false;
+      setStorefrontLoadError(false);
+
+      unsubscribe = api.subscribeCustomerStorefront(
+        (nextSettings) => {
+          if (!active) return;
+          realtimeSettingsArrived = true;
+          setCustomerSettings(nextSettings);
+        },
+        (nextPaymentSettings) => {
+          if (active) setCustomerPaymentSettings(nextPaymentSettings);
+        },
+        (nextProducts) => {
+          if (!active) return;
+          realtimeProductsArrived = true;
+          setCustomerProducts(nextProducts);
+          setStorefrontLoadError(false);
+          setWorkspaceLoaded(true);
+          setLoading(false);
+        },
+        (nextApprovedIds) => {
+          if (active) setApprovedSellerIds(nextApprovedIds);
+        },
+        (nextProfiles) => {
+          if (active) setSellerPaymentProfiles(nextProfiles);
+        },
+        (nextSeatUsage) => {
+          if (active) setHighlightSeatUsage(nextSeatUsage);
+        },
+        (err) => {
+          if (!active) return;
+          const msg = err.message || '';
+          if (
+            msg.includes('permission-denied') ||
+            msg.includes('Missing or insufficient permissions')
+          ) {
+            showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
+          }
+          setStorefrontLoadError(true);
+          setLoading(false);
+        },
+        (nextFollows) => {
+          if (active) setCustomerSellerFollows(nextFollows);
+        },
+        (nextReviews) => {
+          if (active) setCustomerProductReviews(nextReviews);
+        },
+        (sellerState) => {
+          if (!active) return;
+          setApprovedSellerIds(sellerState.approvedSellerIds);
+          setBlockedSellerIds(sellerState.blockedSellerIds);
+          setSellerPaymentProfiles(sellerState.sellerPaymentProfiles);
+          setSellersLoaded(sellerState.loaded);
+        }
+      );
+
       api
         .fetchCustomerStorefront()
         .then((data) => {
           if (!active) return;
-          setCustomerSettings(data.settings);
-          setCustomerPaymentSettings(data.paymentSettings);
-          setCustomerProducts(data.products);
-          setApprovedSellerIds(data.approvedSellerIds);
-          setSellerPaymentProfiles(data.sellerPaymentProfiles);
+          if (!realtimeSettingsArrived) {
+            setCustomerSettings(data.settings);
+            setCustomerPaymentSettings(data.paymentSettings);
+          }
+          if (!realtimeProductsArrived && data.productsLoaded) {
+            setCustomerProducts(data.products);
+            setStorefrontLoadError(false);
+            setWorkspaceLoaded(true);
+          } else if (!realtimeProductsArrived && !data.productsLoaded) {
+            setStorefrontLoadError(true);
+          }
+          if (data.sellersLoaded) {
+            setApprovedSellerIds(data.approvedSellerIds);
+            setBlockedSellerIds(data.blockedSellerIds);
+            setSellerPaymentProfiles(data.sellerPaymentProfiles);
+            setSellersLoaded(true);
+          }
           setHighlightSeatUsage(data.highlightSeatUsage);
           setCustomerSellerFollows(data.sellerFollows);
           setCustomerProductReviews(data.productReviews);
-          setWorkspaceLoaded(true);
-          unsubscribe = api.subscribeCustomerStorefront(
-            (nextSettings) => {
-              if (active) setCustomerSettings(nextSettings);
-            },
-            (nextPaymentSettings) => {
-              if (active) setCustomerPaymentSettings(nextPaymentSettings);
-            },
-            (nextProducts) => {
-              if (active) setCustomerProducts(nextProducts);
-            },
-            (nextApprovedIds) => {
-              if (active) setApprovedSellerIds(nextApprovedIds);
-            },
-            (nextProfiles) => {
-              if (active) setSellerPaymentProfiles(nextProfiles);
-            },
-            (nextSeatUsage) => {
-              if (active) setHighlightSeatUsage(nextSeatUsage);
-            },
-            (err) => {
-              const msg = err.message || '';
-              if (
-                msg.includes('permission-denied') ||
-                msg.includes('Missing or insufficient permissions')
-              ) {
-                showToast('Firestore permission denied. Check Firestore Rules in Firebase Console.');
-              }
-            },
-            (nextFollows) => {
-              if (active) setCustomerSellerFollows(nextFollows);
-            },
-            (nextReviews) => {
-              if (active) setCustomerProductReviews(nextReviews);
-            }
-          );
         })
         .catch((err) => {
+          if (!active) return;
           const msg = err instanceof Error ? err.message : '';
           if (
             msg.includes('permission-denied') ||
             msg.includes('Missing or insufficient permissions')
           ) {
             showToast('Firestore permission denied. Update Firestore Rules in Firebase Console.');
-          } else {
-            showToast('Could not connect to Cloud Firestore. Please refresh.');
+          }
+          if (!realtimeProductsArrived) {
+            setStorefrontLoadError(true);
           }
         })
         .finally(() => {
           if (active) setLoading(false);
         });
+
+      const handleOnlineReconnect = () => {
+        if (active && !realtimeProductsArrived) {
+          setStorefrontRetryNonce((n) => n + 1);
+        }
+      };
+      window.addEventListener('online', handleOnlineReconnect);
+
+      return () => {
+        active = false;
+        window.removeEventListener('online', handleOnlineReconnect);
+        if (unsubscribe) unsubscribe();
+      };
     }
 
     return () => {
       active = false;
       if (unsubscribe) unsubscribe();
     };
-  }, [adminOnlyMode, adminAuthChecked, adminUnlocked, showToast]);
+  }, [adminOnlyMode, adminAuthChecked, adminUnlocked, showToast, storefrontRetryNonce]);
 
   // In Customer Mode, subscribe ONLY to the logged-in customer's own client record, orders, and bills
   useEffect(() => {
@@ -1097,6 +1149,14 @@ export default function App() {
         paymentSettings={customerPaymentSettings}
         products={sanitizedCustomerProducts}
         approvedSellerIds={approvedSellerIds}
+        blockedSellerIds={blockedSellerIds}
+        sellersLoaded={sellersLoaded}
+        isCatalogLoading={loading}
+        catalogLoadError={storefrontLoadError}
+        onRetryCatalog={() => {
+          setLoading(true);
+          setStorefrontRetryNonce((n) => n + 1);
+        }}
         sellerPaymentProfiles={sellerPaymentProfiles}
         highlightSeatUsage={highlightSeatUsage}
         sellerFollows={customerSellerFollows}

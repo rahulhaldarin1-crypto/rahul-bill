@@ -4,7 +4,10 @@ import './index.css';
 
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js', {scope: '/'}).catch(() => undefined);
+    navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .then((reg) => reg.update().catch(() => undefined))
+      .catch(() => undefined);
   });
 }
 

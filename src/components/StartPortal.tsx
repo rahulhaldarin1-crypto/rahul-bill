@@ -107,6 +107,11 @@ interface StartPortalProps {
   paymentSettings?: AdminPaymentSettings;
   products?: Product[];
   approvedSellerIds?: string[];
+  blockedSellerIds?: string[];
+  sellersLoaded?: boolean;
+  isCatalogLoading?: boolean;
+  catalogLoadError?: boolean;
+  onRetryCatalog?: () => void;
   sellerPaymentProfiles?: Record<string, SellerPublicPaymentProfile>;
   highlightSeatUsage?: Record<string, number>;
   sellerFollows?: SellerFollowRecord[];
@@ -210,6 +215,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   paymentSettings,
   products = [],
   approvedSellerIds = [],
+  blockedSellerIds = [],
+  sellersLoaded = false,
+  isCatalogLoading = false,
+  catalogLoadError = false,
+  onRetryCatalog,
   sellerPaymentProfiles = {},
   highlightSeatUsage = {},
   sellerFollows = [],
@@ -409,6 +419,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       shopping: {
         ...DEFAULT_VIEW_PANEL_CONFIG.shopping,
         ...(vp?.shopping || {}),
+        enabled: vp?.shopping?.enabled !== false,
+        includeCatalogProducts: vp?.shopping?.includeCatalogProducts !== false,
         items: Array.isArray(vp?.shopping?.items) ? vp.shopping.items : [],
       },
       updatedAt: vp?.updatedAt || '',
@@ -428,6 +440,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     [approvedSellerIds]
   );
 
+  const blockedSellerIdsSet = useMemo(
+    () => new Set(blockedSellerIds),
+    [blockedSellerIds]
+  );
+
   const placementRule = settings?.highlightConfig?.placementRule || 'top_featured';
 
   const shoppingItems: PublicShopProduct[] = useMemo(() => {
@@ -442,9 +459,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         return {
           id: item.id,
           productNumber: item.productNumber,
-          name: item.name,
+          name: String(item.name || 'Product'),
           category: item.category || PRODUCT_CATEGORIES[0],
-          price: item.price,
+          price: Number(item.price) || 0,
           originalPrice: item.originalPrice,
           highlighted: Boolean(item.highlighted),
           highlightPlacement: item.highlightPlacement,
@@ -467,11 +484,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     );
 
     const eligibleCatalogProducts = products.filter((prod) => {
-      if (!prod.sellerId) return true;
-      return (
-        prod.sellerApprovalStatus === 'approved' &&
-        approvedSellerIdsSet.has(prod.sellerId)
-      );
+      const sid = String(prod.sellerId || '').trim();
+      if (!sid || sid.toLowerCase() === 'admin') return true;
+      if (prod.sellerApprovalStatus !== 'approved') return false;
+      if (blockedSellerIdsSet.has(sid)) return false;
+      if (sellersLoaded && approvedSellerIdsSet.size > 0) {
+        return approvedSellerIdsSet.has(sid) || !blockedSellerIdsSet.has(sid);
+      }
+      return true;
     });
 
     const catalogItems: PublicShopProduct[] = viewPanel.shopping.includeCatalogProducts
@@ -486,9 +506,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             id: `cat-${prod.id}`,
             catalogProductId: prod.id,
             productNumber: prod.productNumber,
-            name: prod.name,
+            name: String(prod.name || 'Product'),
             category: prod.category || PRODUCT_CATEGORIES[0],
-            price: prod.sellingPrice,
+            price: Number(prod.sellingPrice) || 0,
             originalPrice: prod.originalPrice,
             highlighted: isProductHighlightActive(prod),
             highlightPlacement: prod.highlightPlacement,
@@ -525,6 +545,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     viewPanel.shopping.includeCatalogProducts,
     products,
     approvedSellerIdsSet,
+    blockedSellerIdsSet,
+    sellersLoaded,
     placementRule,
   ]);
 
@@ -579,19 +601,21 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     if (q) {
       const cleanQ = q.replace(/^#/, '');
       list = list.filter((item) => {
-        const rawId = item.id.toLowerCase();
-        const catalogId = (item.catalogProductId || '').toLowerCase();
+        const rawId = String(item.id || '').toLowerCase();
+        const catalogId = String(item.catalogProductId || '').toLowerCase();
         const strippedId = rawId.replace(/^cat-/, '');
+        const productNo = String(item.productNumber || '').toLowerCase();
         return (
           rawId.includes(cleanQ) ||
           catalogId.includes(cleanQ) ||
           strippedId.includes(cleanQ) ||
-          item.name.toLowerCase().includes(q) ||
-          item.category.toLowerCase().includes(q) ||
-          (item.size || '').toLowerCase().includes(q) ||
-          (item.color || '').toLowerCase().includes(q) ||
-          (item.description || '').toLowerCase().includes(q) ||
-          (item.sellerName || '').toLowerCase().includes(q)
+          productNo.includes(cleanQ) ||
+          String(item.name || '').toLowerCase().includes(q) ||
+          String(item.category || '').toLowerCase().includes(q) ||
+          String(item.size || '').toLowerCase().includes(q) ||
+          String(item.color || '').toLowerCase().includes(q) ||
+          String(item.description || '').toLowerCase().includes(q) ||
+          String(item.sellerName || '').toLowerCase().includes(q)
         );
       });
     }
@@ -1927,9 +1951,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   );
 
   const adBannerCard = (
-    <div className="rounded-2xl overflow-hidden border border-[#EFE2F5] bg-white/95 backdrop-blur-md shadow-sm relative">
+    <div className="w-full max-w-full rounded-2xl overflow-hidden border border-[#EFE2F5] bg-white/95 backdrop-blur-md shadow-sm relative">
       {adMediaRawSrc && !failedAdImage ? (
-        <div className="relative">
+        <div className="relative w-full max-w-full h-44 sm:h-64 md:h-72 overflow-hidden bg-[#FDF8FC]">
           {adMediaIsVideo ? (
             <video
               src={getOptimizedMediaUrl(adMediaRawSrc, 'video')}
@@ -1939,7 +1963,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               playsInline
               controls
               onError={() => setFailedAdImage(true)}
-              className="w-full max-h-[240px] sm:max-h-[320px] object-cover bg-black"
+              className="w-full h-full max-w-full object-cover bg-black block"
             />
           ) : (
             <img
@@ -1947,19 +1971,19 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               alt={viewPanel.advertisement.title || 'Featured Advertisement'}
               referrerPolicy="no-referrer"
               onError={() => setFailedAdImage(true)}
-              className="w-full max-h-[240px] sm:max-h-[320px] object-cover"
+              className="w-full h-full max-w-full object-cover block"
             />
           )}
           {(viewPanel.advertisement.title ||
             viewPanel.advertisement.subtitle) && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-5 py-4 text-white">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-4 sm:px-5 py-3 sm:py-4 text-white">
               {viewPanel.advertisement.title && (
-                <div className="font-display-serif text-lg sm:text-xl font-bold leading-snug">
+                <div className="font-display-serif text-base sm:text-xl font-bold leading-snug line-clamp-2">
                   {viewPanel.advertisement.title}
                 </div>
               )}
               {viewPanel.advertisement.subtitle && (
-                <p className="text-xs sm:text-sm text-white/90 mt-0.5">
+                <p className="text-xs sm:text-sm text-white/90 mt-0.5 line-clamp-2">
                   {viewPanel.advertisement.subtitle}
                 </p>
               )}
@@ -1990,14 +2014,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     : '';
 
   return (
-    <div className="relative min-h-screen text-[#1F122B] flex flex-col">
+    <div className="relative min-h-screen w-full max-w-full overflow-x-clip text-[#1F122B] flex flex-col">
       <AppBackground
         backgroundImageDataUrl={settings?.backgroundImageDataUrl}
       />
 
       {/* Top Portal Header: Brand Logo + Top-Right Favorites Heart & Profile Avatar */}
-      <header className="no-print sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#EFE2F5]">
-        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-3">
+      <header className="no-print sticky top-0 z-30 w-full max-w-full overflow-x-clip bg-white/95 backdrop-blur-md border-b border-[#EFE2F5]">
+        <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-3 min-w-0">
           <button
             type="button"
             onClick={() => {
@@ -2006,14 +2030,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setCategoriesSheetOpen(false);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer"
+            className="flex-1 flex items-center gap-2.5 min-w-0 overflow-hidden text-left cursor-pointer"
           >
             <BrandLogo
               logoDataUrl={settings?.logoDataUrl}
               businessName={settings?.businessName}
               size={34}
             />
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <div className="font-display-serif text-base sm:text-lg font-bold text-[#6D28D9] truncate">
                 {settings?.businessName || 'Glamour Galleria'}
               </div>
@@ -2108,7 +2132,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         </div>
       </header>
 
-      <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto px-3 sm:px-6 pt-4 pb-24 sm:pt-6 sm:pb-24 space-y-5">
+      <main className="relative z-10 flex-1 max-w-6xl w-full max-w-full overflow-x-clip mx-auto px-3 sm:px-6 pt-4 pb-24 sm:pt-6 sm:pb-24 space-y-5">
         {portalView === 'favorites' ? (
           <section className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2175,7 +2199,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   return (
                     <div
                       key={`fav-${item.id}`}
-                      className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
+                      className="group min-w-0 w-full max-w-full rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
                     >
                       <div
                         role="button"
@@ -2187,15 +2211,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             openProductDetail(item);
                           }
                         }}
-                        className="cursor-pointer"
+                        className="cursor-pointer min-w-0 w-full"
                       >
-                        <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                        <div className="aspect-square w-full max-w-full bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
                           {mainImg ? (
                             <img
                               src={getOptimizedMediaUrl(mainImg, 'image')}
                               alt={item.name}
                               referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              className="w-full h-full max-w-full object-cover block group-hover:scale-105 transition-transform duration-300"
                             />
                           ) : (
                             <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
@@ -2330,8 +2354,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             </div>
 
             {/* Public Seller Store Banner (Strictly Public Info Only — zero private KYC/phone/email/status) */}
-            <div className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md overflow-hidden shadow-sm">
-              <div className="h-36 sm:h-48 w-full bg-gradient-to-r from-[#FDF2F8] via-[#FAF5FF] to-[#F3E8FF] relative overflow-hidden">
+            <div className="w-full max-w-full rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md overflow-hidden shadow-sm">
+              <div className="h-36 sm:h-48 w-full max-w-full bg-gradient-to-r from-[#FDF2F8] via-[#FAF5FF] to-[#F3E8FF] relative overflow-hidden">
                 {viewingSellerProfile?.sellerCoverPhotoDataUrl ? (
                   <img
                     src={getOptimizedMediaUrl(
@@ -2340,7 +2364,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     )}
                     alt={`${viewingSellerProfile.sellerName} store cover`}
                     referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full max-w-full object-cover block"
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-[#C084FC]/50">
@@ -2351,7 +2375,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
               <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-center gap-4 min-w-0">
-                  <div className="w-16 h-16 sm:w-20 sm:h-20 -mt-10 sm:-mt-12 relative z-10 rounded-2xl border-4 border-white bg-[#FDF9FE] shadow-md overflow-hidden shrink-0 flex items-center justify-center">
+                  <div className="w-16 h-16 sm:w-20 sm:h-20 max-w-full -mt-10 sm:-mt-12 relative z-10 rounded-2xl border-4 border-white bg-[#FDF9FE] shadow-md overflow-hidden shrink-0 flex items-center justify-center">
                     {viewingSellerProfile?.sellerPhotoDataUrl ? (
                       <img
                         src={getOptimizedMediaUrl(
@@ -2360,7 +2384,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         )}
                         alt={viewingSellerProfile.sellerName}
                         referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
+                        className="w-full h-full max-w-full object-cover block"
                       />
                     ) : (
                       <Store className="w-8 h-8 text-[#7E22CE]" />
@@ -2445,7 +2469,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     return (
                       <div
                         key={item.id}
-                        className="group rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
+                        className="group min-w-0 w-full max-w-full rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left"
                       >
                         <div
                           role="button"
@@ -2457,15 +2481,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                               openProductDetail(item);
                             }
                           }}
-                          className="cursor-pointer"
+                          className="cursor-pointer min-w-0 w-full"
                         >
-                          <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                          <div className="aspect-square w-full max-w-full bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
                             {mainImg ? (
                               <img
                                 src={getOptimizedMediaUrl(mainImg, 'image')}
                                 alt={item.name}
                                 referrerPolicy="no-referrer"
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                className="w-full h-full max-w-full object-cover block group-hover:scale-105 transition-transform duration-300"
                               />
                             ) : (
                               <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
@@ -2581,9 +2605,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           <div className="space-y-3 sm:space-y-4">
             {/* TOP OF HOME: MEESHO-STYLE SEARCH BAR + SORT / CATEGORY / GENDER / FILTERS BAR */}
             {hasShoppingContent && (
-              <div className="no-print -mx-3 sm:mx-0 bg-white/95 backdrop-blur-md border-b sm:border border-[#EFE2F5] sm:rounded-2xl shadow-xs overflow-hidden">
+              <div className="no-print w-full max-w-full bg-white/95 backdrop-blur-md border border-[#EFE2F5] rounded-2xl shadow-xs overflow-hidden">
                 <div className="px-3 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5">
-                  <div className="relative">
+                  <div className="relative w-full">
                     <Search className="w-4 h-4 text-[#9333EA] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="search"
@@ -2612,7 +2636,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 </div>
 
                 {/* Sort · Category · Gender · Filters Control Strip */}
-                <div className="grid grid-cols-4 border-t border-[#EFE2F5] divide-x divide-[#EFE2F5] text-xs font-semibold text-[#1F122B]">
+                <div className="w-full max-w-full grid grid-cols-4 border-t border-[#EFE2F5] divide-x divide-[#EFE2F5] text-xs font-semibold text-[#1F122B]">
                   <button
                     type="button"
                     onClick={() => {
@@ -2621,7 +2645,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       setFiltersSheetOpen(false);
                       setSortSheetOpen(true);
                     }}
-                    className={`min-h-[42px] px-1.5 py-2 flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                    className={`min-w-0 min-h-[42px] px-1.5 py-2 flex items-center justify-center gap-1 transition-colors cursor-pointer ${
                       sortBy !== 'featured'
                         ? 'bg-[#FAF5FF] text-[#7E22CE]'
                         : 'hover:bg-[#FDF9FC]'
@@ -2893,8 +2917,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       className="space-y-3 scroll-mt-20"
                     >
                       {/* Horizontal Quick Category Strip + Active Filters Summary */}
-                      <div className="-mx-3 px-3 sm:mx-0 sm:px-0 space-y-2">
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:flex-wrap">
+                      <div className="w-full max-w-full space-y-2">
+                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full sm:flex-wrap">
                           <button
                             type="button"
                             onClick={() => handleSelectShoppingCategory('ALL')}
@@ -2904,7 +2928,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
                             }`}
                           >
-                            All ({shoppingItems.length})
+                            {isCatalogLoading && shoppingItems.length === 0
+                              ? 'All (...)'
+                              : `All (${shoppingItems.length})`}
                           </button>
                           {PRODUCT_CATEGORIES.map((cat) => (
                             <button
@@ -2943,7 +2969,40 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         )}
                       </div>
 
-                      {filteredShoppingItems.length === 0 ? (
+                      {isCatalogLoading && shoppingItems.length === 0 ? (
+                        <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
+                          {Array.from({ length: 6 }).map((_, idx) => (
+                            <div
+                              key={`skel-${idx}`}
+                              className="rounded-xl sm:rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden animate-pulse"
+                            >
+                              <div className="aspect-square w-full bg-[#F6EFFA]" />
+                              <div className="p-2.5 space-y-2">
+                                <div className="h-2.5 w-1/2 rounded bg-[#EFE2F5]" />
+                                <div className="h-3.5 w-full rounded bg-[#F6EFFA]" />
+                                <div className="h-4 w-1/3 rounded bg-[#EFE2F5]" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : shoppingItems.length === 0 ? (
+                        <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 py-12 px-4 text-center space-y-3">
+                          <div className="text-xs sm:text-sm font-semibold text-[#5B4B6B]">
+                            {catalogLoadError
+                              ? 'Could not load products right now. Please check your connection and try again.'
+                              : 'No products are currently available in the catalog.'}
+                          </div>
+                          {onRetryCatalog && (
+                            <button
+                              type="button"
+                              onClick={onRetryCatalog}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#FAF5FF] border border-[#D8B4FE] px-4 py-2 text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                            >
+                              Retry Loading Products
+                            </button>
+                          )}
+                        </div>
+                      ) : filteredShoppingItems.length === 0 ? (
                         <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 py-12 px-4 text-center space-y-2.5">
                           <div className="text-xs sm:text-sm font-semibold text-[#5B4B6B]">
                             No products match your current search or filter selection.
@@ -2957,7 +3016,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           </button>
                         </div>
                       ) : (
-                        <div className="-mx-3 px-1.5 sm:mx-0 sm:px-0 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 sm:gap-3">
+                        <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
                           {filteredShoppingItems.map((item) => {
                             const discountPercent =
                               item.originalPrice &&
@@ -2975,7 +3034,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             return (
                               <div
                                 key={item.id}
-                                className={`group rounded-xl sm:rounded-2xl border bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left ${
+                                className={`group min-w-0 w-full max-w-full rounded-xl sm:rounded-2xl border bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] hover:shadow-md transition-all text-left ${
                                   item.highlighted
                                     ? 'border-[#DB2777]/60 ring-1 ring-[#DB2777]/20'
                                     : 'border-[#EFE2F5]'
@@ -2991,15 +3050,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                       openProductDetail(item);
                                     }
                                   }}
-                                  className="cursor-pointer"
+                                  className="cursor-pointer min-w-0 w-full"
                                 >
-                                  <div className="aspect-square bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                                  <div className="aspect-square w-full max-w-full bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
                                     {mainImg ? (
                                       <img
                                         src={getOptimizedMediaUrl(mainImg, 'image')}
                                         alt={item.name}
                                         referrerPolicy="no-referrer"
-                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                        className="w-full h-full max-w-full object-cover block group-hover:scale-105 transition-transform duration-300"
                                       />
                                     ) : (
                                       <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
@@ -3248,8 +3307,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   const currentSlide = mediaSlides[safeSlideIdx];
 
                   return (
-                    <div className="space-y-2.5">
-                      <div className="aspect-square rounded-2xl border border-[#EFE2F5] bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden flex items-center justify-center">
+                    <div className="space-y-2.5 min-w-0 w-full max-w-full">
+                      <div className="aspect-square w-full max-w-full rounded-2xl border border-[#EFE2F5] bg-gradient-to-br from-[#FDF2F8] to-[#F5F3FF] relative overflow-hidden flex items-center justify-center">
                         {currentSlide ? (
                           <>
                             {currentSlide.type === 'video' ? (
@@ -3258,14 +3317,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 src={getOptimizedMediaUrl(currentSlide.url, 'video')}
                                 controls
                                 playsInline
-                                className="w-full h-full object-contain bg-black"
+                                className="w-full h-full max-w-full object-contain bg-black block"
                               />
                             ) : (
                               <img
                                 src={getOptimizedMediaUrl(currentSlide.url, 'image')}
                                 alt={`${selectedProduct.name} photo ${safeSlideIdx + 1}`}
                                 referrerPolicy="no-referrer"
-                                className="w-full h-full object-cover"
+                                className="w-full h-full max-w-full object-cover block"
                               />
                             )}
                             {mediaSlides.length > 1 && (
@@ -3306,13 +3365,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       </div>
 
                       {mediaSlides.length > 1 && (
-                        <div className="grid grid-cols-5 gap-2">
+                        <div className="grid grid-cols-5 gap-2 w-full max-w-full">
                           {mediaSlides.map((slide, idx) => (
                             <button
                               key={`${slide.type}-${idx}-${slide.url.slice(0, 20)}`}
                               type="button"
                               onClick={() => setActiveImageIndex(idx)}
-                              className={`aspect-square rounded-xl border overflow-hidden cursor-pointer transition-all flex items-center justify-center ${
+                              className={`aspect-square w-full max-w-full rounded-xl border overflow-hidden cursor-pointer transition-all flex items-center justify-center ${
                                 safeSlideIdx === idx
                                   ? 'border-[#DB2777] ring-2 ring-[#DB2777]/30'
                                   : 'border-[#E6D9EE] opacity-75 hover:opacity-100'
@@ -3328,7 +3387,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                   src={getOptimizedMediaUrl(slide.url, 'image')}
                                   alt={`Thumbnail ${idx + 1}`}
                                   referrerPolicy="no-referrer"
-                                  className="w-full h-full object-cover"
+                                  className="w-full h-full max-w-full object-cover block"
                                 />
                               )}
                             </button>
@@ -3494,7 +3553,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             onClick={(e) => openSellerProfile(sid, e)}
                             className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
                           >
-                            <div className="w-10 h-10 rounded-xl border border-[#D8B4FE] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
+                            <div className="w-10 h-10 max-w-full rounded-xl border border-[#D8B4FE] bg-[#FDF9FE] overflow-hidden shrink-0 flex items-center justify-center">
                               {sellerProf?.sellerPhotoDataUrl ? (
                                 <img
                                   src={getOptimizedMediaUrl(
@@ -3503,7 +3562,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                   )}
                                   alt={sellerDisplayName}
                                   referrerPolicy="no-referrer"
-                                  className="w-full h-full object-cover"
+                                  className="w-full h-full max-w-full object-cover block"
                                 />
                               ) : (
                                 <Store className="w-4 h-4 text-[#7E22CE]" />
@@ -3845,20 +3904,20 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 {rev.comment}
                               </p>
                               {rev.mediaUrl && (
-                                <div className="pt-1">
+                                <div className="pt-1 overflow-hidden max-w-full">
                                   {isVideoUrl(rev.mediaUrl, rev.mediaType) ? (
                                     <video
                                       src={getOptimizedMediaUrl(rev.mediaUrl, 'video')}
                                       controls
                                       playsInline
-                                      className="max-h-44 rounded-xl border border-[#EFE2F5] bg-black"
+                                      className="w-full max-w-xs max-h-44 rounded-xl border border-[#EFE2F5] bg-black block"
                                     />
                                   ) : (
                                     <img
                                       src={getOptimizedMediaUrl(rev.mediaUrl, 'image')}
                                       alt={`Review media by ${rev.customerName}`}
                                       referrerPolicy="no-referrer"
-                                      className="max-h-40 rounded-xl border border-[#EFE2F5] object-cover"
+                                      className="w-full max-w-xs max-h-40 rounded-xl border border-[#EFE2F5] object-cover block"
                                     />
                                   )}
                                 </div>
@@ -3883,7 +3942,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-12 h-12 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                      <div className="w-12 h-12 max-w-full rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
                         {selectedProduct.imageDataUrl ? (
                           <img
                             src={getOptimizedMediaUrl(
@@ -3892,7 +3951,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             )}
                             alt={selectedProduct.name}
                             referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
+                            className="w-full h-full max-w-full object-cover block"
                           />
                         ) : (
                           <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
@@ -4260,7 +4319,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           )}
 
                           {selectedEffectivePayment.qrDataUrl && (
-                            <div className="rounded-xl border border-[#EFE2F5] bg-white p-2 text-center">
+                            <div className="rounded-xl border border-[#EFE2F5] bg-white p-2 text-center overflow-hidden max-w-full">
                               <div className="inline-flex items-center gap-1 text-[10px] font-bold text-[#6D28D9] mb-1">
                                 <QrCode className="w-3 h-3" />
                                 <span>Scan QR</span>
@@ -4272,7 +4331,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 )}
                                 alt="Payment QR Code"
                                 referrerPolicy="no-referrer"
-                                className="w-28 h-28 object-contain rounded-lg mx-auto"
+                                className="w-28 h-28 max-w-full object-contain rounded-lg mx-auto block"
                               />
                             </div>
                           )}
@@ -4309,7 +4368,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 src={getOptimizedMediaUrl(upiScreenshotDataUrl, 'image')}
                                 alt="Uploaded UPI payment screenshot"
                                 referrerPolicy="no-referrer"
-                                className="w-10 h-10 rounded-lg object-cover border border-[#D8B4FE]"
+                                className="w-10 h-10 max-w-full rounded-lg object-cover border border-[#D8B4FE] shrink-0 block"
                               />
                               <span className="text-xs font-semibold text-[#15803D] inline-flex items-center gap-1">
                                 <ImageIcon className="w-3.5 h-3.5" />
@@ -5033,9 +5092,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       {/* Fixed 5-Tab Bottom Navigation Bar (Always Sticky While Scrolling) */}
       <nav
         aria-label="Primary Customer Navigation"
-        className="no-print fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.06)] pb-[env(safe-area-inset-bottom)]"
+        className="no-print fixed bottom-0 left-0 right-0 z-40 w-full max-w-full overflow-x-hidden bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.06)] pb-[env(safe-area-inset-bottom)]"
       >
-        <div className="max-w-6xl mx-auto grid grid-cols-5 items-center h-16">
+        <div className="w-full max-w-6xl mx-auto grid grid-cols-5 items-center h-16">
           {/* 1. Menu */}
           <button
             type="button"
@@ -5043,7 +5102,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setCategoriesSheetOpen(false);
               setMenuSheetOpen((prev) => !prev);
             }}
-            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+            className={`min-w-0 h-full px-1 overflow-hidden flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
               menuSheetOpen ||
               portalView === 'seller-hub' ||
               portalView === 'help-center' ||
@@ -5052,8 +5111,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 : 'text-[#5B4B6B] hover:text-[#1F122B]'
             }`}
           >
-            <Menu className="w-5 h-5" />
-            <span className="whitespace-nowrap">Menu</span>
+            <Menu className="w-5 h-5 shrink-0" />
+            <span className="whitespace-nowrap truncate max-w-full">Menu</span>
           </button>
 
           {/* 2. Home */}
@@ -5065,14 +5124,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setPortalView('shop');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+            className={`min-w-0 h-full px-1 overflow-hidden flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
               portalView === 'shop' && !menuSheetOpen && !categoriesSheetOpen
                 ? 'text-[#DB2777]'
                 : 'text-[#5B4B6B] hover:text-[#1F122B]'
             }`}
           >
-            <Home className="w-5 h-5" />
-            <span className="whitespace-nowrap">Home</span>
+            <Home className="w-5 h-5 shrink-0" />
+            <span className="whitespace-nowrap truncate max-w-full">Home</span>
           </button>
 
           {/* 3. Categories */}
@@ -5083,14 +5142,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setCategoriesSheetOpen((prev) => !prev);
               scrollToCategoriesSection();
             }}
-            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+            className={`min-w-0 h-full px-1 overflow-hidden flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
               categoriesSheetOpen
                 ? 'text-[#DB2777]'
                 : 'text-[#5B4B6B] hover:text-[#1F122B]'
             }`}
           >
-            <LayoutGrid className="w-5 h-5" />
-            <span className="whitespace-nowrap">Categories</span>
+            <LayoutGrid className="w-5 h-5 shrink-0" />
+            <span className="whitespace-nowrap truncate max-w-full">Categories</span>
           </button>
 
           {/* 4. Cart */}
@@ -5101,21 +5160,21 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setCategoriesSheetOpen(false);
               handleOpenAccount('cart');
             }}
-            className={`relative h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+            className={`min-w-0 relative h-full px-1 overflow-hidden flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
               portalView === 'account' && accountTab === 'cart'
                 ? 'text-[#DB2777]'
                 : 'text-[#5B4B6B] hover:text-[#1F122B]'
             }`}
           >
             <div className="relative">
-              <ShoppingCart className="w-5 h-5" />
+              <ShoppingCart className="w-5 h-5 shrink-0" />
               {cartItemCount > 0 && (
                 <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[#DB2777] text-white text-[9px] font-mono-num font-bold flex items-center justify-center">
                   {cartItemCount > 99 ? '99+' : cartItemCount}
                 </span>
               )}
             </div>
-            <span className="whitespace-nowrap">Cart</span>
+            <span className="whitespace-nowrap truncate max-w-full">Cart</span>
           </button>
 
           {/* 5. My Orders */}
@@ -5126,15 +5185,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               setCategoriesSheetOpen(false);
               handleOpenAccount('orders');
             }}
-            className={`h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+            className={`min-w-0 h-full px-1 overflow-hidden flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors cursor-pointer ${
               portalView === 'account' &&
               (accountTab === 'orders' || accountTab === 'bills')
                 ? 'text-[#7E22CE]'
                 : 'text-[#5B4B6B] hover:text-[#1F122B]'
             }`}
           >
-            <Package className="w-5 h-5" />
-            <span className="whitespace-nowrap">My Orders</span>
+            <Package className="w-5 h-5 shrink-0" />
+            <span className="whitespace-nowrap truncate max-w-full">My Orders</span>
           </button>
         </div>
       </nav>

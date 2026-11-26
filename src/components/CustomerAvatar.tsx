@@ -34,16 +34,18 @@ export const CustomerAvatar: React.FC<CustomerAvatarProps> = ({
 
   return (
     <div
-      style={{ width: size, height: size }}
-      className={`rounded-full overflow-hidden border border-[#E6D9EE] bg-gradient-to-br from-[#FCE7F3] to-[#EDE9FE] flex items-center justify-center shrink-0 text-[#6D28D9] font-bold select-none ${className}`}
+      style={{ width: size, height: size, minWidth: size, minHeight: size }}
+      className={`rounded-full overflow-hidden max-w-full border border-[#E6D9EE] bg-gradient-to-br from-[#FCE7F3] to-[#EDE9FE] flex items-center justify-center shrink-0 text-[#6D28D9] font-bold select-none ${className}`}
     >
       {showImg ? (
         <img
           src={resolvedUrl}
           alt={name || 'Customer avatar'}
+          width={size}
+          height={size}
           referrerPolicy="no-referrer"
           onError={() => setImgFailed(true)}
-          className="w-full h-full object-cover"
+          className="w-full h-full max-w-full object-cover block"
         />
       ) : initials ? (
         <span style={{ fontSize: Math.max(11, Math.round(size * 0.36)) }}>

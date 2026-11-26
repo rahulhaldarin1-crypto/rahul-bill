@@ -20,11 +20,29 @@
       "destination": "/api/product-page"
     },
     {
-      "source": "/((?!api/|manifest\\.json|sw\\.js|pwa-.*\\.png|apple-touch-icon\\.png|icon\\.svg|index\\.html).*)",
+      "source": "/((?!api/|manifest\\.json|sw\\.js|pwa-.*\\.png|apple-touch-icon\\.png|icon\\.svg|index\\.html|assets/|.*\\.(?:css|js|mjs|map|png|jpg|jpeg|webp|gif|svg|ico|woff|woff2|json|txt)$).*)",
       "destination": "/index.html"
     }
   ],
   "headers": [
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
     {
       "source": "/sw.js",
       "headers": [

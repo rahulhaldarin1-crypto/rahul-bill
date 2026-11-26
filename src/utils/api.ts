@@ -477,7 +477,13 @@ export const api = {
     onHighlightSeatUsage: (usage: Record<string, number>) => void,
     onError: (err: Error) => void,
     onSellerFollows?: (follows: SellerFollowRecord[]) => void,
-    onProductReviews?: (reviews: ProductReview[]) => void
+    onProductReviews?: (reviews: ProductReview[]) => void,
+    onSellerState?: (state: {
+      approvedSellerIds: string[];
+      blockedSellerIds: string[];
+      sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile>;
+      loaded: boolean;
+    }) => void
   ) {
     return firestoreService.subscribeCustomerStorefront(
       onSettings,
@@ -488,7 +494,8 @@ export const api = {
       onHighlightSeatUsage,
       onError,
       onSellerFollows,
-      onProductReviews
+      onProductReviews,
+      onSellerState
     );
   },
 

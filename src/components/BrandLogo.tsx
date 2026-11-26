@@ -37,14 +37,20 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   }
 
   return (
-    <img
-      src={src}
-      alt={businessName}
-      crossOrigin={getMediaCrossOrigin(src)}
-      referrerPolicy="no-referrer"
-      onError={() => setImgError(true)}
-      style={{ width: size, height: size }}
-      className={`object-contain rounded-xl shrink-0 ${className}`}
-    />
+    <div
+      style={{ width: size, height: size, minWidth: size, minHeight: size }}
+      className={`rounded-xl overflow-hidden shrink-0 max-w-full flex items-center justify-center ${className}`}
+    >
+      <img
+        src={src}
+        alt={businessName}
+        width={size}
+        height={size}
+        crossOrigin={getMediaCrossOrigin(src)}
+        referrerPolicy="no-referrer"
+        onError={() => setImgError(true)}
+        className="w-full h-full max-w-full object-contain block"
+      />
+    </div>
   );
 };

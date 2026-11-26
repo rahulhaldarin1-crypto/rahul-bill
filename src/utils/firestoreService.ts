@@ -234,18 +234,83 @@ function isPermissionDeniedError(err: unknown): boolean {
   );
 }
 
-function sortDescByCreated<T extends { createdAt?: string }>(arr: T[]): T[] {
+function coerceIsoString(value: unknown): string {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '' : value.toISOString();
+  }
+  if (typeof value === 'object') {
+    const maybeTs = value as { toDate?: () => Date; seconds?: number };
+    if (typeof maybeTs.toDate === 'function') {
+      try {
+        const d = maybeTs.toDate();
+        return Number.isNaN(d.getTime()) ? '' : d.toISOString();
+      } catch {
+        return '';
+      }
+    }
+    if (typeof maybeTs.seconds === 'number' && Number.isFinite(maybeTs.seconds)) {
+      return new Date(maybeTs.seconds * 1000).toISOString();
+    }
+  }
+  return String(value);
+}
+
+function normalizeStorefrontProduct(
+  rawInput: Partial<Product> | Record<string, unknown>,
+  docId: string
+): Product {
+  const raw = (rawInput || {}) as Record<string, unknown>;
+  const rawUrls = Array.isArray(raw.imageDataUrls)
+    ? raw.imageDataUrls
+        .map((u) => String(u || '').trim())
+        .filter(Boolean)
+    : [];
+  const primaryImg = String(raw.imageDataUrl || '').trim();
+  const imageDataUrls =
+    rawUrls.length > 0 ? rawUrls : primaryImg ? [primaryImg] : [];
+
+  const sellingPrice = Math.max(0, safeNum(raw.sellingPrice ?? raw.price, 0));
+  const purchasePrice = Math.max(0, safeNum(raw.purchasePrice, 0));
+  const rawOriginal =
+    raw.originalPrice !== undefined && raw.originalPrice !== null
+      ? Math.max(0, safeNum(raw.originalPrice, 0))
+      : undefined;
+  const stockQty = Math.max(0, safeNum(raw.stockQty, 0));
+  const sellerId = String(raw.sellerId || '').trim() || undefined;
+  const createdAt = coerceIsoString(raw.createdAt);
+  const updatedAt = coerceIsoString(raw.updatedAt) || createdAt;
+
+  return {
+    ...(raw as unknown as Product),
+    id: String(raw.id || docId).trim() || docId,
+    name: String(raw.name || 'Glamour Galleria Product').trim() || 'Glamour Galleria Product',
+    category: String(raw.category || 'Women\'s Clothing').trim() || 'Women\'s Clothing',
+    purchasePrice,
+    sellingPrice,
+    originalPrice: rawOriginal,
+    stockQty,
+    imageDataUrl: imageDataUrls[0] || primaryImg,
+    imageDataUrls,
+    sellerId,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function sortDescByCreated<T extends { createdAt?: unknown }>(arr: T[]): T[] {
   return [...arr].sort((a, b) =>
-    String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+    coerceIsoString(b.createdAt).localeCompare(coerceIsoString(a.createdAt))
   );
 }
 
-function sortDescByUpdated<T extends { updatedAt?: string; createdAt?: string }>(
+function sortDescByUpdated<T extends { updatedAt?: unknown; createdAt?: unknown }>(
   arr: T[]
 ): T[] {
   return [...arr].sort((a, b) =>
-    String(b.updatedAt || b.createdAt || '').localeCompare(
-      String(a.updatedAt || a.createdAt || '')
+    (coerceIsoString(b.updatedAt) || coerceIsoString(b.createdAt)).localeCompare(
+      coerceIsoString(a.updatedAt) || coerceIsoString(a.createdAt)
     )
   );
 }
@@ -4253,7 +4318,10 @@ export const firestoreService = {
     settings: BusinessSettings;
     paymentSettings: AdminPaymentSettings;
     products: Product[];
+    productsLoaded: boolean;
     approvedSellerIds: string[];
+    blockedSellerIds: string[];
+    sellersLoaded: boolean;
     sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile>;
     highlightSeatUsage: Record<string, number>;
     sellerFollows: SellerFollowRecord[];
@@ -4261,78 +4329,92 @@ export const firestoreService = {
   }> {
     let settings: BusinessSettings = mergeBusinessSettings();
     let paymentSettings: AdminPaymentSettings = { ...DEFAULT_ADMIN_PAYMENT_SETTINGS };
-    try {
-      const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
-      if (settingsSnap.exists()) {
-        settings = mergeBusinessSettings(
-          settingsSnap.data() as Partial<BusinessSettings>
-        );
-      }
+
+    const fetchProductsWithRetry = async () => {
       try {
-        const paymentSnap = await getDoc(
-          doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC)
-        );
-        paymentSettings = mergeAdminPaymentSettings(
-          paymentSnap.exists()
-            ? (paymentSnap.data() as Partial<AdminPaymentSettings>)
-            : undefined,
-          settings
-        );
-      } catch (payErr) {
-        if (!isPermissionDeniedError(payErr)) {
-          throw payErr;
-        }
-        paymentSettings = mergeAdminPaymentSettings(undefined, settings);
+        return await getDocs(collection(db, PRODUCTS_COL));
+      } catch {
+        await new Promise((r) => setTimeout(r, 450));
+        return getDocs(collection(db, PRODUCTS_COL));
       }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, `${SETTINGS_COL}/${SETTINGS_DOC}`);
+    };
+
+    const [
+      settingsRes,
+      paymentRes,
+      productsRes,
+      sellersRes,
+      seatsRes,
+      followsRes,
+      reviewsRes,
+    ] = await Promise.allSettled([
+      getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC)),
+      getDoc(doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC)),
+      fetchProductsWithRetry(),
+      getDocs(collection(db, SELLER_APPLICATIONS_COL)),
+      getDocs(
+        query(
+          collection(db, HIGHLIGHT_REQUESTS_COL),
+          where('requestType', '==', 'offer_seat')
+        )
+      ),
+      getDocs(collection(db, SELLER_FOLLOWS_COL)),
+      getDocs(collection(db, PRODUCT_REVIEWS_COL)),
+    ]);
+
+    if (settingsRes.status === 'fulfilled' && settingsRes.value.exists()) {
+      settings = mergeBusinessSettings(
+        settingsRes.value.data() as Partial<BusinessSettings>
+      );
     }
 
-    let products: Product[] = [];
-    let approvedSellerIds: string[] = [];
-    const sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile> = {};
-    const highlightSeatUsage: Record<string, number> = {};
-    let sellerFollows: SellerFollowRecord[] = [];
-    let productReviews: ProductReview[] = [];
-    try {
-      const [prodSnap, sellerSnap, seatsSnap, followsSnap, reviewsSnap] =
-        await Promise.all([
-          getDocs(collection(db, PRODUCTS_COL)),
-          getDocs(
-            query(
-              collection(db, SELLER_APPLICATIONS_COL),
-              where('status', '==', 'approved')
-            )
-          ),
-          getDocs(
-            query(
-              collection(db, HIGHLIGHT_REQUESTS_COL),
-              where('requestType', '==', 'offer_seat')
-            )
-          ),
-          getDocs(collection(db, SELLER_FOLLOWS_COL)).catch(() => null),
-          getDocs(collection(db, PRODUCT_REVIEWS_COL)).catch(() => null),
-        ]);
-      products = sortDescByCreated(prodSnap.docs.map((d) => d.data() as Product));
-      if (followsSnap) {
-        sellerFollows = sortDescByCreated(
-          followsSnap.docs.map((d) => d.data() as SellerFollowRecord)
-        );
-      }
-      if (reviewsSnap) {
-        productReviews = sortDescByCreated(
-          reviewsSnap.docs.map((d) => d.data() as ProductReview)
-        );
-      }
-      const approvedSellers = sellerSnap.docs
-        .map((d) => d.data() as SellerApplication)
-        .filter((a) => a.status === 'approved' && a.accountActivated !== false);
-      approvedSellerIds = approvedSellers.map((a) => a.id);
-      for (const app of approvedSellers) {
-        sellerPaymentProfiles[app.id] = extractPublicSellerPaymentProfile(app);
-      }
+    if (paymentRes.status === 'fulfilled' && paymentRes.value.exists()) {
+      paymentSettings = mergeAdminPaymentSettings(
+        paymentRes.value.data() as Partial<AdminPaymentSettings>,
+        settings
+      );
+    } else {
+      paymentSettings = mergeAdminPaymentSettings(undefined, settings);
+    }
 
-      for (const d of seatsSnap.docs) {
+    const productsLoaded = productsRes.status === 'fulfilled';
+    const products: Product[] = productsLoaded
+      ? sortDescByCreated(
+          productsRes.value.docs.map((d) =>
+            normalizeStorefrontProduct(d.data() as Record<string, unknown>, d.id)
+          )
+        )
+      : [];
+
+    const approvedSellerIds: string[] = [];
+    const blockedSellerIds: string[] = [];
+    const sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile> = {};
+    const sellersLoaded = sellersRes.status === 'fulfilled';
+
+    if (sellersLoaded) {
+      for (const d of sellersRes.value.docs) {
+        const app = d.data() as SellerApplication;
+        const sid = String(app.id || d.id).trim();
+        if (!sid) continue;
+        if (app.status === 'approved' && app.accountActivated !== false) {
+          approvedSellerIds.push(sid);
+          sellerPaymentProfiles[sid] = extractPublicSellerPaymentProfile({
+            ...app,
+            id: sid,
+          });
+        } else if (
+          app.status === 'rejected' ||
+          app.status === 'suspended' ||
+          app.accountActivated === false
+        ) {
+          blockedSellerIds.push(sid);
+        }
+      }
+    }
+
+    const highlightSeatUsage: Record<string, number> = {};
+    if (seatsRes.status === 'fulfilled') {
+      for (const d of seatsRes.value.docs) {
         const req = d.data() as HighlightRequest;
         if (
           req.planOrSeatId &&
@@ -4347,15 +4429,30 @@ export const firestoreService = {
             (highlightSeatUsage[req.planOrSeatId] || 0) + 1;
         }
       }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, PRODUCTS_COL);
     }
+
+    const sellerFollows: SellerFollowRecord[] =
+      followsRes.status === 'fulfilled'
+        ? sortDescByCreated(
+            followsRes.value.docs.map((d) => d.data() as SellerFollowRecord)
+          )
+        : [];
+
+    const productReviews: ProductReview[] =
+      reviewsRes.status === 'fulfilled'
+        ? sortDescByCreated(
+            reviewsRes.value.docs.map((d) => d.data() as ProductReview)
+          )
+        : [];
 
     return {
       settings: sanitizePublicSettings(settings),
       paymentSettings,
       products,
+      productsLoaded,
       approvedSellerIds,
+      blockedSellerIds,
+      sellersLoaded,
       sellerPaymentProfiles,
       highlightSeatUsage,
       sellerFollows,
@@ -4374,7 +4471,13 @@ export const firestoreService = {
     onHighlightSeatUsage: (usage: Record<string, number>) => void,
     onError: (err: Error) => void,
     onSellerFollows?: (follows: SellerFollowRecord[]) => void,
-    onProductReviews?: (reviews: ProductReview[]) => void
+    onProductReviews?: (reviews: ProductReview[]) => void,
+    onSellerState?: (state: {
+      approvedSellerIds: string[];
+      blockedSellerIds: string[];
+      sellerPaymentProfiles: Record<string, SellerPublicPaymentProfile>;
+      loaded: boolean;
+    }) => void
   ): () => void {
     const reportError = (op: OperationType, path: string, err: unknown) => {
       try {
@@ -4421,28 +4524,57 @@ export const firestoreService = {
     const unsubProducts = onSnapshot(
       collection(db, PRODUCTS_COL),
       (snap) => {
-        onProducts(sortDescByCreated(snap.docs.map((d) => d.data() as Product)));
+        onProducts(
+          sortDescByCreated(
+            snap.docs.map((d) =>
+              normalizeStorefrontProduct(d.data() as Record<string, unknown>, d.id)
+            )
+          )
+        );
       },
       (err) => reportError(OperationType.LIST, PRODUCTS_COL, err)
     );
 
     const unsubSellers = onSnapshot(
-      query(
-        collection(db, SELLER_APPLICATIONS_COL),
-        where('status', '==', 'approved')
-      ),
+      collection(db, SELLER_APPLICATIONS_COL),
       (snap) => {
-        const approvedSellers = snap.docs
-          .map((d) => d.data() as SellerApplication)
-          .filter((a) => a.status === 'approved' && a.accountActivated !== false);
-        onApprovedSellerIds(approvedSellers.map((a) => a.id));
+        const approvedIds: string[] = [];
+        const blockedIds: string[] = [];
         const profiles: Record<string, SellerPublicPaymentProfile> = {};
-        for (const app of approvedSellers) {
-          profiles[app.id] = extractPublicSellerPaymentProfile(app);
+
+        for (const d of snap.docs) {
+          const app = d.data() as SellerApplication;
+          const sid = String(app.id || d.id).trim();
+          if (!sid) continue;
+          if (app.status === 'approved' && app.accountActivated !== false) {
+            approvedIds.push(sid);
+            profiles[sid] = extractPublicSellerPaymentProfile({
+              ...app,
+              id: sid,
+            });
+          } else if (
+            app.status === 'rejected' ||
+            app.status === 'suspended' ||
+            app.accountActivated === false
+          ) {
+            blockedIds.push(sid);
+          }
         }
+
+        onApprovedSellerIds(approvedIds);
         onSellerPaymentProfiles(profiles);
+        onSellerState?.({
+          approvedSellerIds: approvedIds,
+          blockedSellerIds: blockedIds,
+          sellerPaymentProfiles: profiles,
+          loaded: true,
+        });
       },
-      (err) => reportError(OperationType.LIST, SELLER_APPLICATIONS_COL, err)
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, SELLER_APPLICATIONS_COL, err);
+        }
+      }
     );
 
     const unsubSeatUsage = onSnapshot(
@@ -4468,7 +4600,11 @@ export const firestoreService = {
         }
         onHighlightSeatUsage(usage);
       },
-      (err) => reportError(OperationType.LIST, HIGHLIGHT_REQUESTS_COL, err)
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, HIGHLIGHT_REQUESTS_COL, err);
+        }
+      }
     );
 
     const unsubFollows = onSellerFollows
