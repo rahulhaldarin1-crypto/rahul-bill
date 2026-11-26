@@ -647,6 +647,7 @@ async function startServer(): Promise<void> {
   const AUTHORIZED_ADMIN_EMAILS = new Set([
     'rahulhaldar.in1@gmail.com',
     'rahulhaldar.in@gmail.com',
+    'mohontopuja27@gmail.com',
   ]);
   let cachedGoogleCerts: { certs: Record<string, string>; expiresAtMs: number } | null = null;
 

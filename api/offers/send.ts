@@ -6,6 +6,7 @@ const FIREBASE_PROJECT_ID = 'rahul-bill';
 const AUTHORIZED_ADMIN_EMAILS = new Set([
   'rahulhaldar.in1@gmail.com',
   'rahulhaldar.in@gmail.com',
+  'mohontopuja27@gmail.com',
 ]);
 
 const DEFAULT_WELCOME_SUBJECT =

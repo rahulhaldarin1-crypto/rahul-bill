@@ -22,6 +22,7 @@ export const COD_DELIVERY_CHARGE_PER_ITEM = 50;
 export const ALLOWED_ADMIN_EMAILS = [
   'rahulhaldar.in1@gmail.com',
   'rahulhaldar.in@gmail.com',
+  'mohontopuja27@gmail.com',
 ] as const;
 
 export function isAuthorizedAdminEmail(email?: string | null): boolean {
