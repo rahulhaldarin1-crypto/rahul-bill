@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import dns from 'node:dns';
 import net from 'node:net';
-import type { ProductSourcePlatform } from '../src/types/business';
+import type { ProductSourcePlatform } from '../src/types/business.ts';
 
 export interface ApiReqLike {
   method?: string;

@@ -6,7 +6,7 @@ import fs from 'fs';
 import nodemailer from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { handleFetchProduct } from './api/fetch-product';
+import { handleFetchProduct } from './api/fetch-product.ts';
 
 dotenv.config();
 
