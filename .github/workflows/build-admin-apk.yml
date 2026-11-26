@@ -24,12 +24,7 @@ jobs:
           java-version: '21'
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
       - name: Build GG Admin Panel web bundle
         env:
