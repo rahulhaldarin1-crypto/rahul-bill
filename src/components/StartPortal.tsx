@@ -84,6 +84,8 @@ import {
   displayCustomerPhone,
   fetchGeoRegion,
   formatBdt,
+  isBangladeshClient,
+  normalizeWhatsappDigits,
   parseProductVariantOptions,
   resolveBangladeshConfig,
   useBangladeshDetection,
@@ -391,8 +393,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const isBangladesh =
     bdFeatureEnabled &&
     (geoIsBangladesh ||
-      String(loggedInCustomer?.detectedCountry || '').trim().toUpperCase() ===
-        'BD');
+      Boolean(loggedInCustomer && isBangladeshClient(loggedInCustomer)));
   const bdtRate = bdConfig.inrToBdtRate;
   const bdFeatureEnabledRef = useRef(bdFeatureEnabled);
   bdFeatureEnabledRef.current = bdFeatureEnabled;
@@ -486,10 +487,22 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     const eligibleCatalogProducts = products.filter((prod) => {
       const sid = String(prod.sellerId || '').trim();
       if (!sid || sid.toLowerCase() === 'admin') return true;
-      if (prod.sellerApprovalStatus !== 'approved') return false;
+      if (
+        prod.sellerApprovalStatus === 'pending' ||
+        prod.sellerApprovalStatus === 'rejected'
+      ) {
+        return false;
+      }
+      if (prod.sellerApprovalStatus && prod.sellerApprovalStatus !== 'approved') {
+        return false;
+      }
       if (blockedSellerIdsSet.has(sid)) return false;
       if (sellersLoaded && approvedSellerIdsSet.size > 0) {
-        return approvedSellerIdsSet.has(sid) || !blockedSellerIdsSet.has(sid);
+        return (
+          approvedSellerIdsSet.has(sid) ||
+          prod.sellerApprovalStatus === 'approved' ||
+          !prod.sellerApprovalStatus
+        );
       }
       return true;
     });
@@ -579,6 +592,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     (minDiscountFilter > 0 ? 1 : 0) +
     (minRatingFilter > 0 ? 1 : 0) +
     (inStockOnlyFilter ? 1 : 0);
+
+  const hasActiveCatalogFilter = Boolean(
+    searchQuery.trim() ||
+      shoppingCategory !== 'ALL' ||
+      genderFilter !== 'ALL' ||
+      activeFiltersCount > 0
+  );
 
   const resetAllShoppingFilters = () => {
     setSearchQuery('');
@@ -2967,6 +2987,32 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             </button>
                           </div>
                         )}
+
+                        {isBangladesh && (
+                          <div className="w-full max-w-full rounded-2xl border border-[#99F6E4] bg-[#F0FDFA] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="font-bold text-[#0F766E]">
+                                {BANGLADESH_CHARGE_NOTICE}
+                              </div>
+                              <div className="text-[11px] font-mono-num text-[#115E59]">
+                                Bangladesh BDT Rate: 1 INR = {bdtRate} BDT
+                              </div>
+                            </div>
+                            <a
+                              href={`https://wa.me/${normalizeWhatsappDigits(
+                                bdConfig.whatsappNumber
+                              )}?text=${encodeURIComponent(
+                                'Assalamu Alaikum / Hello Glamour Galleria, I am browsing from Bangladesh and would like to place an order.'
+                              )}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] px-3 py-1.5 text-[11px] font-bold text-white hover:opacity-95 shrink-0 whitespace-nowrap"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                              <span>WhatsApp Order</span>
+                            </a>
+                          </div>
+                        )}
                       </div>
 
                       {isCatalogLoading && shoppingItems.length === 0 ? (
@@ -3002,7 +3048,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             </button>
                           )}
                         </div>
-                      ) : filteredShoppingItems.length === 0 ? (
+                      ) : hasActiveCatalogFilter && filteredShoppingItems.length === 0 ? (
                         <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 py-12 px-4 text-center space-y-2.5">
                           <div className="text-xs sm:text-sm font-semibold text-[#5B4B6B]">
                             No products match your current search or filter selection.
@@ -3017,7 +3063,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         </div>
                       ) : (
                         <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
-                          {filteredShoppingItems.map((item) => {
+                          {(hasActiveCatalogFilter
+                            ? filteredShoppingItems
+                            : sortBy === 'featured'
+                              ? shoppingItems
+                              : filteredShoppingItems
+                          ).map((item) => {
                             const discountPercent =
                               item.originalPrice &&
                               item.originalPrice > item.price
@@ -3838,8 +3889,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 <img
                                   src={getOptimizedMediaUrl(reviewMediaUrl, 'image')}
                                   alt="Review attachment preview"
+                                  width={48}
+                                  height={48}
                                   referrerPolicy="no-referrer"
-                                  className="w-12 h-12 rounded-lg object-cover border border-[#D8B4FE]"
+                                  className="w-12 h-12 max-w-full rounded-lg object-cover border border-[#D8B4FE] shrink-0 block"
                                 />
                               )}
                               <button
@@ -4548,10 +4601,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       parsedQty
                     )
                   }
-                  className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl border-2 border-[#7E22CE] bg-white px-4 text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                  className="w-full min-w-0 h-12 inline-flex items-center justify-center gap-1.5 sm:gap-2 rounded-xl border-2 border-[#7E22CE] bg-white px-2.5 sm:px-4 text-xs sm:text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
                 >
                   <ShoppingCart className="w-4 h-4 shrink-0" />
-                  <span>{addingToCart ? 'Adding...' : 'Add to Cart'}</span>
+                  <span className="truncate">{addingToCart ? 'Adding...' : 'Add to Cart'}</span>
                 </button>
 
                 {isBangladesh ? (
@@ -4581,19 +4634,19 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     })}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] px-4 text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+                    className="w-full min-w-0 h-12 inline-flex items-center justify-center gap-1.5 sm:gap-2 rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] px-2.5 sm:px-4 text-xs sm:text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer"
                   >
                     <MessageCircle className="w-4 h-4 shrink-0" />
-                    <span>Order on WhatsApp</span>
+                    <span className="truncate">Order on WhatsApp</span>
                   </a>
                 ) : (
                   <button
                     type="button"
                     onClick={openCheckoutStep}
-                    className="w-full h-12 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+                    className="w-full min-w-0 h-12 inline-flex items-center justify-center gap-1.5 sm:gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-2.5 sm:px-4 text-xs sm:text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer"
                   >
                     <ShoppingBag className="w-4 h-4 shrink-0" />
-                    <span>Buy Now</span>
+                    <span className="truncate">Buy Now</span>
                   </button>
                 )}
               </div>

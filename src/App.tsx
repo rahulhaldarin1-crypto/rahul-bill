@@ -97,6 +97,7 @@ export default function App() {
   const [approvedSellerIds, setApprovedSellerIds] = useState<string[]>([]);
   const [blockedSellerIds, setBlockedSellerIds] = useState<string[]>([]);
   const [sellersLoaded, setSellersLoaded] = useState<boolean>(false);
+  const [storefrontCatalogSynced, setStorefrontCatalogSynced] = useState<boolean>(false);
   const [storefrontLoadError, setStorefrontLoadError] = useState<boolean>(false);
   const [storefrontRetryNonce, setStorefrontRetryNonce] = useState<number>(0);
   const [sellerPaymentProfiles, setSellerPaymentProfiles] = useState<
@@ -360,6 +361,7 @@ export default function App() {
           if (!active) return;
           realtimeProductsArrived = true;
           setCustomerProducts(nextProducts);
+          setStorefrontCatalogSynced(true);
           setStorefrontLoadError(false);
           setWorkspaceLoaded(true);
           setLoading(false);
@@ -410,6 +412,7 @@ export default function App() {
           }
           if (!realtimeProductsArrived && data.productsLoaded) {
             setCustomerProducts(data.products);
+            setStorefrontCatalogSynced(true);
             setStorefrontLoadError(false);
             setWorkspaceLoaded(true);
           } else if (!realtimeProductsArrived && !data.productsLoaded) {
@@ -1151,9 +1154,11 @@ export default function App() {
         approvedSellerIds={approvedSellerIds}
         blockedSellerIds={blockedSellerIds}
         sellersLoaded={sellersLoaded}
-        isCatalogLoading={loading}
+        isCatalogLoading={loading || (!storefrontCatalogSynced && !storefrontLoadError)}
         catalogLoadError={storefrontLoadError}
         onRetryCatalog={() => {
+          setStorefrontLoadError(false);
+          setStorefrontCatalogSynced(false);
           setLoading(true);
           setStorefrontRetryNonce((n) => n + 1);
         }}

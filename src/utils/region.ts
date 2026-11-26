@@ -69,11 +69,11 @@ export async function fetchGeoRegion(): Promise<GeoRegionResult> {
           const code = data?.countryCode
             ? String(data.countryCode).trim().toUpperCase()
             : null;
-          if (code === 'BD') {
+          if (code === 'BD' || clientFallback) {
             return {
-              countryCode: 'BD',
+              countryCode: code === 'BD' ? 'BD' : clientFallback ? 'BD' : code,
               isBangladesh: true,
-              source: 'vercel-ip-country',
+              source: code === 'BD' ? 'vercel-ip-country' : 'client-fallback',
             };
           }
           if (code) {

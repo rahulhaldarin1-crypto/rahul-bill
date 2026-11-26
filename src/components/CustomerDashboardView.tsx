@@ -59,6 +59,7 @@ import {
   convertInrToBdt,
   displayCustomerPhone,
   formatBdt,
+  isBangladeshClient,
   resolveBangladeshConfig,
   useBangladeshDetection,
 } from '../utils/region';
@@ -98,9 +99,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const bdConfig = resolveBangladeshConfig(settings);
   const bdFeatureEnabled = bdConfig.enabled !== false;
   const isBangladesh =
-    bdFeatureEnabled &&
-    (geoBangladesh ||
-      String(client.detectedCountry || '').trim().toUpperCase() === 'BD');
+    bdFeatureEnabled && (geoBangladesh || isBangladeshClient(client));
   const bdtRate = bdConfig.inrToBdtRate;
 
   const [activeTab, setActiveTab] = useState<CustomerDashboardTab>(initialTab);
@@ -728,9 +727,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   }
 
   return (
-    <div className="no-print space-y-5">
+    <div className="no-print w-full max-w-full overflow-x-clip space-y-5">
       {/* Customer Profile Card */}
-      <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+      <section className="w-full max-w-full overflow-hidden rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
             <CustomerAvatar
@@ -1036,13 +1035,15 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         key={item.id}
                         className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 flex items-center gap-3.5"
                       >
-                        <div className="w-16 h-16 rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                        <div className="w-16 h-16 max-w-full rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
                           {item.imageDataUrl ? (
                             <img
                               src={getOptimizedMediaUrl(item.imageDataUrl, 'image')}
                               alt={item.name}
+                              width={64}
+                              height={64}
                               referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover"
+                              className="w-full h-full max-w-full object-cover block"
                             />
                           ) : (
                             <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
@@ -1208,10 +1209,10 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     })}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#15803D] to-[#0F766E] py-3 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity whitespace-nowrap"
+                    className="w-full min-w-0 max-w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#15803D] to-[#0F766E] py-3 px-4 text-xs sm:text-sm font-bold text-white hover:opacity-95 transition-opacity text-center"
                   >
                     <Phone className="w-4 h-4 shrink-0" />
-                    <span>Order Cart on WhatsApp</span>
+                    <span className="truncate">Order Cart on WhatsApp</span>
                   </a>
                 </div>
               ) : (
@@ -1516,12 +1517,14 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                                 )}
                               </div>
                               {d.qrDataUrl && (
-                                <div className="flex flex-col items-center shrink-0">
+                                <div className="flex flex-col items-center shrink-0 max-w-full overflow-hidden">
                                   <img
                                     src={getOptimizedMediaUrl(d.qrDataUrl, 'image')}
                                     alt={`${d.recipientName} Payment QR`}
+                                    width={96}
+                                    height={96}
                                     referrerPolicy="no-referrer"
-                                    className="w-24 h-24 rounded-lg border border-[#D8B4FE] bg-white p-1 object-contain"
+                                    className="w-24 h-24 max-w-full rounded-lg border border-[#D8B4FE] bg-white p-1 object-contain block"
                                   />
                                   <span className="text-[10px] font-semibold text-[#6D28D9] mt-0.5">
                                     Scan QR

@@ -210,11 +210,21 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
     });
 
     const eligibleCatalog = products.filter((prod) => {
-      if (!prod.sellerId) return true;
-      return (
-        prod.sellerApprovalStatus === 'approved' &&
-        approvedSellerIdsSet.has(prod.sellerId)
-      );
+      const sid = String(prod.sellerId || '').trim();
+      if (!sid || sid.toLowerCase() === 'admin') return true;
+      if (
+        prod.sellerApprovalStatus === 'pending' ||
+        prod.sellerApprovalStatus === 'rejected'
+      ) {
+        return false;
+      }
+      if (prod.sellerApprovalStatus && prod.sellerApprovalStatus !== 'approved') {
+        return false;
+      }
+      if (approvedSellerIdsSet.size > 0) {
+        return approvedSellerIdsSet.has(sid) || !prod.sellerApprovalStatus;
+      }
+      return true;
     });
 
     const catalogItems: PreviewProduct[] = vp.shopping.includeCatalogProducts
@@ -858,13 +868,13 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
                       }}
                       className="cursor-pointer"
                     >
-                      <div className="aspect-square bg-[#FDF9FC] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
+                      <div className="aspect-square w-full max-w-full bg-[#FDF9FC] relative overflow-hidden border-b border-[#F4ECF8] flex items-center justify-center">
                         {mainImg ? (
                           <img
                             src={getOptimizedMediaUrl(mainImg, 'image')}
                             alt={item.name}
                             referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
+                            className="w-full h-full max-w-full object-cover block"
                           />
                         ) : (
                           <Package className="w-8 h-8 text-[#C084FC]" />
@@ -973,7 +983,7 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
 
             <div className="p-5 overflow-y-auto space-y-4">
               <div className="flex gap-4 items-start">
-                <div className="w-24 h-24 rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] overflow-hidden shrink-0 flex items-center justify-center">
+                <div className="w-24 h-24 max-w-full rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] overflow-hidden shrink-0 flex items-center justify-center">
                   {previewProduct.imageDataUrls[0] || previewProduct.imageDataUrl ? (
                     <img
                       src={getOptimizedMediaUrl(
@@ -983,8 +993,10 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
                         'image'
                       )}
                       alt={previewProduct.name}
+                      width={96}
+                      height={96}
                       referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover"
+                      className="w-full h-full max-w-full object-cover block"
                     />
                   ) : (
                     <ShoppingBag className="w-7 h-7 text-[#C084FC]" />
