@@ -63,6 +63,7 @@ import {
   DEFAULT_SETTINGS,
   formatPhoneWithPlus91,
   generateNextInvoiceNumber,
+  generateProductNumber,
   getCustomerReferralCode,
   HIGHLIGHT_UPI_ID,
   isProductHighlightActive,
@@ -1315,6 +1316,8 @@ export const firestoreService = {
     const now = new Date().toISOString();
     const product: Product = stripUndefinedDeep({
       ...payload,
+      productNumber:
+        String(payload.productNumber || '').trim() || generateProductNumber(),
       id: `prd-${crypto.randomUUID()}`,
       createdAt: now,
       updatedAt: now,
@@ -1343,6 +1346,9 @@ export const firestoreService = {
       const updated: Product = stripUndefinedDeep({
         ...existing,
         ...payload,
+        productNumber:
+          String(payload.productNumber || existing.productNumber || '').trim() ||
+          generateProductNumber(),
         sellerId: expectedSellerId ? existing.sellerId : payload.sellerId,
         id,
         updatedAt: new Date().toISOString(),
@@ -2230,6 +2236,9 @@ export const firestoreService = {
         (item) => ({
           id: String(item.id),
           productId: item.productId ? String(item.productId) : '',
+          productNumber: item.productNumber
+            ? String(item.productNumber).trim()
+            : undefined,
           name: String(item.name || '').trim(),
           category: item.category ? String(item.category).trim() : '',
           size: item.size ? String(item.size).trim() : '',
@@ -2243,6 +2252,8 @@ export const firestoreService = {
           imageDataUrl: item.imageDataUrl ? String(item.imageDataUrl) : '',
           sellerId: item.sellerId ? String(item.sellerId) : '',
           sellerName: item.sellerName ? String(item.sellerName).trim() : '',
+          sourceUrl: item.sourceUrl ? String(item.sourceUrl).trim() : undefined,
+          sourcePlatform: item.sourcePlatform,
         })
       );
       const now = new Date().toISOString();
@@ -2659,6 +2670,7 @@ export const firestoreService = {
     customerPinCode?: string;
     items?: CustomerOrderItem[];
     productId?: string;
+    productNumber?: string;
     productName: string;
     productCategory?: string;
     productSize?: string;
@@ -2718,6 +2730,9 @@ export const firestoreService = {
             return stripUndefinedDeep({
               id: String(it.id || `ord-item-${Date.now()}-${idx}`),
               productId: it.productId ? String(it.productId) : '',
+              productNumber: it.productNumber
+                ? String(it.productNumber).trim()
+                : undefined,
               productName: String(it.productName || '').trim(),
               productCategory: String(it.productCategory || '').trim(),
               productSize: String(it.productSize || '').trim(),
@@ -2737,6 +2752,9 @@ export const firestoreService = {
             stripUndefinedDeep({
               id: `ord-item-${Date.now()}`,
               productId: payload.productId ? String(payload.productId) : '',
+              productNumber: payload.productNumber
+                ? String(payload.productNumber).trim()
+                : undefined,
               productName: String(payload.productName || '').trim(),
               productCategory: String(payload.productCategory || '').trim(),
               productSize: String(payload.productSize || '').trim(),
@@ -2760,6 +2778,30 @@ export const firestoreService = {
 
     if (normalizedItems.length === 0 || !normalizedItems[0].productName) {
       throw new Error('Product information is missing.');
+    }
+
+    if (normalizedItems.some((it) => !it.productNumber)) {
+      try {
+        const prodSnap = await getDocs(collection(db, PRODUCTS_COL));
+        const catalogProds = prodSnap.docs.map((d) => d.data() as Product);
+        for (let i = 0; i < normalizedItems.length; i += 1) {
+          const item = normalizedItems[i];
+          if (item.productNumber) continue;
+          const matchedProd = catalogProds.find(
+            (p) =>
+              (item.productId && p.id === item.productId) ||
+              p.name.trim().toLowerCase() === item.productName.trim().toLowerCase()
+          );
+          if (matchedProd?.productNumber) {
+            normalizedItems[i] = stripUndefinedDeep({
+              ...item,
+              productNumber: matchedProd.productNumber,
+            });
+          }
+        }
+      } catch {
+        // Non-blocking catalog lookup fallback
+      }
     }
 
     const paymentMethod: CustomerOrderPaymentMethod =
@@ -2922,6 +2964,10 @@ export const firestoreService = {
       customerPinCode: cleanPin,
       items: normalizedItems,
       productId: normalizedItems[0].productId || '',
+      productNumber:
+        (payload.productNumber ? String(payload.productNumber).trim() : '') ||
+        normalizedItems.find((i) => i.productNumber)?.productNumber ||
+        undefined,
       productName: summaryProductName,
       productCategory: normalizedItems[0].productCategory || '',
       productSize: normalizedItems[0].productSize || '',

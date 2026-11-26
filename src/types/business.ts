@@ -80,6 +80,7 @@ export interface ViewPanelDiscountOffer {
 
 export interface ViewPanelShoppingItem {
   id: string;
+  productNumber?: string;
   name: string;
   category: string;
   price: number;
@@ -228,6 +229,7 @@ export interface BusinessSettings {
 export interface CustomerCartItem {
   id: string;
   productId?: string;
+  productNumber?: string;
   name: string;
   category?: string;
   size?: string;
@@ -283,6 +285,7 @@ export type ProductSourcePlatform = 'meesho' | 'flipkart' | 'other';
 
 export interface Product {
   id: string;
+  productNumber?: string;
   name: string;
   imageDataUrl: string;
   imageDataUrls?: string[];
@@ -404,6 +407,7 @@ export type CustomerOrderPaymentMethod = 'COD' | 'UPI';
 export interface CustomerOrderItem {
   id: string;
   productId?: string;
+  productNumber?: string;
   productName: string;
   productCategory?: string;
   productSize?: string;
@@ -435,6 +439,7 @@ export interface CustomerOrder {
   customerPinCode: string;
   items?: CustomerOrderItem[];
   productId?: string;
+  productNumber?: string;
   productName: string;
   productCategory?: string;
   productSize?: string;

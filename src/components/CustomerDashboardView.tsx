@@ -141,6 +141,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const [uploadingScreenshot, setUploadingScreenshot] = useState(false);
   const [screenshotProgress, setScreenshotProgress] = useState<number | null>(null);
   const [copiedUpiValue, setCopiedUpiValue] = useState<string | null>(null);
+  const [copiedProductNumberKey, setCopiedProductNumberKey] = useState<string | null>(
+    null
+  );
   const [placingOrder, setPlacingOrder] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
   const [orderNotice, setOrderNotice] = useState('');
@@ -430,6 +433,42 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     }
   };
 
+  const handleCopyProductNumber = async (key: string, value: string) => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    let copied = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.className = 'fixed -top-96 left-0 opacity-0 pointer-events-none';
+        document.body.appendChild(textarea);
+        textarea.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+      } catch {
+        copied = false;
+      }
+    }
+
+    if (copied) {
+      setCopiedProductNumberKey(key);
+      setTimeout(() => {
+        setCopiedProductNumberKey((curr) => (curr === key ? null : curr));
+      }, 2000);
+    }
+  };
+
   const handleUploadUpiScreenshot = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -523,6 +562,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
       return {
         id: item.id,
         productId: item.productId,
+        productNumber: item.productNumber || matchedProduct?.productNumber,
         productName: item.name,
         productCategory: item.category,
         productSize: item.size,
@@ -577,6 +617,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         customerPinCode: checkoutPin.trim(),
         items: orderItems,
         productId: first?.productId,
+        productNumber:
+          first?.productNumber ||
+          orderItems.find((i) => i.productNumber)?.productNumber,
         productName:
           orderItems.length === 1
             ? first.productName
@@ -1571,12 +1614,22 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                 const displayOrderDate =
                   ord.orderDate ||
                   (ord.createdAt ? ord.createdAt.slice(0, 10) : '—');
-                const itemsList =
+                const itemsList: Array<{
+                  id: string;
+                  productId?: string;
+                  productNumber?: string;
+                  productName: string;
+                  quantity: number;
+                  unitPrice: number;
+                  lineTotal: number;
+                }> =
                   Array.isArray(ord.items) && ord.items.length > 0
                     ? ord.items
                     : [
                         {
                           id: ord.id,
+                          productId: ord.productId,
+                          productNumber: ord.productNumber,
                           productName: ord.productName,
                           quantity: ord.quantity,
                           unitPrice: ord.unitPrice,
@@ -1638,20 +1691,65 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         </div>
                       </div>
 
-                      <div className="space-y-1 text-xs">
-                        {itemsList.map((it) => (
-                          <div
-                            key={it.id}
-                            className="flex items-center justify-between gap-2 text-[#1F122B]"
-                          >
-                            <span className="truncate font-medium">
-                              {it.productName} × {it.quantity}
-                            </span>
-                            <span className="font-mono-num text-[#5B4B6B] shrink-0">
-                              {formatCurrency(it.lineTotal, sym)}
-                            </span>
-                          </div>
-                        ))}
+                      <div className="space-y-1.5 text-xs">
+                        {itemsList.map((it) => {
+                          const matchedCatalogProd = products.find(
+                            (p) =>
+                              (it.productId && p.id === it.productId) ||
+                              p.name.trim().toLowerCase() ===
+                                it.productName.trim().toLowerCase()
+                          );
+                          const resolvedProductNumber =
+                            it.productNumber ||
+                            (itemsList.length === 1 ? ord.productNumber : undefined) ||
+                            matchedCatalogProd?.productNumber;
+                          const copyKey = `${ord.id}-${it.id}`;
+                          const isCopied = copiedProductNumberKey === copyKey;
+                          return (
+                            <div key={it.id} className="space-y-0.5">
+                              <div className="flex items-center justify-between gap-2 text-[#1F122B]">
+                                <span className="truncate font-medium">
+                                  {it.productName} × {it.quantity}
+                                </span>
+                                <span className="font-mono-num text-[#5B4B6B] shrink-0">
+                                  {formatCurrency(it.lineTotal, sym)}
+                                </span>
+                              </div>
+                              {resolvedProductNumber && (
+                                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#5B4B6B]">
+                                  <span className="font-mono-num font-semibold text-[#6D28D9]">
+                                    Product No: {resolvedProductNumber}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void handleCopyProductNumber(
+                                        copyKey,
+                                        resolvedProductNumber
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-1 rounded-md border border-[#E6D9EE] bg-white px-1.5 py-0.5 text-[10px] font-semibold text-[#5B4B6B] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+                                    title="Copy Product Number"
+                                  >
+                                    {isCopied ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-[#15803D]" />
+                                        <span className="text-[#15803D]">
+                                          Copied!
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>Copy</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                         {(ord.deliveryCharge || 0) > 0 && (
                           <div className="flex items-center justify-between gap-2 text-[#B45309] font-medium pt-0.5">
                             <span>COD Delivery Charge</span>

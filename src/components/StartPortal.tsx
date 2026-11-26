@@ -142,6 +142,7 @@ interface StartPortalProps {
 interface PublicShopProduct {
   id: string;
   catalogProductId?: string;
+  productNumber?: string;
   name: string;
   category: string;
   price: number;
@@ -440,6 +441,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               : [];
         return {
           id: item.id,
+          productNumber: item.productNumber,
           name: item.name,
           category: item.category || PRODUCT_CATEGORIES[0],
           price: item.price,
@@ -483,6 +485,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           return {
             id: `cat-${prod.id}`,
             catalogProductId: prod.id,
+            productNumber: prod.productNumber,
             name: prod.name,
             category: prod.category || PRODUCT_CATEGORIES[0],
             price: prod.sellingPrice,
@@ -1077,12 +1080,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       if (idx >= 0) {
         existingCart[idx] = {
           ...existingCart[idx],
+          productNumber: product.productNumber || existingCart[idx].productNumber,
           quantity: Math.max(1, existingCart[idx].quantity + qtyToAdd),
         };
       } else {
         existingCart.push({
           id: product.id,
           productId: product.catalogProductId,
+          productNumber: product.productNumber,
           name: product.name,
           category: product.category,
           size: product.size,
@@ -1822,6 +1827,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           {
             id: selectedProduct.id,
             productId: selectedProduct.catalogProductId,
+            productNumber: selectedProduct.productNumber,
             productName: selectedProduct.name,
             productCategory: selectedProduct.category,
             productSize: selectedProduct.size,
@@ -1841,6 +1847,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           },
         ],
         productId: selectedProduct.catalogProductId,
+        productNumber: selectedProduct.productNumber,
         productName: selectedProduct.name,
         productCategory: selectedProduct.category,
         productSize: selectedProduct.size,

@@ -921,6 +921,50 @@ export function generateNextInvoiceNumber(invoices: Invoice[], prefix = 'GG-'): 
   return `${prefix}${String(next).padStart(3, '0')}`;
 }
 
+function getRandomInt(maxExclusive: number): number {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.getRandomValues === 'function'
+  ) {
+    const arr = new Uint32Array(1);
+    crypto.getRandomValues(arr);
+    return arr[0] % maxExclusive;
+  }
+  return Math.floor(Math.random() * maxExclusive);
+}
+
+export function generateProductNumber(
+  existingNumbers?: Iterable<string | undefined>
+): string {
+  const used = new Set<string>();
+  if (existingNumbers) {
+    for (const num of existingNumbers) {
+      const clean = String(num || '').trim().toUpperCase();
+      if (clean) used.add(clean);
+    }
+  }
+
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    let prefixDigits = '';
+    for (let i = 0; i < 4; i += 1) {
+      prefixDigits += String(getRandomInt(10));
+    }
+    const letter = letters[getRandomInt(letters.length)];
+    let suffixDigits = '';
+    for (let i = 0; i < 7; i += 1) {
+      suffixDigits += String(getRandomInt(10));
+    }
+    const candidate = `SPDA${prefixDigits}${letter}${suffixDigits}`;
+    if (!used.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  const fallbackTail = String(Date.now()).slice(-7).padStart(7, '0');
+  return `SPDA${String(getRandomInt(10000)).padStart(4, '0')}${letters[getRandomInt(letters.length)]}${fallbackTail}`;
+}
+
 export function computeLineItem(
   item: Omit<InvoiceLineItem, 'lineTotal' | 'lineCost' | 'lineProfit'>
 ): InvoiceLineItem {

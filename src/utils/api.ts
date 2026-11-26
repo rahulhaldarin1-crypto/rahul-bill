@@ -253,6 +253,7 @@ export const api = {
     customerPinCode?: string;
     items?: CustomerOrderItem[];
     productId?: string;
+    productNumber?: string;
     productName: string;
     productCategory?: string;
     productSize?: string;

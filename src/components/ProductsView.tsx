@@ -6,11 +6,13 @@ import {
   CreditCard,
   Crop,
   Download,
+  ExternalLink,
   Link2,
   Package,
   Pencil,
   Plus,
   QrCode,
+  RefreshCw,
   Search,
   Star,
   Trash2,
@@ -27,6 +29,7 @@ import {
   DEFAULT_PRODUCT_CATEGORY,
   downloadImageAsset,
   formatCurrency,
+  generateProductNumber,
   isProductHighlightActive,
   PRODUCT_CATEGORIES,
 } from '../utils/calculations';
@@ -171,6 +174,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
   // Form fields
   const [name, setName] = useState('');
+  const [productNumber, setProductNumber] = useState('');
   const [imageDataUrls, setImageDataUrls] = useState<string[]>([]);
   const [videoUrl, setVideoUrl] = useState('');
   const [mediaRecords, setMediaRecords] = useState<CloudinaryMediaRecord[]>([]);
@@ -211,6 +215,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setImportNotice(null);
     clearShareDraft(shareDraftStorageKey);
   }, [shareDraftStorageKey]);
+
+  const generateUniqueProductNumber = useCallback(
+    () => generateProductNumber(products.map((p) => p.productNumber)),
+    [products]
+  );
 
   // Per-Product Custom Payment Details (overrides Seller Account / Admin Payment System)
   const [paymentSectionOpen, setPaymentSectionOpen] = useState(false);
@@ -319,6 +328,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     }
     setEditing(null);
     setName('');
+    setProductNumber(generateUniqueProductNumber());
     setImageDataUrls([]);
     setVideoUrl('');
     setMediaRecords([]);
@@ -356,6 +366,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     }
     setEditing(prod);
     setName(prod.name);
+    setProductNumber(
+      String(prod.productNumber || '').trim() || generateUniqueProductNumber()
+    );
     const existingImages =
       Array.isArray(prod.imageDataUrls) && prod.imageDataUrls.length > 0
         ? prod.imageDataUrls.slice(0, MAX_PRODUCT_IMAGES)
@@ -418,6 +431,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     const profit = prod.sellingPrice - prod.purchasePrice;
     const lines = [
       `Product: ${prod.name}`,
+      prod.productNumber ? `Product Number: ${prod.productNumber}` : '',
       `Category: ${prod.category}`,
       prod.size ? `Size: ${prod.size}` : '',
       prod.color ? `Color: ${prod.color}` : '',
@@ -704,8 +718,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           detectClientPlatform(finalSourceUrl)
         : undefined;
 
+      const finalProductNumber =
+        productNumber.trim() ||
+        editing?.productNumber?.trim() ||
+        generateUniqueProductNumber();
+
       await onSaveProduct(
         {
+          productNumber: finalProductNumber,
           name: name.trim(),
           imageDataUrl: imageDataUrls[0] || '',
           imageDataUrls,
@@ -782,6 +802,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
         if (!q) return true;
         return (
           p.name.toLowerCase().includes(q) ||
+          String(p.productNumber || '').toLowerCase().includes(q) ||
           p.category.toLowerCase().includes(q) ||
           p.color.toLowerCase().includes(q) ||
           p.size.toLowerCase().includes(q)
@@ -1132,6 +1153,34 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   className={`${inputClass} mt-2`}
                 />
               )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="product-number"
+                className="block text-xs font-semibold text-[#4A3B59] mb-1"
+              >
+                Product Number
+              </label>
+              <div className="flex items-center gap-1.5">
+                <input
+                  id="product-number"
+                  type="text"
+                  readOnly
+                  value={productNumber}
+                  aria-readonly="true"
+                  className={`${inputClass} font-mono-num bg-[#F8F3FC] text-[#4A3B59] font-semibold cursor-default select-all`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setProductNumber(generateUniqueProductNumber())}
+                  title="Generate new Product Number"
+                  className="inline-flex items-center gap-1 rounded-xl border border-[#E6D9EE] bg-white px-2.5 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] hover:bg-[#FAF5FF] shrink-0 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Regenerate</span>
+                </button>
+              </div>
             </div>
 
             <div>
@@ -1541,6 +1590,17 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 <span>Download Image</span>
               </button>
             )}
+            {getSafeHttpUrl(activeDetailProduct.sourceUrl) && (
+              <a
+                href={getSafeHttpUrl(activeDetailProduct.sourceUrl) || undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#4A3B59] hover:border-[#DB2777] hover:text-[#DB2777] cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Open Link</span>
+              </a>
+            )}
             <button
               type="button"
               onClick={() => downloadProductDetailsFile(activeDetailProduct)}
@@ -1664,6 +1724,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
               <h1 className="font-display-serif text-2xl font-bold text-[#1F122B]">
                 {activeDetailProduct.name}
               </h1>
+              {activeDetailProduct.productNumber && (
+                <div className="font-mono-num text-xs font-semibold text-[#6D28D9]">
+                  Product No: {activeDetailProduct.productNumber}
+                </div>
+              )}
 
               {activeDetailProduct.sellerId && (
                 <div className="text-xs font-medium flex flex-wrap items-center gap-2 pt-1">
@@ -1895,7 +1960,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search products, size, or color..."
+            placeholder="Search products, number, size, or color..."
             className="w-full rounded-xl border border-[#E6D9EE] bg-white pl-10 pr-4 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
           />
         </div>
@@ -2024,6 +2089,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     <h3 className="text-xs sm:text-base font-bold text-[#1F122B] leading-snug line-clamp-2 min-h-[2rem] sm:min-h-0">
                       {prod.name}
                     </h3>
+                    {prod.productNumber && (
+                      <div className="font-mono-num text-[10px] sm:text-[11px] font-semibold text-[#6D28D9] truncate">
+                        No: {prod.productNumber}
+                      </div>
+                    )}
                     {prod.sellerId && (
                       <div className="text-[10px] sm:text-[11px] font-medium flex flex-wrap items-center gap-1">
                         {!sellerContext && prod.sellerName && (
@@ -2168,6 +2238,23 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       </button>
                     )}
                     <div className="flex items-center gap-1 shrink-0">
+                      {(() => {
+                        const safeExternalUrl = getSafeHttpUrl(prod.sourceUrl);
+                        if (!safeExternalUrl) return null;
+                        return (
+                          <a
+                            href={safeExternalUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1.5 rounded-lg border border-[#E6D9EE] bg-white text-[#5B4B6B] hover:text-[#DB2777] cursor-pointer inline-flex items-center justify-center"
+                            title="Open saved product link"
+                            aria-label="Open saved product link"
+                          >
+                            <ExternalLink className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                          </a>
+                        );
+                      })()}
                       <button
                         type="button"
                         disabled={downloadingId === prod.id}
