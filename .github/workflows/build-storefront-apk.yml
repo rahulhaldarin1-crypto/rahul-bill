@@ -32,12 +32,10 @@ jobs:
           VITE_APP_MODE: storefront
         run: npm run build
 
-      - name: Add and sync Capacitor Android
+      - name: Clean old android folder and add Capacitor Android
         run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-          npx cap sync android
+          rm -rf android
+          npx cap add android
 
       - name: Set GG SHOPPING app ID, name, and launcher icon
         run: |
@@ -58,6 +56,7 @@ jobs:
               } else {
                 content = content.replace(/(\{\s*)/, `$1appName: "GG SHOPPING",\n  `);
               }
+              content = content.replace(/url\s*:\s*["\x27][^"\x27]*["\x27]/g, "");
               fs.writeFileSync(cfgPath, content, "utf8");
             }
 
@@ -132,12 +131,13 @@ jobs:
                       check=True,
                   )
           EOF
+          npx cap sync android
 
       - name: Build Android Debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew clean assembleDebug
+          ./gradlew assembleDebug
 
       - name: Upload GG SHOPPING APK
         uses: actions/upload-artifact@v4
