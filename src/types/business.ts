@@ -190,6 +190,7 @@ export interface SellerPublicPaymentProfile {
 export type SellerPublicStoreProfile = SellerPublicPaymentProfile;
 
 export interface BangladeshConfig {
+  enabled?: boolean;
   inrToBdtRate: number;
   whatsappNumber: string;
   updatedAt?: string;

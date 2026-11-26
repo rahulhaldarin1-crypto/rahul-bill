@@ -610,6 +610,7 @@ export const DEFAULT_ADMIN_PAYMENT_SETTINGS: AdminPaymentSettings = {
 export const DEFAULT_INR_TO_BDT_RATE = 1.45;
 
 export const DEFAULT_BANGLADESH_CONFIG: BangladeshConfig = {
+  enabled: true,
   inrToBdtRate: DEFAULT_INR_TO_BDT_RATE,
   whatsappNumber: WHATSAPP_SUPPORT_PHONE,
   updatedAt: '',
@@ -829,6 +830,7 @@ export function mergeBusinessSettings(
       updatedAt: rawHc?.updatedAt || '',
     },
     bangladeshConfig: {
+      enabled: raw?.bangladeshConfig?.enabled !== false,
       inrToBdtRate:
         Number.isFinite(Number(raw?.bangladeshConfig?.inrToBdtRate)) &&
         Number(raw?.bangladeshConfig?.inrToBdtRate) > 0

@@ -6,10 +6,7 @@ import {
   CreditCard,
   Crop,
   Download,
-  ExternalLink,
-  FileText,
   Link2,
-  Loader2,
   Package,
   Pencil,
   Plus,
@@ -68,14 +65,9 @@ const ALLOWED_CATEGORIES_SET = new Set<string>(PRODUCT_CATEGORIES);
 const CUSTOM_CATEGORY_VALUE = '__CUSTOM__';
 const SHARE_DRAFT_STORAGE_PREFIX = 'gg_product_share_draft_v1_';
 
-interface ParsedShareMessage {
+interface ExtractedShareLink {
   url: string | null;
   platform: ProductSourcePlatform | undefined;
-  title: string;
-  price: number | null;
-  originalPrice: number | null;
-  sizes: string;
-  cleanedDescription: string;
 }
 
 function detectClientPlatform(rawUrl: string): ProductSourcePlatform {
@@ -110,27 +102,16 @@ function getSafeHttpUrl(raw?: string | null): string | null {
   return null;
 }
 
-function parseSharedProductText(rawInput: string): ParsedShareMessage {
+function extractShareUrlAndPlatform(rawInput: string): ExtractedShareLink {
   const input = String(rawInput || '').trim();
   if (!input) {
-    return {
-      url: null,
-      platform: undefined,
-      title: '',
-      price: null,
-      originalPrice: null,
-      sizes: '',
-      cleanedDescription: '',
-    };
+    return { url: null, platform: undefined };
   }
 
-  let matchedRawUrl = '';
   let normalizedUrl: string | null = null;
-
   const httpMatch = /https?:\/\/[^\s<>"'`]+/i.exec(input);
   if (httpMatch?.[0]) {
-    matchedRawUrl = httpMatch[0];
-    const stripped = matchedRawUrl.replace(/[.,!?;:)\]}"']+$/g, '');
+    const stripped = httpMatch[0].replace(/[.,!?;:)\]}"']+$/g, '');
     normalizedUrl = getSafeHttpUrl(stripped);
   } else {
     const bareMatch =
@@ -138,144 +119,24 @@ function parseSharedProductText(rawInput: string): ParsedShareMessage {
         input
       );
     if (bareMatch?.[0]) {
-      matchedRawUrl = bareMatch[0];
-      const stripped = matchedRawUrl.replace(/[.,!?;:)\]}"']+$/g, '');
+      const stripped = bareMatch[0].replace(/[.,!?;:)\]}"']+$/g, '');
       normalizedUrl = getSafeHttpUrl(`https://${stripped}`);
     }
   }
 
-  const platform = normalizedUrl ? detectClientPlatform(normalizedUrl) : undefined;
-
-  let textBody = matchedRawUrl
-    ? input.replace(matchedRawUrl, ' ')
-    : input;
-
-  textBody = textBody
-    .replace(/\r\n/g, '\n')
-    .replace(/[*_`~]/g, '')
-    .trim();
-
-  // Extract explicit MRP if mentioned
-  let explicitMrp: number | null = null;
-  const mrpMatch = /(?:mrp|old price|was)\s*[:=-]?\s*(?:₹|rs\.?|inr)?\s*([\d,]{2,7})/i.exec(
-    textBody
-  );
-  if (mrpMatch?.[1]) {
-    const n = Math.round(Number(mrpMatch[1].replace(/,/g, '')));
-    if (Number.isFinite(n) && n > 0 && n < 200000) {
-      explicitMrp = n;
-    }
-  }
-
-  // Extract currency/price amounts (e.g., ₹399, Rs. 499, Price: 399)
-  const priceCandidates: number[] = [];
-  const priceRe =
-    /(?:₹|rs\.?|inr|price\s*[:=-]?|only\s*₹?|for\s*₹?|at\s*₹?)\s*([\d,]{2,7})(?:\.\d{1,2})?/gi;
-  let pm: RegExpExecArray | null;
-  while ((pm = priceRe.exec(textBody)) !== null) {
-    const val = Math.round(Number((pm[1] || '').replace(/,/g, '')));
-    if (Number.isFinite(val) && val >= 10 && val < 200000 && !priceCandidates.includes(val)) {
-      priceCandidates.push(val);
-    }
-  }
-
-  let price: number | null = null;
-  let originalPrice: number | null = null;
-  if (priceCandidates.length > 0) {
-    const sorted = [...priceCandidates].sort((a, b) => a - b);
-    price = sorted[0];
-    if (explicitMrp && explicitMrp > price) {
-      originalPrice = explicitMrp;
-    } else if (sorted.length > 1 && sorted[sorted.length - 1] > price) {
-      originalPrice = sorted[sorted.length - 1];
-    }
-  } else if (explicitMrp) {
-    price = explicitMrp;
-  }
-
-  // Extract sizes if present in share message
-  let sizes = '';
-  const sizeMatch = /(?:sizes?|available\s+sizes?)\s*[:=-]\s*([^\n|]{1,45})/i.exec(
-    textBody
-  );
-  if (sizeMatch?.[1]) {
-    sizes = sizeMatch[1].trim();
-  }
-
-  // Extract clean product title from remaining share lines
-  const cleanedLines = textBody
-    .split(/\n+|\s+\|\s+/)
-    .map((line) =>
-      line
-        .replace(
-          /^(?:check out this product on meesho|shop now on meesho|shop now!?|take a look at this|check this out on flipkart|buy this on flipkart|download meesho app|catalog name\s*:?|product name\s*:?|name\s*:?|title\s*:?)\s*[:\-–!]*\s*/i,
-          ''
-        )
-        .replace(/\b(?:on meesho|on flipkart|download meesho app now)\b\.?!?/gi, '')
-        .trim()
-    )
-    .filter((line) => {
-      if (line.length < 3) return false;
-      if (/^(?:₹|rs\.?|inr|price|mrp|sizes?|link|url)\b[\s:=-]*[\d,.\s]*$/i.test(line)) {
-        return false;
-      }
-      if (/^[\d\s₹.,%-]+$/.test(line)) return false;
-      return true;
-    });
-
-  let title = cleanedLines[0] || '';
-  title = title
-    .replace(/(?:[-–|]\s*)?(?:mrp|price)?\s*(?:₹|rs\.?|inr)\s*[\d,]+.*$/i, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 160);
-
-  const cleanedDescription = cleanedLines.join('\n').slice(0, 1000).trim();
+  const platform = normalizedUrl
+    ? detectClientPlatform(normalizedUrl)
+    : undefined;
 
   return {
     url: normalizedUrl,
     platform,
-    title,
-    price,
-    originalPrice,
-    sizes,
-    cleanedDescription,
   };
 }
 
-interface SavedShareDraft {
-  rawText: string;
-  sourceUrl?: string;
-  sourcePlatform?: ProductSourcePlatform;
-  savedAt: string;
-}
-
-function readShareDraft(storageKey: string): SavedShareDraft | null {
+function clearShareDraft(storageKey: string): void {
   try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<SavedShareDraft>;
-    if (!parsed || typeof parsed.rawText !== 'string' || !parsed.rawText.trim()) {
-      return null;
-    }
-    return {
-      rawText: parsed.rawText,
-      sourceUrl: parsed.sourceUrl,
-      sourcePlatform: parsed.sourcePlatform,
-      savedAt: parsed.savedAt || '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeShareDraft(storageKey: string, draft: SavedShareDraft | null): void {
-  try {
-    if (!draft || !draft.rawText.trim()) {
-      localStorage.removeItem(storageKey);
-      return;
-    }
-    localStorage.setItem(storageKey, JSON.stringify(draft));
+    localStorage.removeItem(storageKey);
   } catch {
     // ignore storage errors on private browsing / quota limits
   }
@@ -325,7 +186,6 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [description, setDescription] = useState('');
   const [isCustomCategory, setIsCustomCategory] = useState(false);
   const [importUrl, setImportUrl] = useState('');
-  const [fetchingUrl, setFetchingUrl] = useState(false);
   const [importNotice, setImportNotice] = useState<{
     kind: 'success' | 'warning';
     text: string;
@@ -334,7 +194,6 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [sourcePlatform, setSourcePlatform] = useState<
     ProductSourcePlatform | undefined
   >(undefined);
-  const [hasSavedPhoneDraft, setHasSavedPhoneDraft] = useState(false);
   const [cropModalIndex, setCropModalIndex] = useState<number | null>(null);
   const [uploadingImgProgress, setUploadingImgProgress] = useState<number | null>(null);
   const [uploadingVideoProgress, setUploadingVideoProgress] = useState<number | null>(null);
@@ -344,6 +203,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const shareDraftStorageKey = `${SHARE_DRAFT_STORAGE_PREFIX}${
     sellerContext?.sellerId || 'admin'
   }`;
+
+  const resetImportLinkState = useCallback(() => {
+    setImportUrl('');
+    setSourceUrl('');
+    setSourcePlatform(undefined);
+    setImportNotice(null);
+    clearShareDraft(shareDraftStorageKey);
+  }, [shareDraftStorageKey]);
 
   // Per-Product Custom Payment Details (overrides Seller Account / Admin Payment System)
   const [paymentSectionOpen, setPaymentSectionOpen] = useState(false);
@@ -378,6 +245,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       if (state?.ggType === 'products-sub' && state.sub === 'detail') {
         setFormOpen(false);
         setEditing(null);
+        resetImportLinkState();
         setError('');
         if (state.productId && !viewingProductIdRef.current) {
           const found = products.find((p) => p.id === state.productId) || null;
@@ -388,6 +256,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
       setFormOpen(false);
       setEditing(null);
+      resetImportLinkState();
       setViewingProduct(null);
       setDeleteTarget(null);
       setError('');
@@ -396,7 +265,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [products, restoreListScroll]);
+  }, [products, restoreListScroll, resetImportLinkState]);
 
   const pushSubState = (sub: 'detail' | 'form', extra: Record<string, unknown>) => {
     try {
@@ -408,6 +277,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   };
 
   const leaveCurrentSubView = useCallback(() => {
+    if (formOpen) {
+      resetImportLinkState();
+    }
     if (subDepthRef.current > 0) {
       window.history.back();
       return;
@@ -425,7 +297,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       setViewingProduct(null);
       restoreListScroll();
     }
-  }, [formOpen, viewingProduct, restoreListScroll]);
+  }, [formOpen, viewingProduct, restoreListScroll, resetImportLinkState]);
 
   const openDetail = (prod: Product) => {
     if (!viewingProduct && !formOpen) {
@@ -461,29 +333,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setColor('');
     setDescription('');
     setIsCustomCategory(false);
-    const savedDraft = readShareDraft(shareDraftStorageKey);
-    if (savedDraft) {
-      const parsedDraft = parseSharedProductText(savedDraft.rawText);
-      const restoredUrl =
-        getSafeHttpUrl(parsedDraft.url) ||
-        getSafeHttpUrl(savedDraft.sourceUrl) ||
-        '';
-      const restoredPlatform =
-        parsedDraft.platform ||
-        savedDraft.sourcePlatform ||
-        (restoredUrl ? detectClientPlatform(restoredUrl) : undefined);
-      setImportUrl(savedDraft.rawText);
-      setSourceUrl(restoredUrl);
-      setSourcePlatform(restoredPlatform);
-      setHasSavedPhoneDraft(true);
-    } else {
-      setImportUrl('');
-      setSourceUrl('');
-      setSourcePlatform(undefined);
-      setHasSavedPhoneDraft(false);
-    }
-    setFetchingUrl(false);
-    setImportNotice(null);
+    resetImportLinkState();
     setCropModalIndex(null);
     setPaymentSectionOpen(false);
     setSellerPaymentUpiId('');
@@ -534,11 +384,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setColor(prod.color || '');
     setDescription(prod.description || '');
     setImportUrl(prod.sourceUrl || '');
-    setFetchingUrl(false);
     setImportNotice(null);
     setSourceUrl(prod.sourceUrl || '');
     setSourcePlatform(prod.sourcePlatform);
-    setHasSavedPhoneDraft(Boolean(readShareDraft(shareDraftStorageKey)));
     setCropModalIndex(null);
     const hasCustomPayment = Boolean(
       prod.sellerPaymentUpiId ||
@@ -733,248 +581,44 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
   const handleImportBoxChange = (nextVal: string) => {
     setImportUrl(nextVal);
-    const parsed = parseSharedProductText(nextVal);
-    if (parsed.url) {
-      setSourceUrl(parsed.url);
-      setSourcePlatform(parsed.platform);
-    } else if (!editing) {
+    setImportNotice(null);
+    const extracted = extractShareUrlAndPlatform(nextVal);
+    if (extracted.url) {
+      setSourceUrl(extracted.url);
+      setSourcePlatform(extracted.platform);
+    } else {
       setSourceUrl('');
       setSourcePlatform(undefined);
     }
-
-    if (!editing) {
-      if (nextVal.trim()) {
-        writeShareDraft(shareDraftStorageKey, {
-          rawText: nextVal,
-          sourceUrl: parsed.url || undefined,
-          sourcePlatform: parsed.platform,
-          savedAt: new Date().toISOString(),
-        });
-        setHasSavedPhoneDraft(true);
-      } else {
-        writeShareDraft(shareDraftStorageKey, null);
-        setHasSavedPhoneDraft(false);
-      }
-    }
   };
 
-  const applyParsedShareTextToForm = (parsed: ParsedShareMessage): boolean => {
-    let appliedAny = false;
-    if (parsed.url) {
-      setSourceUrl(parsed.url);
-      setSourcePlatform(parsed.platform);
-      appliedAny = true;
-    }
-    if (parsed.title) {
-      setName(parsed.title);
-      appliedAny = true;
-    }
-    if (parsed.price !== null) {
-      setSellingPrice(String(parsed.price));
-      appliedAny = true;
-    }
-    if (parsed.originalPrice !== null) {
-      setOriginalPrice(String(parsed.originalPrice));
-      appliedAny = true;
-    }
-    if (parsed.sizes) {
-      setSize(parsed.sizes);
-      appliedAny = true;
-    }
-    if (parsed.cleanedDescription && parsed.cleanedDescription !== parsed.title) {
-      setDescription((prev) => prev.trim() || parsed.cleanedDescription);
-      appliedAny = true;
-    }
-    return appliedAny;
-  };
-
-  const handleUseShareText = () => {
-    const savedDraft = readShareDraft(shareDraftStorageKey);
-    const targetText = importUrl.trim() ? importUrl : savedDraft?.rawText || '';
-    if (!targetText.trim()) {
-      setImportNotice({
-        kind: 'warning',
-        text: 'Paste a Meesho or Flipkart share message or product link first.',
-      });
-      return;
-    }
-
-    if (!importUrl.trim() && savedDraft?.rawText) {
-      setImportUrl(savedDraft.rawText);
-    }
-
-    const parsed = parseSharedProductText(targetText);
-    writeShareDraft(shareDraftStorageKey, {
-      rawText: targetText,
-      sourceUrl: parsed.url || savedDraft?.sourceUrl,
-      sourcePlatform: parsed.platform || savedDraft?.sourcePlatform,
-      savedAt: new Date().toISOString(),
-    });
-    setHasSavedPhoneDraft(true);
-
-    const applied = applyParsedShareTextToForm(parsed);
-    if (applied) {
-      setImportNotice({
-        kind: 'success',
-        text: parsed.url
-          ? 'Applied title/price from pasted text and linked product URL for Resell! Upload photos below or tap Open Link to view original product.'
-          : 'Applied title/price from pasted text! Upload photos below to save.',
-      });
-    } else {
-      setImportNotice({
-        kind: 'warning',
-        text: 'Link saved on your device. Tap Open Link to check product details, or fill the fields below manually.',
-      });
-    }
-  };
-
-  const handleFetchProductFromUrl = async () => {
+  const handleSaveLinkClick = () => {
     const rawBox = importUrl.trim();
     if (!rawBox) {
       setImportNotice({
         kind: 'warning',
-        text: 'Please paste a Meesho, Flipkart, or product share message/link first.',
+        text: 'Please paste a Meesho, Flipkart, or product link first.',
       });
       return;
     }
 
-    const parsedShare = parseSharedProductText(rawBox);
-    writeShareDraft(shareDraftStorageKey, {
-      rawText: importUrl,
-      sourceUrl: parsedShare.url || sourceUrl || undefined,
-      sourcePlatform: parsedShare.platform || sourcePlatform,
-      savedAt: new Date().toISOString(),
+    const extracted = extractShareUrlAndPlatform(rawBox);
+    if (!extracted.url) {
+      setImportNotice({
+        kind: 'warning',
+        text: 'No valid https:// product link found. Please paste a product URL.',
+      });
+      return;
+    }
+
+    const platform =
+      extracted.platform || detectClientPlatform(extracted.url);
+    setSourceUrl(extracted.url);
+    setSourcePlatform(platform);
+    setImportNotice({
+      kind: 'success',
+      text: `Link saved (${platform})! Now enter product details below and save product.`,
     });
-    setHasSavedPhoneDraft(true);
-
-    // Always apply any title/price/sizes found inside the pasted share message immediately
-    applyParsedShareTextToForm(parsedShare);
-
-    const cleanTargetUrl = parsedShare.url || getSafeHttpUrl(sourceUrl);
-    if (!cleanTargetUrl) {
-      setImportNotice({
-        kind: 'warning',
-        text:
-          parsedShare.title || parsedShare.price !== null
-            ? 'Extracted title/price from your share text! No clickable https:// link was found—add a link or upload photos below.'
-            : 'No https:// product link found inside this text. Please include a link or enter product details below.',
-      });
-      return;
-    }
-
-    setError('');
-    setImportNotice(null);
-    setFetchingUrl(true);
-    setSourceUrl(cleanTargetUrl);
-    setSourcePlatform(parsedShare.platform || detectClientPlatform(cleanTargetUrl));
-
-    try {
-      const res = await fetch('/api/fetch-product', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: cleanTargetUrl }),
-      });
-
-      const payload = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        partial?: boolean;
-        warning?: string;
-        error?: string;
-        data?: {
-          title?: string;
-          description?: string;
-          price?: number | null;
-          originalPrice?: number | null;
-          sizes?: string;
-          imageUrls?: string[];
-          sourceUrl?: string;
-          sourcePlatform?: ProductSourcePlatform;
-        };
-      };
-
-      const extracted = payload.data;
-      const resolvedUrl = getSafeHttpUrl(extracted?.sourceUrl) || cleanTargetUrl;
-      const resolvedPlatform =
-        extracted?.sourcePlatform || detectClientPlatform(resolvedUrl);
-
-      setSourceUrl(resolvedUrl);
-      setSourcePlatform(resolvedPlatform);
-      writeShareDraft(shareDraftStorageKey, {
-        rawText: importUrl,
-        sourceUrl: resolvedUrl,
-        sourcePlatform: resolvedPlatform,
-        savedAt: new Date().toISOString(),
-      });
-
-      if (!res.ok) {
-        setImportNotice({
-          kind: 'warning',
-          text:
-            payload.error ||
-            'Could not auto-fetch from that site right now. Your source link is saved—tap Open Link to view photos or Use Text / upload manually.',
-        });
-        return;
-      }
-
-      if (extracted) {
-        if (extracted.title) {
-          setName(extracted.title);
-        }
-        if (extracted.description) {
-          setDescription(extracted.description);
-        }
-        if (
-          typeof extracted.price === 'number' &&
-          Number.isFinite(extracted.price) &&
-          extracted.price > 0
-        ) {
-          setSellingPrice(String(Math.round(extracted.price)));
-        }
-        if (
-          typeof extracted.originalPrice === 'number' &&
-          Number.isFinite(extracted.originalPrice) &&
-          extracted.originalPrice > 0
-        ) {
-          setOriginalPrice(String(Math.round(extracted.originalPrice)));
-        }
-        if (extracted.sizes) {
-          setSize(extracted.sizes);
-        }
-        if (Array.isArray(extracted.imageUrls) && extracted.imageUrls.length > 0) {
-          setImageDataUrls((prev) => {
-            const combined = [...prev];
-            for (const url of extracted.imageUrls || []) {
-              if (combined.length >= MAX_PRODUCT_IMAGES) break;
-              if (!combined.includes(url)) {
-                combined.push(url);
-              }
-            }
-            return combined.slice(0, MAX_PRODUCT_IMAGES);
-          });
-        }
-      }
-
-      if (payload.ok && !payload.partial) {
-        setImportNotice({
-          kind: 'success',
-          text: 'Product details & photos fetched! Review fields or use Crop / Edit before saving.',
-        });
-      } else {
-        setImportNotice({
-          kind: 'warning',
-          text:
-            payload.warning ||
-            'This site restricted full auto-fill. Source link is saved—tap Open Link or Use Text and upload photos via Cloudinary below.',
-        });
-      }
-    } catch {
-      setImportNotice({
-        kind: 'warning',
-        text: 'Could not reach auto-fetch right now. Source link is saved—tap Open Link to check product details or upload photos manually.',
-      });
-    } finally {
-      setFetchingUrl(false);
-    }
   };
 
   const handlePaymentQrChange = async (
@@ -1050,7 +694,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           : undefined;
 
       const parsedFallback = importUrl.trim()
-        ? parseSharedProductText(importUrl)
+        ? extractShareUrlAndPlatform(importUrl)
         : null;
       const finalSourceUrl =
         getSafeHttpUrl(sourceUrl) || parsedFallback?.url || '';
@@ -1098,10 +742,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
         },
         editing?.id
       );
-      if (!editing) {
-        writeShareDraft(shareDraftStorageKey, null);
-        setHasSavedPhoneDraft(false);
-      }
+      resetImportLinkState();
       leaveCurrentSubView();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save product.');
@@ -1204,27 +845,20 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           onSubmit={handleSubmit}
           className="rounded-2xl border border-[#D8B4FE] bg-white p-4 sm:p-6 space-y-4 shadow-sm"
         >
-          {/* Product URL Auto-Fill Box (Accepts Full Share Message or Direct URL) */}
+          {/* Product Source URL Box (Single Save Link Button + Auto-Reset) */}
           {(() => {
             const activeSourceHref =
               getSafeHttpUrl(sourceUrl) ||
-              parseSharedProductText(importUrl).url;
+              extractShareUrlAndPlatform(importUrl).url;
             return (
               <div className="rounded-2xl border border-[#E6D9EE] bg-[#FDF9FE] p-3.5 sm:p-4 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label
-                    htmlFor="product-url-autofill"
-                    className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]"
-                  >
-                    <Link2 className="w-3.5 h-3.5 text-[#DB2777]" />
-                    <span>Import from Product URL (Meesho / Flipkart)</span>
-                  </label>
-                  {hasSavedPhoneDraft && !editing && (
-                    <span className="text-[10px] font-semibold text-[#6D28D9]">
-                      Saved on device
-                    </span>
-                  )}
-                </div>
+                <label
+                  htmlFor="product-url-autofill"
+                  className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]"
+                >
+                  <Link2 className="w-3.5 h-3.5 text-[#DB2777]" />
+                  <span>Import from Product URL (Meesho / Flipkart)</span>
+                </label>
 
                 <textarea
                   id="product-url-autofill"
@@ -1234,52 +868,22 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
-                      void handleFetchProductFromUrl();
+                      handleSaveLinkClick();
                     }
                   }}
-                  placeholder="Paste full Meesho / Flipkart share message or https:// product link..."
+                  placeholder="Paste Meesho / Flipkart product URL or share message..."
                   className={inputClass}
                 />
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    disabled={fetchingUrl}
-                    onClick={() => void handleFetchProductFromUrl()}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                    onClick={handleSaveLinkClick}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2 text-xs font-semibold text-white hover:opacity-95 whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    {fetchingUrl ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Fetching...</span>
-                      </>
-                    ) : (
-                      <span>Fetch</span>
-                    )}
+                    <Link2 className="w-3.5 h-3.5" />
+                    <span>Save Link</span>
                   </button>
-
-                  {(importUrl.trim() || hasSavedPhoneDraft) && (
-                    <button
-                      type="button"
-                      onClick={handleUseShareText}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3.5 py-2 text-xs font-semibold text-[#6D28D9] hover:bg-[#FAF5FF] whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                      <span>Use Text</span>
-                    </button>
-                  )}
-
-                  {activeSourceHref && (
-                    <a
-                      href={activeSourceHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#FBCFE8] bg-[#FDF2F8] px-3.5 py-2 text-xs font-semibold text-[#BE185D] hover:bg-[#FCE7F3] whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Open Link</span>
-                    </a>
-                  )}
                 </div>
 
                 {importNotice && (
@@ -1302,14 +906,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     </span>
                     <button
                       type="button"
-                      onClick={() => {
-                        setSourceUrl('');
-                        setSourcePlatform(undefined);
-                        setImportUrl('');
-                        setImportNotice(null);
-                        writeShareDraft(shareDraftStorageKey, null);
-                        setHasSavedPhoneDraft(false);
-                      }}
+                      onClick={resetImportLinkState}
                       className="text-[#BE123C] font-semibold hover:underline shrink-0 cursor-pointer"
                     >
                       Unlink URL

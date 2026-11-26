@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -88,6 +88,10 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
   onMailCustomer,
 }) => {
   const initialConfig = resolveBangladeshConfig(settings);
+  const [bdEnabled, setBdEnabled] = useState<boolean>(
+    initialConfig.enabled !== false
+  );
+  const [togglingMode, setTogglingMode] = useState(false);
   const [rateInput, setRateInput] = useState(String(initialConfig.inrToBdtRate));
   const [whatsappInput, setWhatsappInput] = useState(
     initialConfig.whatsappNumber
@@ -95,6 +99,10 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
   const [savingConfig, setSavingConfig] = useState(false);
   const [configError, setConfigError] = useState('');
   const [configSaved, setConfigSaved] = useState(false);
+
+  useEffect(() => {
+    setBdEnabled(settings.bangladeshConfig?.enabled !== false);
+  }, [settings.bangladeshConfig?.enabled]);
 
   const [activeTab, setActiveTab] = useState<'customers' | 'bangladesh-view'>(
     'customers'
@@ -272,6 +280,7 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
     setSavingConfig(true);
     try {
       await onSaveBangladeshConfig({
+        enabled: bdEnabled,
         inrToBdtRate: Number(numRate.toFixed(4)),
         whatsappNumber: cleanWa,
         updatedAt: new Date().toISOString(),
@@ -313,7 +322,88 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
         </div>
 
         <div className="rounded-xl border border-[#99F6E4] bg-[#F0FDFA] px-3.5 py-2 text-xs font-semibold text-[#0F766E] font-mono-num">
-          1 INR = {effectiveRate} BDT · {bangladeshClients.length} BD Customers
+          {bdEnabled ? 'BD Mode ON' : 'BD Mode OFF'} · 1 INR = {effectiveRate} BDT · {bangladeshClients.length} BD Customers
+        </div>
+      </div>
+
+      {/* Bangladesh Mode ON/OFF Toggle Card */}
+      <div
+        className={`rounded-3xl border p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 shadow-xs transition-colors ${
+          bdEnabled
+            ? 'border-[#99F6E4] bg-gradient-to-r from-[#F0FDFA] to-[#ECFDF5]'
+            : 'border-[#E6D9EE] bg-white'
+        }`}
+      >
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-display-serif text-base sm:text-lg font-bold text-[#1F122B]">
+              Bangladesh Customer Mode
+            </h2>
+            <span
+              className={`rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${
+                bdEnabled
+                  ? 'bg-[#0F766E] text-white'
+                  : 'bg-[#F3E8FF] text-[#6B5B7B]'
+              }`}
+            >
+              {bdEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          <p className="text-xs text-[#4A3B59]">
+            {bdEnabled
+              ? 'Active: Detected Bangladesh visitors see BDT converted prices, Bengali delivery/custom notice, and direct Admin WhatsApp ordering.'
+              : 'Disabled: Even visitors and customers from Bangladesh see the standard Indian Customer App experience (normal INR pricing & checkout).'}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3 shrink-0">
+          <span
+            className={`text-xs font-bold ${
+              bdEnabled ? 'text-[#0F766E]' : 'text-[#6B5B7B]'
+            }`}
+          >
+            {bdEnabled ? 'Enabled' : 'Disabled'}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={bdEnabled}
+            aria-label="Toggle Bangladesh Customer Mode"
+            disabled={togglingMode || savingConfig}
+            onClick={async () => {
+              const nextEnabled = !bdEnabled;
+              setConfigError('');
+              setBdEnabled(nextEnabled);
+              setTogglingMode(true);
+              try {
+                await onSaveBangladeshConfig({
+                  enabled: nextEnabled,
+                  inrToBdtRate: Number(effectiveRate.toFixed(4)),
+                  whatsappNumber: effectiveWhatsapp,
+                  updatedAt: new Date().toISOString(),
+                });
+              } catch (err) {
+                setBdEnabled(!nextEnabled);
+                setConfigError(
+                  formatApiError(
+                    err,
+                    'Failed to update Bangladesh mode toggle.'
+                  )
+                );
+              } finally {
+                setTogglingMode(false);
+              }
+            }}
+            className={`relative inline-flex h-8 w-14 items-center rounded-full p-1 transition-colors cursor-pointer disabled:opacity-60 ${
+              bdEnabled ? 'bg-[#0F766E]' : 'bg-[#CBD5E1]'
+            }`}
+          >
+            <span
+              className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition-transform ${
+                bdEnabled ? 'translate-x-6' : 'translate-x-0'
+              }`}
+            />
+          </button>
         </div>
       </div>
 

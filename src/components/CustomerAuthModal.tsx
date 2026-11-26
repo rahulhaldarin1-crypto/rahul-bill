@@ -26,6 +26,7 @@ export interface GoogleOnboardingSeed {
 
 interface CustomerAuthModalProps {
   open: boolean;
+  bangladeshModeEnabled?: boolean;
   noticeBanner?: string;
   initialOnboardingUser?: GoogleOnboardingSeed | null;
   onClose: () => void;
@@ -34,12 +35,14 @@ interface CustomerAuthModalProps {
 
 export const CustomerAuthModal: React.FC<CustomerAuthModalProps> = ({
   open,
+  bangladeshModeEnabled = true,
   noticeBanner = '',
   initialOnboardingUser = null,
   onClose,
   onSuccess,
 }) => {
-  const { isBangladesh } = useBangladeshDetection();
+  const { isBangladesh: geoIsBangladesh } = useBangladeshDetection();
+  const isBangladesh = bangladeshModeEnabled && geoIsBangladesh;
   const [step, setStep] = useState<'signin' | 'onboarding'>('signin');
   const [error, setError] = useState('');
   const [signingIn, setSigningIn] = useState(false);

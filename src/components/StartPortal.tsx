@@ -375,12 +375,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
   const sym = settings?.currencySymbol || '₹';
   const { isBangladesh: geoIsBangladesh } = useBangladeshDetection();
-  const isBangladesh =
-    geoIsBangladesh ||
-    String(loggedInCustomer?.detectedCountry || '').trim().toUpperCase() ===
-      'BD';
   const bdConfig = resolveBangladeshConfig(settings);
+  const bdFeatureEnabled = bdConfig.enabled !== false;
+  const isBangladesh =
+    bdFeatureEnabled &&
+    (geoIsBangladesh ||
+      String(loggedInCustomer?.detectedCountry || '').trim().toUpperCase() ===
+        'BD');
   const bdtRate = bdConfig.inrToBdtRate;
+  const bdFeatureEnabledRef = useRef(bdFeatureEnabled);
+  bdFeatureEnabledRef.current = bdFeatureEnabled;
 
   const triggerStoreNotice = (msg: string) => {
     setStoreNotice(msg);
@@ -1406,13 +1410,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           countryCode: null,
           isBangladesh: false,
         }));
+        const bdActive = bdFeatureEnabledRef.current && geo.isBangladesh;
         const resolved = await api.resolveGoogleCustomerAccount({
           uid: user.uid,
           email: user.email,
           displayName: user.displayName,
           photoURL: user.photoURL,
-          detectedCountry: geo.isBangladesh ? 'BD' : undefined,
-          isBangladesh: geo.isBangladesh,
+          detectedCountry: bdActive ? 'BD' : undefined,
+          isBangladesh: bdActive,
         });
         if (!active) return;
         if (!resolved.needsOnboarding && resolved.client) {
@@ -5062,6 +5067,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       {/* Customer Google Sign-In & Quick Onboarding Modal */}
       <CustomerAuthModal
         open={authModalOpen}
+        bangladeshModeEnabled={bdFeatureEnabled}
         noticeBanner={authNotice}
         initialOnboardingUser={pendingOnboardingUser}
         onClose={() =>

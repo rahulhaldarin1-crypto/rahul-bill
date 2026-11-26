@@ -95,10 +95,12 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   onClientUpdated,
 }) => {
   const { isBangladesh: geoBangladesh } = useBangladeshDetection();
-  const isBangladesh =
-    geoBangladesh ||
-    String(client.detectedCountry || '').trim().toUpperCase() === 'BD';
   const bdConfig = resolveBangladeshConfig(settings);
+  const bdFeatureEnabled = bdConfig.enabled !== false;
+  const isBangladesh =
+    bdFeatureEnabled &&
+    (geoBangladesh ||
+      String(client.detectedCountry || '').trim().toUpperCase() === 'BD');
   const bdtRate = bdConfig.inrToBdtRate;
 
   const [activeTab, setActiveTab] = useState<CustomerDashboardTab>(initialTab);

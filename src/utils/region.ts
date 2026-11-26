@@ -7,6 +7,7 @@ export const BANGLADESH_CHARGE_NOTICE =
   'ডেলিভারি চার্জ ও কাস্টম চার্জ প্রজোজো হবে';
 
 export const DEFAULT_BANGLADESH_CONFIG: BangladeshConfig = {
+  enabled: true,
   inrToBdtRate: DEFAULT_INR_TO_BDT_RATE,
   whatsappNumber: WHATSAPP_SUPPORT_PHONE,
   updatedAt: '',
@@ -148,6 +149,7 @@ export function resolveBangladeshConfig(
   );
 
   return {
+    enabled: raw?.enabled !== false,
     inrToBdtRate,
     whatsappNumber: normalizedPhone || WHATSAPP_SUPPORT_PHONE,
     updatedAt: String(raw?.updatedAt || ''),
