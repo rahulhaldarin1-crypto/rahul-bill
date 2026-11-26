@@ -738,6 +738,8 @@ export default function App() {
       viewPanel: next.viewPanel ?? workspace.settings.viewPanel,
       highlightConfig: next.highlightConfig ?? workspace.settings.highlightConfig,
       bangladeshConfig: next.bangladeshConfig ?? workspace.settings.bangladeshConfig,
+      googleSheetsWebhookUrl:
+        next.googleSheetsWebhookUrl ?? workspace.settings.googleSheetsWebhookUrl,
       lastAdminOtpVerifiedAt:
         next.lastAdminOtpVerifiedAt ?? workspace.settings.lastAdminOtpVerifiedAt,
     };

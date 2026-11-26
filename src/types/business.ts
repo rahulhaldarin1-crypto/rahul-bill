@@ -221,6 +221,7 @@ export interface BusinessSettings {
   viewPanel?: ViewPanelConfig;
   highlightConfig?: HighlightConfig;
   bangladeshConfig?: BangladeshConfig;
+  googleSheetsWebhookUrl?: string;
   lastAdminOtpVerifiedAt?: string;
 }
 

@@ -642,6 +642,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   viewPanel: DEFAULT_VIEW_PANEL_CONFIG,
   highlightConfig: DEFAULT_HIGHLIGHT_CONFIG,
   bangladeshConfig: DEFAULT_BANGLADESH_CONFIG,
+  googleSheetsWebhookUrl: '',
 };
 
 export function mergeAdminPaymentSettings(
@@ -845,6 +846,7 @@ export function mergeBusinessSettings(
           .replace(/[^\d]/g, '') || DEFAULT_BANGLADESH_CONFIG.whatsappNumber,
       updatedAt: String(raw?.bangladeshConfig?.updatedAt || ''),
     },
+    googleSheetsWebhookUrl: String(raw?.googleSheetsWebhookUrl || '').trim(),
   };
 }
 

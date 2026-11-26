@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleFetchProduct } from './api/fetch-product.ts';
+import { handleSheetsSync } from './api/sheets-sync.ts';
 
 dotenv.config();
 
@@ -335,6 +336,19 @@ async function startServer(): Promise<void> {
   // Product URL metadata & image proxy route (mirrors /api/fetch-product Vercel function)
   app.all('/api/fetch-product', (req: Request, res: Response) => {
     void handleFetchProduct(
+      {
+        method: req.method,
+        headers: req.headers as Record<string, string | string[] | undefined>,
+        query: req.query as Record<string, string | string[] | undefined>,
+        body: req.body,
+      },
+      res
+    );
+  });
+
+  // Google Sheets Webhook background sync proxy (mirrors /api/sheets-sync Vercel function)
+  app.all('/api/sheets-sync', (req: Request, res: Response) => {
+    void handleSheetsSync(
       {
         method: req.method,
         headers: req.headers as Record<string, string | string[] | undefined>,

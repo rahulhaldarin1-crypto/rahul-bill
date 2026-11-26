@@ -83,6 +83,13 @@ import {
   detectClientBangladeshFallback,
   fetchGeoRegion,
 } from './region';
+import {
+  buildClientSheetPayload,
+  buildInvoiceSheetPayload,
+  buildOrderSheetPayload,
+  isValidSheetsWebhookUrl,
+  postToGoogleSheetsWebhook,
+} from './sheetsSync';
 
 const SETTINGS_COL = 'settings';
 const SETTINGS_DOC = 'business';
@@ -455,6 +462,79 @@ async function computeStockDeltaProducts(
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
+}
+
+interface SheetSyncTriggerParams {
+  client?: Client;
+  clientIdToSync?: string;
+  order?: CustomerOrder;
+  invoice?: Invoice;
+}
+
+function syncRecordsToGoogleSheetsBackground(
+  params: SheetSyncTriggerParams
+): void {
+  void (async () => {
+    try {
+      const settingsSnap = await getDoc(doc(db, SETTINGS_COL, SETTINGS_DOC));
+      if (!settingsSnap.exists()) return;
+      const settings = mergeBusinessSettings(
+        settingsSnap.data() as Partial<BusinessSettings>
+      );
+      const webhookUrl = String(settings.googleSheetsWebhookUrl || '').trim();
+      if (!isValidSheetsWebhookUrl(webhookUrl)) return;
+
+      let targetClient = params.client;
+      const lookupClientId =
+        targetClient?.id ||
+        params.clientIdToSync ||
+        params.order?.clientId ||
+        params.invoice?.clientId;
+
+      if (!targetClient && lookupClientId) {
+        try {
+          const cliSnap = await getDoc(doc(db, CLIENTS_COL, lookupClientId));
+          if (cliSnap.exists()) {
+            targetClient = cliSnap.data() as Client;
+          }
+        } catch {
+          // Non-blocking lookup
+        }
+      }
+
+      if (targetClient || params.clientIdToSync) {
+        let allInvoices: Invoice[] = [];
+        try {
+          const invSnap = await getDocs(collection(db, INVOICES_COL));
+          allInvoices = invSnap.docs.map((d) => d.data() as Invoice);
+        } catch {
+          // Non-blocking lookup
+        }
+        if (targetClient) {
+          postToGoogleSheetsWebhook(
+            webhookUrl,
+            buildClientSheetPayload(targetClient, allInvoices)
+          );
+        }
+      }
+
+      if (params.order) {
+        postToGoogleSheetsWebhook(
+          webhookUrl,
+          buildOrderSheetPayload(params.order, targetClient?.email)
+        );
+      }
+
+      if (params.invoice) {
+        postToGoogleSheetsWebhook(
+          webhookUrl,
+          buildInvoiceSheetPayload(params.invoice, targetClient?.email)
+        );
+      }
+    } catch {
+      // Background Google Sheets sync must never delay or fail Firestore operations
+    }
+  })();
 }
 
 export const firestoreService = {
@@ -1178,6 +1258,7 @@ export const firestoreService = {
     });
     try {
       await setDoc(doc(db, CLIENTS_COL, client.id), client);
+      syncRecordsToGoogleSheetsBackground({ client });
       return client;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `${CLIENTS_COL}/${client.id}`);
@@ -1211,6 +1292,7 @@ export const firestoreService = {
         updatedAt: new Date().toISOString(),
       });
       await setDoc(ref, updated);
+      syncRecordsToGoogleSheetsBackground({ client: updated });
       return updated;
     } catch (error) {
       if (error instanceof Error && error.message === 'Customer not found.') throw error;
@@ -1356,6 +1438,10 @@ export const firestoreService = {
         }
       }
       await batch.commit();
+      syncRecordsToGoogleSheetsBackground({
+        invoice,
+        clientIdToSync: invoice.clientId || undefined,
+      });
       return { invoice, payment, products };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${INVOICES_COL}/${invoice.id}`);
@@ -1437,6 +1523,10 @@ export const firestoreService = {
       }
 
       await batch.commit();
+      syncRecordsToGoogleSheetsBackground({
+        invoice: updated,
+        clientIdToSync: updated.clientId || undefined,
+      });
       return {
         invoice: updated,
         products,
@@ -1491,6 +1581,11 @@ export const firestoreService = {
         }
       }
       await batch.commit();
+      if (existing?.clientId) {
+        syncRecordsToGoogleSheetsBackground({
+          clientIdToSync: existing.clientId,
+        });
+      }
       return { ok: true, products };
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `${INVOICES_COL}/${id}`);
@@ -1557,6 +1652,10 @@ export const firestoreService = {
         updatedAt: updatedInvoice.updatedAt,
       });
       await batch.commit();
+      syncRecordsToGoogleSheetsBackground({
+        invoice: updatedInvoice,
+        clientIdToSync: updatedInvoice.clientId || undefined,
+      });
       return { payment, invoice: updatedInvoice };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${PAYMENTS_COL}/${payment.id}`);
@@ -1608,6 +1707,12 @@ export const firestoreService = {
         });
       }
       await batch.commit();
+      if (updatedInvoice) {
+        syncRecordsToGoogleSheetsBackground({
+          invoice: updatedInvoice,
+          clientIdToSync: updatedInvoice.clientId || undefined,
+        });
+      }
       return { ok: true, invoice: updatedInvoice };
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `${PAYMENTS_COL}/${id}`);
@@ -1641,6 +1746,7 @@ export const firestoreService = {
         deliveryStatus: updated.deliveryStatus,
         updatedAt,
       });
+      syncRecordsToGoogleSheetsBackground({ invoice: updated });
       return updated;
     } catch (error) {
       if (error instanceof Error && error.message === 'Order not found.') throw error;
@@ -1997,6 +2103,7 @@ export const firestoreService = {
 
     try {
       await setDoc(doc(db, CLIENTS_COL, client.id), client);
+      syncRecordsToGoogleSheetsBackground({ client });
       return { client };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${CLIENTS_COL}/${client.id}`);
@@ -2250,6 +2357,7 @@ export const firestoreService = {
       });
       try {
         await setDoc(doc(db, CLIENTS_COL, matched.id), updated);
+        syncRecordsToGoogleSheetsBackground({ client: updated });
         return { client: updated, needsOnboarding: false };
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `${CLIENTS_COL}/${matched.id}`);
@@ -2396,6 +2504,7 @@ export const firestoreService = {
 
     try {
       await setDoc(doc(db, CLIENTS_COL, client.id), client);
+      syncRecordsToGoogleSheetsBackground({ client });
       return client;
     } catch (error) {
       if (isBdFlow && !cleanPhone && isPermissionDeniedError(error)) {
@@ -2406,6 +2515,7 @@ export const firestoreService = {
         });
         try {
           await setDoc(doc(db, CLIENTS_COL, fallbackClient.id), fallbackClient);
+          syncRecordsToGoogleSheetsBackground({ client: fallbackClient });
           return fallbackClient;
         } catch (fallbackErr) {
           handleFirestoreError(
@@ -2492,6 +2602,7 @@ export const firestoreService = {
         updatedAt: now,
       });
       await setDoc(ref, updated);
+      syncRecordsToGoogleSheetsBackground({ client: updated });
       return updated;
     } catch (error) {
       if (error instanceof Error && error.message === 'Customer account not found.') {
@@ -2851,6 +2962,7 @@ export const firestoreService = {
       batch.set(doc(db, CLIENTS_COL, client.id), client);
       batch.set(doc(db, ORDERS_COL, order.id), order);
       await batch.commit();
+      syncRecordsToGoogleSheetsBackground({ client, order });
       return { order, client };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${ORDERS_COL}/${order.id}`);
@@ -3139,6 +3251,11 @@ export const firestoreService = {
         }
       }
       await batch.commit();
+      syncRecordsToGoogleSheetsBackground({
+        client: nextClient,
+        order: updatedOrder,
+        invoice,
+      });
       return {
         order: updatedOrder,
         invoice,
@@ -3163,6 +3280,7 @@ export const firestoreService = {
         updatedAt: new Date().toISOString(),
       });
       await setDoc(orderRef, updated);
+      syncRecordsToGoogleSheetsBackground({ order: updated });
       return updated;
     } catch (error) {
       if (error instanceof Error && error.message === 'Order not found.') throw error;
