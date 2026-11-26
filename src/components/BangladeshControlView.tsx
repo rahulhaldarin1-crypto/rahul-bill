@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowLeftRight,
   Check,
+  CreditCard,
   ExternalLink,
   Eye,
   Globe,
@@ -17,6 +18,7 @@ import {
   Search,
   ShoppingBag,
   Store,
+  Truck,
   Users,
   X,
 } from 'lucide-react';
@@ -120,6 +122,7 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
   );
   const [previewVariant, setPreviewVariant] = useState('');
   const [previewQty, setPreviewQty] = useState(1);
+  const [previewIndiaNotice, setPreviewIndiaNotice] = useState('');
 
   const sym = settings.currencySymbol || '₹';
 
@@ -546,11 +549,19 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
                 Bangladesh View
               </div>
               <div className="text-xs text-[#6B5B7B]">
-                Preview live BDT prices, Bangla notice &amp; WhatsApp order
+                {bdEnabled
+                  ? 'Live: BDT prices, Bangla notice & WhatsApp order'
+                  : 'Live: Standard India INR & normal checkout (BD OFF)'}
               </div>
             </div>
           </div>
-          <span className="rounded-lg bg-white border border-[#99F6E4] px-2.5 py-1 text-xs font-mono-num font-bold text-[#0F766E]">
+          <span
+            className={`rounded-lg bg-white border px-2.5 py-1 text-xs font-mono-num font-bold ${
+              bdEnabled
+                ? 'border-[#99F6E4] text-[#0F766E]'
+                : 'border-[#E6D9EE] text-[#7E22CE]'
+            }`}
+          >
             {previewItems.length} Items
           </span>
         </button>
@@ -730,38 +741,75 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
           )}
         </section>
       ) : (
-        /* SECTION 2: BANGLADESH VIEW (LIVE STOREFRONT PREVIEW) */
-        <section className="rounded-3xl border border-[#99F6E4] bg-white p-5 sm:p-6 space-y-4">
+        /* SECTION 2: BANGLADESH VIEW (LIVE STOREFRONT PREVIEW — REFLECTS ON/OFF TOGGLE IN REAL TIME) */
+        <section
+          className={`rounded-3xl border bg-white p-5 sm:p-6 space-y-4 transition-colors ${
+            bdEnabled ? 'border-[#99F6E4]' : 'border-[#E6D9EE]'
+          }`}
+        >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F4ECF8] pb-3">
             <div>
-              <h2 className="font-display-serif text-lg font-bold text-[#1F122B]">
-                Live Bangladesh Customer Storefront Preview
-              </h2>
-              <p className="text-xs text-[#6B5B7B]">
-                Shows all eligible products with INR + auto-converted BDT pricing (1 INR = {effectiveRate} BDT) and direct Admin WhatsApp ordering.
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-display-serif text-lg font-bold text-[#1F122B]">
+                  {bdEnabled
+                    ? 'Live Bangladesh Customer Storefront Preview'
+                    : 'Live Storefront Preview for Bangladesh Visitors (Standard India View)'}
+                </h2>
+                <span
+                  className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                    bdEnabled
+                      ? 'bg-[#0F766E] text-white'
+                      : 'bg-[#F3E8FF] text-[#7E22CE]'
+                  }`}
+                >
+                  {bdEnabled ? 'BD Mode ON' : 'BD Mode OFF'}
+                </span>
+              </div>
+              <p className="text-xs text-[#6B5B7B] mt-0.5">
+                {bdEnabled
+                  ? `Bangladesh Mode ON: Shows INR + auto-converted BDT pricing (1 INR = ${effectiveRate} BDT), Bangla charge notice, and direct Admin WhatsApp ordering.`
+                  : 'Bangladesh Mode OFF: Bangladesh visitors see the standard Indian Customer App (INR pricing only, normal Cart & COD / UPI checkout, no BDT conversion or WhatsApp-only redirect).'}
               </p>
             </div>
-            <div className="rounded-xl border border-[#99F6E4] bg-[#F0FDFA] px-3 py-1.5 text-xs font-bold text-[#0F766E]">
-              {BANGLADESH_CHARGE_NOTICE}
-            </div>
+            {bdEnabled ? (
+              <div className="rounded-xl border border-[#99F6E4] bg-[#F0FDFA] px-3 py-1.5 text-xs font-bold text-[#0F766E]">
+                {BANGLADESH_CHARGE_NOTICE}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-[#E6D9EE] bg-[#FAF5FF] px-3 py-1.5 text-xs font-bold text-[#7E22CE]">
+                Standard India INR &amp; Normal Checkout
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
             <div className="relative flex-1 min-w-[220px]">
-              <Search className="w-4 h-4 text-[#0F766E] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search
+                className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
+                  bdEnabled ? 'text-[#0F766E]' : 'text-[#7E22CE]'
+                }`}
+              />
               <input
                 type="search"
                 value={previewSearch}
                 onChange={(e) => setPreviewSearch(e.target.value)}
-                placeholder="Search products or seller in Bangladesh View..."
-                className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-9 pr-3 py-2 text-xs text-[#1F122B] focus:border-[#0F766E] focus:bg-white focus:outline-none"
+                placeholder={
+                  bdEnabled
+                    ? 'Search products or seller in Bangladesh View...'
+                    : 'Search products or seller in India View...'
+                }
+                className={`w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] pl-9 pr-3 py-2 text-xs text-[#1F122B] focus:bg-white focus:outline-none ${
+                  bdEnabled ? 'focus:border-[#0F766E]' : 'focus:border-[#9333EA]'
+                }`}
               />
             </div>
 
             <select
               value={previewCategory}
               onChange={(e) => setPreviewCategory(e.target.value)}
-              className="rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#1F122B] focus:border-[#0F766E] focus:outline-none"
+              className={`rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-semibold text-[#1F122B] focus:outline-none ${
+                bdEnabled ? 'focus:border-[#0F766E]' : 'focus:border-[#9333EA]'
+              }`}
             >
               <option value="ALL">All Categories ({previewItems.length})</option>
               {PRODUCT_CATEGORIES.map((cat) => (
@@ -781,29 +829,31 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
               {filteredPreviewItems.map((item) => {
                 const mainImg = item.imageDataUrls[0] || item.imageDataUrl || '';
                 const bdtPrice = convertInrToBdt(item.price, effectiveRate);
+                const openItemPreview = () => {
+                  setPreviewProduct(item);
+                  setPreviewVariant(
+                    parseProductVariantOptions(item.size)[0] || ''
+                  );
+                  setPreviewQty(1);
+                  setPreviewIndiaNotice('');
+                };
                 return (
                   <div
                     key={item.id}
-                    className="rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#0F766E] transition-colors"
+                    className={`rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between transition-colors ${
+                      bdEnabled
+                        ? 'hover:border-[#0F766E]'
+                        : 'hover:border-[#9333EA]'
+                    }`}
                   >
                     <div
                       role="button"
                       tabIndex={0}
-                      onClick={() => {
-                        setPreviewProduct(item);
-                        setPreviewVariant(
-                          parseProductVariantOptions(item.size)[0] || ''
-                        );
-                        setPreviewQty(1);
-                      }}
+                      onClick={openItemPreview}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          setPreviewProduct(item);
-                          setPreviewVariant(
-                            parseProductVariantOptions(item.size)[0] || ''
-                          );
-                          setPreviewQty(1);
+                          openItemPreview();
                         }
                       }}
                       className="cursor-pointer"
@@ -840,22 +890,31 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
                         <span className="text-xs font-bold text-[#1F122B]">
                           {formatCurrency(item.price, sym)}
                         </span>
-                        <span className="text-xs font-bold text-[#0F766E]">
-                          · {formatBdt(bdtPrice)}
-                        </span>
+                        {bdEnabled ? (
+                          <span className="text-xs font-bold text-[#0F766E]">
+                            · {formatBdt(bdtPrice)}
+                          </span>
+                        ) : (
+                          item.originalPrice &&
+                          item.originalPrice > item.price && (
+                            <span className="text-[11px] text-[#94A3B8] line-through">
+                              {formatCurrency(item.originalPrice, sym)}
+                            </span>
+                          )
+                        )}
                       </div>
                       <button
                         type="button"
-                        onClick={() => {
-                          setPreviewProduct(item);
-                          setPreviewVariant(
-                            parseProductVariantOptions(item.size)[0] || ''
-                          );
-                          setPreviewQty(1);
-                        }}
-                        className="w-full rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] py-1.5 px-2 text-center text-[11px] font-bold text-white hover:opacity-95 cursor-pointer"
+                        onClick={openItemPreview}
+                        className={`w-full rounded-xl py-1.5 px-2 text-center text-[11px] font-bold text-white hover:opacity-95 cursor-pointer ${
+                          bdEnabled
+                            ? 'bg-gradient-to-r from-[#0F766E] to-[#15803D]'
+                            : 'bg-gradient-to-r from-[#DB2777] to-[#7E22CE]'
+                        }`}
                       >
-                        Preview BD Product
+                        {bdEnabled
+                          ? 'Preview BD Product'
+                          : 'Preview Standard View'}
                       </button>
                     </div>
                   </div>
@@ -866,14 +925,17 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
         </section>
       )}
 
-      {/* Bangladesh Product & WhatsApp Order Preview Modal */}
+      {/* Live Storefront Product Preview Modal (Dynamically reflects BD Mode ON / OFF) */}
       {previewProduct && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
           role="dialog"
           aria-modal="true"
           aria-label={previewProduct.name}
-          onClick={() => setPreviewProduct(null)}
+          onClick={() => {
+            setPreviewProduct(null);
+            setPreviewIndiaNotice('');
+          }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -881,14 +943,27 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
           >
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#EFE2F5]">
               <div className="flex items-center gap-2 min-w-0">
-                <Globe className="w-4 h-4 text-[#0F766E] shrink-0" />
-                <span className="text-xs font-bold text-[#0F766E] truncate">
-                  Bangladesh Customer View Preview
+                {bdEnabled ? (
+                  <Globe className="w-4 h-4 text-[#0F766E] shrink-0" />
+                ) : (
+                  <ShoppingBag className="w-4 h-4 text-[#DB2777] shrink-0" />
+                )}
+                <span
+                  className={`text-xs font-bold truncate ${
+                    bdEnabled ? 'text-[#0F766E]' : 'text-[#7E22CE]'
+                  }`}
+                >
+                  {bdEnabled
+                    ? 'Bangladesh Customer View Preview'
+                    : 'Standard Indian Customer View Preview (BD Mode OFF)'}
                 </span>
               </div>
               <button
                 type="button"
-                onClick={() => setPreviewProduct(null)}
+                onClick={() => {
+                  setPreviewProduct(null);
+                  setPreviewIndiaNotice('');
+                }}
                 aria-label="Close preview"
                 className="p-1.5 rounded-full text-[#6B5B7B] hover:bg-[#FAF5FF] cursor-pointer"
               >
@@ -926,9 +1001,18 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
                     <span className="text-lg font-bold text-[#1F122B]">
                       {formatCurrency(previewProduct.price, sym)}
                     </span>
-                    <span className="text-lg font-bold text-[#0F766E]">
-                      · {formatBdt(convertInrToBdt(previewProduct.price, effectiveRate))}
-                    </span>
+                    {bdEnabled ? (
+                      <span className="text-lg font-bold text-[#0F766E]">
+                        · {formatBdt(convertInrToBdt(previewProduct.price, effectiveRate))}
+                      </span>
+                    ) : (
+                      previewProduct.originalPrice &&
+                      previewProduct.originalPrice > previewProduct.price && (
+                        <span className="text-sm text-[#94A3B8] line-through">
+                          {formatCurrency(previewProduct.originalPrice, sym)}
+                        </span>
+                      )
+                    )}
                   </div>
                   {previewProduct.sellerName && (
                     <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#6B5B7B]">
@@ -993,40 +1077,93 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-[#99F6E4] bg-[#F0FDFA] px-4 py-3 text-xs font-bold text-[#0F766E]">
-                {BANGLADESH_CHARGE_NOTICE}
-              </div>
+              {bdEnabled ? (
+                <>
+                  <div className="rounded-2xl border border-[#99F6E4] bg-[#F0FDFA] px-4 py-3 text-xs font-bold text-[#0F766E]">
+                    {BANGLADESH_CHARGE_NOTICE}
+                  </div>
 
-              <a
-                href={buildBangladeshWhatsAppOrderUrl({
-                  whatsappNumber: effectiveWhatsapp,
-                  inrToBdtRate: effectiveRate,
-                  items: [
-                    {
-                      id: previewProduct.id,
-                      productId:
-                        previewProduct.catalogProductId || previewProduct.id,
-                      name: previewProduct.name,
-                      priceInr: previewProduct.price,
-                      quantity: previewQty,
-                      selectedVariant: previewVariant || previewProduct.size,
-                      color: previewProduct.color,
-                      sellerId: previewProduct.sellerId,
-                      sellerName: previewProduct.sellerName,
-                    },
-                  ],
-                  productUrl: `https://glamour-galleria.vercel.app/?product=${encodeURIComponent(
-                    previewProduct.id
-                  )}`,
-                })}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] px-4 py-3 text-sm font-bold text-white hover:opacity-95"
-              >
-                <MessageCircle className="w-4 h-4" />
-                <span>Test Direct Admin WhatsApp Order</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
+                  <a
+                    href={buildBangladeshWhatsAppOrderUrl({
+                      whatsappNumber: effectiveWhatsapp,
+                      inrToBdtRate: effectiveRate,
+                      items: [
+                        {
+                          id: previewProduct.id,
+                          productId:
+                            previewProduct.catalogProductId || previewProduct.id,
+                          name: previewProduct.name,
+                          priceInr: previewProduct.price,
+                          quantity: previewQty,
+                          selectedVariant: previewVariant || previewProduct.size,
+                          color: previewProduct.color,
+                          sellerId: previewProduct.sellerId,
+                          sellerName: previewProduct.sellerName,
+                        },
+                      ],
+                      productUrl: `https://glamour-galleria.vercel.app/?product=${encodeURIComponent(
+                        previewProduct.id
+                      )}`,
+                    })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#0F766E] to-[#15803D] px-4 py-3 text-sm font-bold text-white hover:opacity-95"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>Test Direct Admin WhatsApp Order</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded-2xl border border-[#E6D9EE] bg-[#FAF5FF] px-4 py-3 space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs font-bold text-[#7E22CE]">
+                      <CreditCard className="w-4 h-4 shrink-0" />
+                      <span>Normal Indian Checkout Flow Active</span>
+                    </div>
+                    <p className="text-[11px] text-[#4A3B59]">
+                      Standard INR total:{' '}
+                      <span className="font-mono-num font-bold text-[#1F122B]">
+                        {formatCurrency(previewProduct.price * previewQty, sym)}
+                      </span>{' '}
+                      · Supports Cart, Cash on Delivery (COD) &amp; Direct UPI / QR checkout. No BDT conversion or WhatsApp-only redirect.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewIndiaNotice(
+                          `Added ${previewQty} × ${previewProduct.name} (${formatCurrency(previewProduct.price * previewQty, sym)}) using Standard Cart flow.`
+                        )
+                      }
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-2.5 text-xs font-bold text-[#7E22CE] hover:bg-[#FAF5FF] cursor-pointer"
+                    >
+                      <ShoppingBag className="w-3.5 h-3.5" />
+                      <span>Add to Cart</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreviewIndiaNotice(
+                          `Normal COD / UPI Checkout opened for ${formatCurrency(previewProduct.price * previewQty, sym)} (No WhatsApp redirect).`
+                        )
+                      }
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 py-2.5 text-xs font-bold text-white hover:opacity-95 cursor-pointer"
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      <span>Buy Now (COD / UPI)</span>
+                    </button>
+                  </div>
+
+                  {previewIndiaNotice && (
+                    <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3 py-2 text-[11px] font-semibold text-[#15803D]">
+                      {previewIndiaNotice}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
