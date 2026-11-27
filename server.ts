@@ -648,6 +648,7 @@ async function startServer(): Promise<void> {
     'rahulhaldar.in1@gmail.com',
     'rahulhaldar.in@gmail.com',
     'mohontopuja27@gmail.com',
+    'ejaddarsudip402@gmail.com',
   ]);
   let cachedGoogleCerts: { certs: Record<string, string>; expiresAtMs: number } | null = null;
 
@@ -1533,6 +1534,39 @@ async function startServer(): Promise<void> {
     ].join('\n    ');
     return stripped.replace('<head>', `<head>\n    ${metaTags}`);
   };
+
+  // App installer download handler (serves .apk from public/downloads or dist/downloads safely)
+  const PUBLIC_DOWNLOADS_DIR = path.resolve(__dirname, 'public', 'downloads');
+  const DIST_DOWNLOADS_DIR = path.resolve(DIST_DIR, 'downloads');
+
+  app.get('/downloads/:filename', (req: Request, res: Response) => {
+    const requestedName = path.basename(String(req.params.filename || '').trim());
+    if (!/^[a-zA-Z0-9._-]+\.apk$/i.test(requestedName)) {
+      res.status(400).json({ error: 'Invalid installer filename.' });
+      return;
+    }
+
+    const candidates = [
+      { base: PUBLIC_DOWNLOADS_DIR, file: path.resolve(PUBLIC_DOWNLOADS_DIR, requestedName) },
+      { base: DIST_DOWNLOADS_DIR, file: path.resolve(DIST_DOWNLOADS_DIR, requestedName) },
+    ];
+
+    for (const candidate of candidates) {
+      if (
+        candidate.file.startsWith(candidate.base + path.sep) &&
+        fs.existsSync(candidate.file) &&
+        fs.statSync(candidate.file).isFile()
+      ) {
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.download(candidate.file, requestedName);
+        return;
+      }
+    }
+
+    res.status(404).json({
+      error: 'App installer APK file has not been uploaded to /public/downloads yet.',
+    });
+  });
 
   const isDev = process.env.NODE_ENV === 'development' || !fs.existsSync(DIST_INDEX);
   if (isDev) {

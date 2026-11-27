@@ -369,7 +369,7 @@ export const SubscriptionsAdminView: React.FC<SubscriptionsAdminViewProps> = ({
 
                   {effectiveStatus === 'active' && (
                     <div className="rounded-lg border border-[#BBF7D0] bg-[#F0FDF4] px-2.5 py-1 text-xs font-bold text-[#15803D] font-mono-num">
-                      {remainingDays} দিন বাকি ({remainingDays}d left)
+                      {remainingDays} {remainingDays === 1 ? 'day' : 'days'} left
                     </div>
                   )}
                 </div>

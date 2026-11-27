@@ -637,7 +637,7 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
               <div className="space-y-1 min-w-0">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]">
                   <Sparkles className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
-                  <span>Subscription Ad Mode (সাবস্ক্রিপশন অ্যাড মোড)</span>
+                  <span>Subscription Ad Mode</span>
                 </div>
                 <p className="text-[11px] text-[#6B5B7B] leading-relaxed">
                   Hides regular uploaded ad media and displays ONLY the clickable &ldquo;₹99 / 28 Days Free Delivery Pass&rdquo; banner.
@@ -663,7 +663,7 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
               <div className="space-y-1 min-w-0">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]">
                   <RefreshCw className="w-3.5 h-3.5 text-[#7E22CE] shrink-0" />
-                  <span>Auto (অটো — 3-Second Cycle)</span>
+                  <span>Auto (3-Second Cycle)</span>
                 </div>
                 <p className="text-[11px] text-[#6B5B7B] leading-relaxed">
                   Automatically cycles customer ad banner between uploaded ad photo/video and the ₹99 Subscription Ad every 3 seconds.

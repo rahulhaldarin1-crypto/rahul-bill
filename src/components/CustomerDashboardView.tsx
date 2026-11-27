@@ -1034,48 +1034,94 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         </div>
       </section>
 
-      {/* ₹99 FREE DELIVERY SUBSCRIPTION CARD (CUSTOMER ACCOUNT) */}
-      <section className="w-full max-w-full overflow-hidden rounded-3xl border border-[#E9D5FF] bg-gradient-to-br from-[#FAF5FF] via-white to-[#FDF2F8] p-5 sm:p-6 space-y-4 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1.5 min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-[#7E22CE] to-[#DB2777] px-2.5 py-1 text-[11px] font-bold text-white">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass</span>
-              </span>
-              {subscriptionStatus === 'active' && (
-                <span className="inline-flex items-center gap-1 rounded-lg border border-[#BBF7D0] bg-[#F0FDF4] px-2.5 py-1 text-[11px] font-bold text-[#15803D]">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Active Pass</span>
-                </span>
-              )}
-              {subscriptionStatus === 'pending' && (
-                <span className="inline-flex items-center gap-1 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-2.5 py-1 text-[11px] font-bold text-[#B45309]">
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>Verification Pending</span>
-                </span>
-              )}
-              {subscriptionStatus === 'expired' && (
-                <span className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#475569]">
-                  Expired
-                </span>
-              )}
-              {subscriptionStatus === 'rejected' && (
-                <span className="rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-2.5 py-1 text-[11px] font-bold text-[#BE123C]">
-                  Rejected — Re-apply
-                </span>
-              )}
+      {/* ₹99 FREE DELIVERY SUBSCRIPTION CARD (ATM CARD DESIGN — CUSTOMER ACCOUNT) */}
+      <section className="relative w-full max-w-full overflow-hidden rounded-3xl border border-white/20 bg-gradient-to-br from-[#1E0B3B] via-[#5B21B6] to-[#BE185D] p-5 sm:p-6 space-y-5 text-white shadow-xl">
+        {/* Subtle metallic ATM card sheen */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-20 -right-16 w-60 h-60 rounded-full bg-white/10 blur-2xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-24 -left-16 w-60 h-60 rounded-full bg-[#F472B6]/20 blur-2xl"
+        />
+
+        {/* ATM Card Top Row: GG PASS + EMV Chip & Contactless Icon + Pass Status Badges */}
+        <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/15 pb-3.5">
+          <div className="flex items-center gap-3">
+            {/* Metallic EMV Chip */}
+            <div
+              aria-hidden="true"
+              className="w-10 h-7 rounded-md border border-[#FDE68A]/70 bg-gradient-to-br from-[#FEF08A] via-[#F59E0B] to-[#B45309] shadow-inner relative overflow-hidden shrink-0"
+            >
+              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-[#78350F]/45" />
+              <div className="absolute inset-y-0 left-1/3 w-px bg-[#78350F]/45" />
+              <div className="absolute inset-y-0 right-1/3 w-px bg-[#78350F]/45" />
             </div>
 
+            <div className="flex items-center gap-2">
+              <span className="font-mono-num text-base sm:text-lg font-extrabold tracking-[0.22em] uppercase text-white drop-shadow-xs">
+                GG PASS
+              </span>
+              {/* Contactless NFC waves */}
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                className="w-4 h-4 text-white/80 shrink-0"
+              >
+                <path d="M8.5 16.5a5 5 0 0 1 0-9" />
+                <path d="M12 19a8.5 8.5 0 0 1 0-14" />
+                <path d="M15.5 21.5a12 12 0 0 1 0-19" />
+              </svg>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/25 bg-white/15 backdrop-blur-xs px-2.5 py-1 text-[11px] font-bold text-white">
+              <Sparkles className="w-3.5 h-3.5 text-[#FDE68A]" />
+              <span>₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass</span>
+            </span>
+            {subscriptionStatus === 'active' && (
+              <span className="inline-flex items-center gap-1 rounded-lg border border-[#BBF7D0] bg-[#F0FDF4] px-2.5 py-1 text-[11px] font-bold text-[#15803D]">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Active Pass</span>
+              </span>
+            )}
+            {subscriptionStatus === 'pending' && (
+              <span className="inline-flex items-center gap-1 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-2.5 py-1 text-[11px] font-bold text-[#B45309]">
+                <Clock className="w-3.5 h-3.5" />
+                <span>Verification Pending</span>
+              </span>
+            )}
+            {subscriptionStatus === 'expired' && (
+              <span className="rounded-lg border border-white/30 bg-white/15 px-2.5 py-1 text-[11px] font-bold text-white">
+                Expired
+              </span>
+            )}
+            {subscriptionStatus === 'rejected' && (
+              <span className="rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-2.5 py-1 text-[11px] font-bold text-[#BE123C]">
+                Rejected — Re-apply
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* ATM Card Middle Body: Existing Text + Countdown / Proof / CTA */}
+        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1.5 min-w-0">
             {subscriptionStatus === 'active' ? (
               <div className="space-y-1">
-                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-white">
                   Free Delivery Pass Active!
                 </h2>
-                <p className="text-xs text-[#5B4B6B]">
+                <p className="text-xs text-white/90">
                   Enjoy ₹0 delivery fee on all eligible orders.
                   {subscriptionExpiresAtMs && (
-                    <span className="ml-1 font-mono-num text-[#6D28D9] font-semibold">
+                    <span className="ml-1 font-mono-num text-[#FDE68A] font-semibold">
                       (Valid till {new Date(subscriptionExpiresAtMs).toISOString().slice(0, 10)})
                     </span>
                   )}
@@ -1083,32 +1129,33 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
               </div>
             ) : subscriptionStatus === 'pending' ? (
               <div className="space-y-1">
-                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-white">
                   Payment Verification Pending
                 </h2>
-                <p className="text-xs text-[#5B4B6B]">
-                  আপনার ₹{SUBSCRIPTION_PLAN_PRICE} পেমেন্ট স্ক্রিনশট অ্যাডমিনের যাচাইয়ের জন্য জমা হয়েছে। অ্যাপ্রুভ হলেই {SUBSCRIPTION_DURATION_DAYS} দিনের ফ্রি ডেলিভারি শুরু হবে।
+                <p className="text-xs text-white/90">
+                  Your ₹{SUBSCRIPTION_PLAN_PRICE} payment screenshot has been submitted for Admin verification. Once approved, your {SUBSCRIPTION_DURATION_DAYS}-day free delivery will begin.
                 </p>
               </div>
             ) : (
               <div className="space-y-1">
-                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-white">
                   {formatCurrency(SUBSCRIPTION_PLAN_PRICE, sym)} /{' '}
                   {SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass
                 </h2>
-                <p className="text-xs text-[#5B4B6B]">
-                  মাত্র ₹{SUBSCRIPTION_PLAN_PRICE}-এ ২৮ দিনের জন্য আনলিমিটেড ফ্রি ডেলিভারি সুবিধা নিন!
+                <p className="text-xs text-white/90">
+                  Enjoy unlimited free delivery for 28 days at just ₹{SUBSCRIPTION_PLAN_PRICE}!
                 </p>
               </div>
             )}
           </div>
 
           {subscriptionStatus === 'active' ? (
-            <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-center shrink-0">
-              <div className="font-mono-num text-2xl font-bold text-[#15803D]">
-                {subscriptionRemainingDays} দিন বাকি
+            <div className="rounded-2xl border border-white/25 bg-white/15 backdrop-blur-md px-4 py-3 text-center shrink-0">
+              <div className="font-mono-num text-2xl font-bold text-[#FDE68A]">
+                {subscriptionRemainingDays}{' '}
+                {subscriptionRemainingDays === 1 ? 'Day' : 'Days'} Left
               </div>
-              <div className="text-[11px] font-semibold text-[#166534]">
+              <div className="text-[11px] font-semibold text-white/90">
                 {subscriptionRemainingDays}{' '}
                 {subscriptionRemainingDays === 1 ? 'day' : 'days'} remaining
               </div>
@@ -1139,9 +1186,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
             <button
               type="button"
               onClick={() => setSubModalOpen(true)}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-3 text-xs sm:text-sm font-bold text-white shadow-sm hover:opacity-95 cursor-pointer shrink-0 whitespace-nowrap"
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-5 py-3 text-xs sm:text-sm font-bold text-[#5B21B6] shadow-md hover:bg-[#FAF5FF] cursor-pointer shrink-0 whitespace-nowrap"
             >
-              <Sparkles className="w-4 h-4 shrink-0" />
+              <Sparkles className="w-4 h-4 text-[#DB2777] shrink-0" />
               <span>
                 ₹{SUBSCRIPTION_PLAN_PRICE} / {SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass
               </span>
@@ -1149,24 +1196,44 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
           )}
         </div>
 
+        {/* ATM Card Bottom Strip: Cardholder & Validity */}
+        <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-white/15 text-[11px] font-mono-num uppercase tracking-wider text-white/80">
+          <div className="truncate">
+            <span className="text-white/60 mr-1.5">Cardholder</span>
+            <span className="font-bold text-white">{client.name}</span>
+          </div>
+          <div className="flex items-center gap-4 shrink-0">
+            <span>
+              <span className="text-white/60 mr-1">Plan</span>
+              <strong className="text-white">₹{SUBSCRIPTION_PLAN_PRICE}</strong>
+            </span>
+            <span>
+              <span className="text-white/60 mr-1">Validity</span>
+              <strong className="text-white">
+                {SUBSCRIPTION_DURATION_DAYS} Days
+              </strong>
+            </span>
+          </div>
+        </div>
+
         {subscriptionStatus !== 'active' && subscriptionStatus !== 'pending' && (
-          <div className="rounded-2xl border border-[#EFE2F5] bg-white/90 p-3.5 space-y-1.5 text-[11px] text-[#5B4B6B]">
+          <div className="relative z-10 rounded-2xl border border-white/25 bg-white/95 p-3.5 space-y-1.5 text-[11px] text-[#5B4B6B]">
             <div className="font-bold text-[#1F122B] flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-[#7E22CE]" />
-              <span>Terms &amp; Rules (সাবস্ক্রিপশনের নিয়মাবলী)</span>
+              <span>Terms &amp; Rules</span>
             </div>
             <ul className="list-disc pl-4 space-y-1">
               <li>
-                Validity: <strong>28 days</strong> from Admin activation/approval (অ্যাক্টিভেশনের দিন থেকে ২৮ দিন মেয়াদ)।
+                Validity: <strong>28 days</strong> from Admin activation/approval.
               </li>
               <li>
-                Free delivery (<strong>₹0 delivery fee</strong>) on eligible orders during the active pass period (যোগ্য অর্ডারে ফ্রি ডেলিভারি)।
+                Free delivery (<strong>₹0 delivery fee</strong>) on eligible orders during the active pass period.
               </li>
               <li>
-                <strong>Online payment + screenshot proof required</strong>; Cash on Delivery (COD) is disabled (শুধুমাত্র অনলাইন পেমেন্ট ও স্ক্রিনশট বাধ্যতামূলক)।
+                <strong>Online payment + screenshot proof required</strong>; Cash on Delivery (COD) is disabled.
               </li>
               <li>
-                Non-refundable ₹{SUBSCRIPTION_PLAN_PRICE} pass; auto-expires automatically after 28 days (অফেরতযোগ্য ও ২৮ দিন পর অটো-এক্সপায়ার হবে)।
+                Non-refundable ₹{SUBSCRIPTION_PLAN_PRICE} pass; expires automatically after 28 days.
               </li>
             </ul>
           </div>
@@ -1528,7 +1595,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     <span className="inline-flex items-center gap-1.5 font-bold text-[#15803D]">
                       <CheckCircle2 className="w-4 h-4 shrink-0" />
                       <span>
-                        ₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass Active ({subscriptionRemainingDays} দিন বাকি)
+                        ₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass Active ({subscriptionRemainingDays} {subscriptionRemainingDays === 1 ? 'day' : 'days'} left)
                       </span>
                     </span>
                     <span className="font-mono-num font-bold text-[#166534] shrink-0">

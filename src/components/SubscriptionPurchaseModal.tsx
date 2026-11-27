@@ -179,7 +179,7 @@ export const SubscriptionPurchaseModal: React.FC<SubscriptionPurchaseModalProps>
               {SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass
             </h2>
             <p className="text-xs text-white/90">
-              ফ্রি ডেলিভারি পাস — ২8 দিনের জন্য সকল যোগ্য অর্ডারে ₹0 ডেলিভারি চার্জ
+              Free Delivery Pass — ₹0 delivery fee on all eligible orders for {SUBSCRIPTION_DURATION_DAYS} days
             </p>
           </div>
           <button
@@ -374,20 +374,20 @@ export const SubscriptionPurchaseModal: React.FC<SubscriptionPurchaseModalProps>
           <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 space-y-1.5 text-[11px] text-[#5B4B6B]">
             <div className="font-bold text-[#1F122B] flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-[#7E22CE]" />
-              <span>Subscription Terms &amp; Rules (নিয়মাবলী)</span>
+              <span>Subscription Terms &amp; Rules</span>
             </div>
             <ul className="list-disc pl-4 space-y-1">
               <li>
-                Valid for <strong>28 days</strong> from Admin activation/approval (অ্যাপ্রুভালের দিন থেকে ২৮ দিন মেয়াদ)।
+                Valid for <strong>28 days</strong> from Admin activation/approval.
               </li>
               <li>
-                Enjoy <strong>₹0 delivery fee</strong> on all eligible orders during the active period।
+                Enjoy <strong>₹0 delivery fee</strong> on all eligible orders during the active period.
               </li>
               <li>
-                Only Online Payment + Payment Screenshot Proof is accepted (ক্যাশ অন ডেলিভারি প্রযোজ্য নয়)।
+                Only Online Payment + Payment Screenshot Proof is accepted (Cash on Delivery is not applicable).
               </li>
               <li>
-                Subscription fee (₹99) is non-refundable and expires automatically after 28 days।
+                Subscription fee (₹99) is non-refundable and expires automatically after 28 days.
               </li>
             </ul>
           </div>

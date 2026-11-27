@@ -5,7 +5,7 @@ import { WHATSAPP_SUPPORT_PHONE } from './calculations';
 
 export const DEFAULT_INR_TO_BDT_RATE = 1.45;
 export const BANGLADESH_CHARGE_NOTICE =
-  'ডেলিভারি চার্জ ও কাস্টম চার্জ প্রজোজো হবে';
+  'Delivery charges & custom charges will apply';
 
 export const DEFAULT_BANGLADESH_CONFIG: BangladeshConfig = {
   enabled: true,

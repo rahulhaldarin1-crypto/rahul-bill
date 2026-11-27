@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Copy,
   CreditCard,
+  Download,
   Gift,
   Heart,
   Home,
@@ -1546,7 +1547,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     if (hasActiveSubscription) {
       handleOpenAccount('orders');
       triggerStoreNotice(
-        `Your ₹${SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass is active (${subscriptionRemainingDays} দিন বাকি)!`
+        `Your ₹${SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass is active (${subscriptionRemainingDays} ${subscriptionRemainingDays === 1 ? 'day' : 'days'} left)!`
       );
       return;
     }
@@ -2088,7 +2089,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             <Sparkles className="w-3 h-3" />
             <span>
               {hasActiveSubscription
-                ? `Active Pass · ${subscriptionRemainingDays} দিন বাকি`
+                ? `Active Pass · ${subscriptionRemainingDays} ${subscriptionRemainingDays === 1 ? 'day' : 'days'} left`
                 : subscriptionStatus === 'pending'
                   ? 'Verification Pending'
                   : 'Limited Offer · Online Payment Only'}
@@ -2099,8 +2100,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           </div>
           <p className="text-xs sm:text-sm text-white/90">
             {hasActiveSubscription
-              ? 'ফ্রি ডেলিভারি পাস সক্রিয় আছে — আপনার সকল যোগ্য অর্ডারে ₹0 ডেলিভারি চার্জ!'
-              : 'মাত্র ₹99-এ ২৮ দিনের জন্য আনলিমিটেড ফ্রি ডেলিভারি পান। এখনই সাবস্ক্রাইব করুন!'}
+              ? 'Free Delivery Pass is active — ₹0 delivery charge on all eligible orders!'
+              : 'Get unlimited free delivery for 28 days at just ₹99. Subscribe now!'}
           </p>
         </div>
 
@@ -2253,6 +2254,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 </span>
               )}
             </button>
+
+            <a
+              href="/downloads/gg-shopping.apk"
+              download="GG-SHOPPING.apk"
+              aria-label="Download App"
+              title="Download GG Shopping App (APK)"
+              className="inline-flex items-center justify-center gap-1.5 h-10 px-2.5 sm:px-3.5 rounded-full border border-[#D8B4FE] bg-gradient-to-r from-[#FAF5FF] to-[#FDF2F8] text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] hover:from-[#F3E8FF] hover:to-[#FCE7F3] transition-colors shrink-0 whitespace-nowrap"
+            >
+              <Download className="w-4 h-4 text-[#DB2777] shrink-0" />
+              <span>Download App</span>
+            </a>
 
             <button
               type="button"
@@ -4218,7 +4230,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     <span className="inline-flex items-center gap-1.5 font-bold text-[#15803D]">
                       <CheckCircle2 className="w-4 h-4 shrink-0" />
                       <span>
-                        ₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass Active ({subscriptionRemainingDays} দিন বাকি)
+                        ₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass Active ({subscriptionRemainingDays} {subscriptionRemainingDays === 1 ? 'day' : 'days'} left)
                       </span>
                     </span>
                     <span className="font-mono-num font-bold text-[#166534] shrink-0">

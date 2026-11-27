@@ -364,7 +364,7 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
           </div>
           <p className="text-xs text-[#4A3B59]">
             {bdEnabled
-              ? 'Active: Detected Bangladesh visitors see BDT converted prices, Bengali delivery/custom notice, and direct Admin WhatsApp ordering.'
+              ? 'Active: Detected Bangladesh visitors see BDT converted prices, delivery & custom charge notice, and direct Admin WhatsApp ordering.'
               : 'Disabled: Even visitors and customers from Bangladesh see the standard Indian Customer App experience (normal INR pricing & checkout).'}
           </p>
         </div>
@@ -560,7 +560,7 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
               </div>
               <div className="text-xs text-[#6B5B7B]">
                 {bdEnabled
-                  ? 'Live: BDT prices, Bangla notice & WhatsApp order'
+                  ? 'Live: BDT prices, charge notice & WhatsApp order'
                   : 'Live: Standard India INR & normal checkout (BD OFF)'}
               </div>
             </div>
@@ -777,7 +777,7 @@ export const BangladeshControlView: React.FC<BangladeshControlViewProps> = ({
               </div>
               <p className="text-xs text-[#6B5B7B] mt-0.5">
                 {bdEnabled
-                  ? `Bangladesh Mode ON: Shows INR + auto-converted BDT pricing (1 INR = ${effectiveRate} BDT), Bangla charge notice, and direct Admin WhatsApp ordering.`
+                  ? `Bangladesh Mode ON: Shows INR + auto-converted BDT pricing (1 INR = ${effectiveRate} BDT), delivery & custom charge notice, and direct Admin WhatsApp ordering.`
                   : 'Bangladesh Mode OFF: Bangladesh visitors see the standard Indian Customer App (INR pricing only, normal Cart & COD / UPI checkout, no BDT conversion or WhatsApp-only redirect).'}
               </p>
             </div>
