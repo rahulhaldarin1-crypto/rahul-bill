@@ -2220,9 +2220,55 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             </div>
           </button>
 
-          {/* Top-Right Action Icons: Install App (when available), Profile Avatar, Favorites (Heart) & Download App */}
+          {/* Top-Right Action Icons: Install App (when available), Download App, Favorites (Heart) & Profile Avatar */}
           <div className="flex items-center gap-2 shrink-0">
             <PWAInstallButton variant="header-chip" />
+
+            <a
+              href="https://drive.google.com/uc?export=download&id=1gJrYieIUtS9qNw5BLeuZNKZsKpkOrOOC"
+              target="_blank"
+              rel="noopener noreferrer"
+              download
+              aria-label="Download App"
+              title="Download App"
+              className="inline-flex items-center justify-center gap-1.5 h-9 sm:h-10 px-2.5 sm:px-3.5 rounded-full border border-[#D8B4FE] bg-gradient-to-r from-[#FAF5FF] to-[#FDF2F8] text-[11px] sm:text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] hover:from-[#F3E8FF] hover:to-[#FCE7F3] transition-colors shrink-0 whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#DB2777] shrink-0" />
+              <span>Download App</span>
+            </a>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSheetOpen(false);
+                setCategoriesSheetOpen(false);
+                setPortalView((prev) =>
+                  prev === 'favorites' ? 'shop' : 'favorites'
+                );
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              aria-label="Favorites"
+              title="Saved Favorites"
+              className={`relative inline-flex items-center justify-center w-10 h-10 rounded-full border transition-colors cursor-pointer shrink-0 ${
+                portalView === 'favorites'
+                  ? 'border-[#DB2777] bg-[#FDF2F8] text-[#DB2777]'
+                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#DB2777] hover:text-[#DB2777]'
+              }`}
+            >
+              <Heart
+                className={`w-5 h-5 ${
+                  portalView === 'favorites' || favoriteItems.length > 0
+                    ? 'fill-[#DB2777] text-[#DB2777]'
+                    : ''
+                }`}
+              />
+              {favoriteItems.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#DB2777] text-white text-[10px] font-mono-num font-bold flex items-center justify-center border-2 border-white">
+                  {favoriteItems.length > 99 ? '99+' : favoriteItems.length}
+                </span>
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -2269,51 +2315,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 <User className="w-5 h-5" />
               )}
             </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setMenuSheetOpen(false);
-                setCategoriesSheetOpen(false);
-                setPortalView((prev) =>
-                  prev === 'favorites' ? 'shop' : 'favorites'
-                );
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              aria-label="Favorites"
-              title="Saved Favorites"
-              className={`relative inline-flex items-center justify-center w-10 h-10 rounded-full border transition-colors cursor-pointer shrink-0 ${
-                portalView === 'favorites'
-                  ? 'border-[#DB2777] bg-[#FDF2F8] text-[#DB2777]'
-                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#DB2777] hover:text-[#DB2777]'
-              }`}
-            >
-              <Heart
-                className={`w-5 h-5 ${
-                  portalView === 'favorites' || favoriteItems.length > 0
-                    ? 'fill-[#DB2777] text-[#DB2777]'
-                    : ''
-                }`}
-              />
-              {favoriteItems.length > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#DB2777] text-white text-[10px] font-mono-num font-bold flex items-center justify-center border-2 border-white">
-                  {favoriteItems.length > 99 ? '99+' : favoriteItems.length}
-                </span>
-              )}
-            </button>
-
-            <a
-              href="https://drive.google.com/uc?export=download&id=1gJrYieIUtS9qNw5BLeuZNKZsKpkOrOOC"
-              target="_blank"
-              rel="noopener noreferrer"
-              download
-              aria-label="Download App"
-              title="Download App"
-              className="inline-flex items-center justify-center gap-1.5 h-9 sm:h-10 px-2.5 sm:px-3.5 rounded-full border border-[#D8B4FE] bg-gradient-to-r from-[#FAF5FF] to-[#FDF2F8] text-[11px] sm:text-xs font-bold text-[#6D28D9] hover:border-[#9333EA] hover:from-[#F3E8FF] hover:to-[#FCE7F3] transition-colors shrink-0 whitespace-nowrap"
-            >
-              <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#DB2777] shrink-0" />
-              <span>Download App</span>
-            </a>
           </div>
         </div>
       </header>
