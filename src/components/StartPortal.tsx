@@ -187,6 +187,7 @@ interface PublicShopProduct {
   highlighted?: boolean;
   highlightPlacement?: Product['highlightPlacement'];
   boosted?: boolean;
+  boostPercentage?: number;
   boostLevel?: number;
   boostExpiresAt?: string;
   size?: string;
@@ -637,6 +638,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             highlighted: isProductHighlightActive(prod),
             highlightPlacement: prod.highlightPlacement,
             boosted: isProductBoostActive(prod),
+            boostPercentage: prod.boostPercentage,
             boostLevel: prod.boostLevel,
             boostExpiresAt: prod.boostExpiresAt,
             size: prod.size,

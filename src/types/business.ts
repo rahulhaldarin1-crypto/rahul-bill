@@ -47,6 +47,7 @@ export type MediaEntityType =
   | 'payment_qr'
   | 'order_payment'
   | 'highlight_payment'
+  | 'boost_payment'
   | 'subscription_payment'
   | 'seller_kyc'
   | 'seller_profile'
@@ -314,9 +315,12 @@ export interface Product {
   highlightPlacement?: HighlightPlacementRule;
   highlightPlanTitle?: string;
   boosted?: boolean;
+  boostPercentage?: number;
   boostLevel?: number;
   boostExpiresAt?: string;
   boostUpdatedAt?: string;
+  boostSource?: 'admin' | 'seller';
+  activeBoostRequestId?: string;
   viewCount?: number;
   wishlistCount?: number;
   orderCount?: number;
@@ -582,6 +586,32 @@ export interface HighlightRequest {
   updatedAt: string;
 }
 
+export type BoostRequestStatus = 'pending_approval' | 'approved' | 'rejected';
+
+export interface BoostRequest {
+  id: string;
+  productId: string;
+  productName: string;
+  productCategory?: string;
+  productImageDataUrl?: string;
+  sellerId: string;
+  sellerCode?: string;
+  sellerName: string;
+  sellerPhone: string;
+  boostPercentage: number;
+  durationDays: number;
+  amount: number;
+  upiIdUsed: string;
+  transactionRef?: string;
+  paymentScreenshotDataUrl?: string;
+  status: BoostRequestStatus;
+  adminRemarks?: string;
+  approvedAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type SupportSenderRole = 'customer' | 'admin';
 
 export interface SupportChatMessage {
@@ -673,6 +703,7 @@ export interface WorkspaceData {
   sellerApplications: SellerApplication[];
   supportChats: SupportChatThread[];
   highlightRequests: HighlightRequest[];
+  boostRequests?: BoostRequest[];
   sellerFollows?: SellerFollowRecord[];
   productReviews?: ProductReview[];
   subscriptions?: DeliverySubscription[];

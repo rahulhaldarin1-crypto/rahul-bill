@@ -23,6 +23,7 @@ import {
   Package,
   Phone,
   QrCode,
+  Rocket,
   Save,
   ShieldAlert,
   Sparkles,
@@ -36,6 +37,7 @@ import {
 } from 'lucide-react';
 import {
   AdminPaymentSettings,
+  BoostRequest,
   BusinessSettings,
   Client,
   HighlightRequest,
@@ -62,7 +64,12 @@ import {
   getOptimizedMediaUrl,
   uploadMediaToCloudinary,
 } from '../utils/cloudinary';
+import {
+  calculateSellerBoostFee,
+  clampBoostPercentage,
+} from '../utils/smartDiscovery';
 import { useBangladeshDetection } from '../utils/region';
+import { BoostPowerControl } from './BoostPowerControl';
 import { ProductsView } from './ProductsView';
 
 interface SellerHubViewProps {
@@ -186,6 +193,24 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [highlightNotice, setHighlightNotice] = useState('');
   const [upiCopied, setUpiCopied] = useState(false);
 
+  // Paid Percentage Boost Requests (for logged-in approved seller)
+  const [boostRequests, setBoostRequests] = useState<BoostRequest[]>([]);
+  const [boostTargetProduct, setBoostTargetProduct] = useState<Product | null>(
+    null
+  );
+  const [boostPct, setBoostPct] = useState<number>(20);
+  const [boostDays, setBoostDays] = useState<number>(3);
+  const [boostTxRef, setBoostTxRef] = useState('');
+  const [boostScreenshot, setBoostScreenshot] = useState('');
+  const [uploadingBoostShot, setUploadingBoostShot] = useState(false);
+  const [uploadBoostShotProgress, setUploadBoostShotProgress] = useState<
+    number | null
+  >(null);
+  const [submittingBoost, setSubmittingBoost] = useState(false);
+  const [boostError, setBoostError] = useState('');
+  const [boostNotice, setBoostNotice] = useState('');
+  const [boostUpiCopied, setBoostUpiCopied] = useState(false);
+
   // Registration Form State
   const [name, setName] = useState(() => loggedInCustomer?.name || '');
   const [email, setEmail] = useState('');
@@ -231,21 +256,24 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     | 'editing-rejected'
     | 'store-profile'
     | 'seller-payment'
-    | 'highlight';
+    | 'highlight'
+    | 'boost';
 
-  const currentSellerLayer: SellerLayer = highlightTargetProduct
-    ? 'highlight'
-    : editingRejected
-      ? 'editing-rejected'
-      : loggedInSeller && storeProfileOpen
-        ? 'store-profile'
-        : loggedInSeller && sellerPaymentOpen
-          ? 'seller-payment'
-          : !loggedInSeller && loginForgotMode
-            ? 'forgot'
-            : !loggedInSeller && hubTab === 'apply'
-              ? 'apply'
-              : 'base';
+  const currentSellerLayer: SellerLayer = boostTargetProduct
+    ? 'boost'
+    : highlightTargetProduct
+      ? 'highlight'
+      : editingRejected
+        ? 'editing-rejected'
+        : loggedInSeller && storeProfileOpen
+          ? 'store-profile'
+          : loggedInSeller && sellerPaymentOpen
+            ? 'seller-payment'
+            : !loggedInSeller && loginForgotMode
+              ? 'forgot'
+              : !loggedInSeller && hubTab === 'apply'
+                ? 'apply'
+                : 'base';
 
   const sellerLayerRef = useRef<SellerLayer>('base');
   const sellerSubDepthRef = useRef(0);
@@ -296,6 +324,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
         const nextLayer = state.layer;
         sellerLayerRef.current = nextLayer;
         if (nextLayer !== 'highlight') setHighlightTargetProduct(null);
+        if (nextLayer !== 'boost') setBoostTargetProduct(null);
         setStoreProfileOpen(nextLayer === 'store-profile');
         setSellerPaymentOpen(nextLayer === 'seller-payment');
         setEditingRejected(nextLayer === 'editing-rejected');
@@ -305,6 +334,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       } else {
         sellerLayerRef.current = 'base';
         setHighlightTargetProduct(null);
+        setBoostTargetProduct(null);
         setStoreProfileOpen(false);
         setSellerPaymentOpen(false);
         setEditingRejected(false);
@@ -371,18 +401,27 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     return () => unsub();
   }, [sellerSessionId]);
 
-  // Subscribe to ONLY this authenticated approved seller's highlight requests
+  // Subscribe to ONLY this authenticated approved seller's highlight & boost requests
   useEffect(() => {
     if (!loggedInSeller || loggedInSeller.status !== 'approved') {
       setHighlightRequests([]);
+      setBoostRequests([]);
       return;
     }
-    const unsub = api.subscribeSellerHighlightRequests(
+    const unsubHighlight = api.subscribeSellerHighlightRequests(
       loggedInSeller.id,
       (list) => setHighlightRequests(list),
       () => undefined
     );
-    return () => unsub();
+    const unsubBoost = api.subscribeSellerBoostRequests(
+      loggedInSeller.id,
+      (list) => setBoostRequests(list),
+      () => undefined
+    );
+    return () => {
+      unsubHighlight();
+      unsubBoost();
+    };
   }, [loggedInSeller?.id, loggedInSeller?.status]);
 
   // Sync Seller Account Payment System & Store Profile fields when seller record updates
@@ -442,6 +481,16 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     }
     return set;
   }, [highlightRequests]);
+
+  const pendingBoostProductIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const req of boostRequests) {
+      if (req.status === 'pending_approval') {
+        set.add(req.productId);
+      }
+    }
+    return set;
+  }, [boostRequests]);
 
   const highlightConfig = useMemo(
     () => settings?.highlightConfig || DEFAULT_HIGHLIGHT_CONFIG,
@@ -651,6 +700,7 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     setGoogleSellerAuth(null);
     setEditingRejected(false);
     setHighlightTargetProduct(null);
+    setBoostTargetProduct(null);
     setSuccessMsg('');
     setHubTab('login');
   };
@@ -1062,6 +1112,101 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     }
   };
 
+  const openBoostModal = (prod: Product) => {
+    setBoostTargetProduct(prod);
+    setBoostPct(
+      prod.boostPercentage && prod.boostPercentage > 0
+        ? clampBoostPercentage(prod.boostPercentage, 20)
+        : 20
+    );
+    setBoostDays(3);
+    setBoostTxRef('');
+    setBoostScreenshot('');
+    setBoostError('');
+  };
+
+  const handleCopyBoostUpi = async () => {
+    try {
+      await navigator.clipboard.writeText(activeHighlightUpi);
+      setBoostUpiCopied(true);
+      setTimeout(() => setBoostUpiCopied(false), 2200);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
+  const handleUploadBoostScreenshot = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBoostError('');
+    setUploadingBoostShot(true);
+    setUploadBoostShotProgress(1);
+    try {
+      const record = await uploadMediaToCloudinary(file, {
+        role: 'seller',
+        appSource: 'glamour-galleria',
+        folder: 'glamour-galleria/seller/boost-payments',
+        relatedEntityType: 'boost_payment',
+        relatedEntityId: boostTargetProduct?.id || loggedInSeller?.id,
+        uploadedByUid: loggedInSeller?.id,
+        allowedTypes: ['image'],
+        onProgress: (pct) => setUploadBoostShotProgress(pct),
+      });
+      setBoostScreenshot(record.secureUrl);
+    } catch (err) {
+      setBoostError(
+        err instanceof Error
+          ? err.message
+          : 'Invalid screenshot image. Please choose a valid JPG, PNG, or WEBP file.'
+      );
+    } finally {
+      setUploadingBoostShot(false);
+      setUploadBoostShotProgress(null);
+    }
+  };
+
+  const handleSubmitBoostRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loggedInSeller || !boostTargetProduct) return;
+    setBoostError('');
+
+    const pct = clampBoostPercentage(boostPct, 20);
+    const days = Math.min(365, Math.max(1, Math.round(Number(boostDays) || 1)));
+    const expectedFee = calculateSellerBoostFee(pct, days);
+
+    if (!boostScreenshot && !boostTxRef.trim()) {
+      setBoostError(
+        `Please pay ${formatCurrency(expectedFee, currencySymbol)} via online payment to ${activeHighlightUpi} and upload the payment screenshot (or enter Transaction / UTR ID).`
+      );
+      return;
+    }
+
+    setSubmittingBoost(true);
+    try {
+      const created = await api.submitBoostRequest({
+        sellerId: loggedInSeller.id,
+        productId: boostTargetProduct.id,
+        boostPercentage: pct,
+        durationDays: days,
+        transactionRef: boostTxRef.trim(),
+        paymentScreenshotDataUrl: boostScreenshot,
+      });
+      setBoostTargetProduct(null);
+      setBoostNotice(
+        `Boost request submitted for "${created.productName}" (${created.boostPercentage}% for ${created.durationDays} days · ${formatCurrency(created.amount, currencySymbol)})! Pending Admin payment approval.`
+      );
+    } catch (err) {
+      setBoostError(
+        formatApiError(err, 'Could not submit boost request. Please try again.')
+      );
+    } finally {
+      setSubmittingBoost(false);
+    }
+  };
+
   const inputClass =
     'w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2.5 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none';
 
@@ -1333,6 +1478,12 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       activeHighlightUpi,
       settings?.businessName || 'Glamour Galleria',
       modalPayAmount
+    );
+    const boostFeeAmount = calculateSellerBoostFee(boostPct, boostDays);
+    const boostUpiDeepLink = buildUpiDeepLink(
+      activeHighlightUpi,
+      settings?.businessName || 'Glamour Galleria',
+      boostFeeAmount
     );
     const hasSellerCustomPaymentConfigured = Boolean(
       loggedInSeller.sellerUpiId ||
@@ -1847,6 +1998,22 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
           </div>
         )}
 
+        {boostNotice && (
+          <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-xs font-semibold text-[#15803D] flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <Rocket className="w-4 h-4 shrink-0" />
+              <span>{boostNotice}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setBoostNotice('')}
+              className="text-[#15803D] hover:opacity-75 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Admin Highlight Offer Seats Banner for Approved Sellers */}
         {(enabledOfferSeats.length > 0 || enabledPlans.length > 0) && (
           <section className="rounded-3xl border border-[#FBCFE8] bg-gradient-to-br from-[#FFF5FA] via-white to-[#FAF5FF] p-5 sm:p-6 space-y-4 shadow-xs">
@@ -1945,7 +2112,9 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
             defaultLowStock={defaultLowStock}
             hideBackButton
             pendingHighlightProductIds={pendingHighlightProductIds}
+            pendingBoostProductIds={pendingBoostProductIds}
             onRequestHighlight={(prod) => openHighlightModal(prod)}
+            onRequestBoost={(prod) => openBoostModal(prod)}
             sellerContext={{
               sellerId: loggedInSeller.id,
               sellerName: loggedInSeller.name,
@@ -1982,6 +2151,73 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                       </div>
                       <div className="text-[#5B4B6B] font-mono-num mt-0.5">
                         {req.planTitle} · {req.durationDays} Days ·{' '}
+                        <strong className="text-[#7E22CE]">
+                          {formatCurrency(req.amount, currencySymbol)}
+                        </strong>
+                      </div>
+                    </div>
+                    <span
+                      className={`rounded-lg border px-2 py-0.5 text-[11px] font-bold shrink-0 ${
+                        req.status === 'approved'
+                          ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                          : req.status === 'rejected'
+                            ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
+                            : 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                      }`}
+                    >
+                      {req.status === 'approved'
+                        ? 'Approved & Active'
+                        : req.status === 'rejected'
+                          ? 'Rejected'
+                          : 'Pending Approval'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#6B5B7B] font-mono-num">
+                    <span>
+                      Submitted {req.createdAt.slice(0, 10)}
+                      {req.transactionRef ? ` · UTR: ${req.transactionRef}` : ''}
+                    </span>
+                    {req.expiresAt && req.status === 'approved' && (
+                      <span className="text-[#15803D] font-semibold">
+                        Expires {req.expiresAt.slice(0, 10)}
+                      </span>
+                    )}
+                  </div>
+                  {req.adminRemarks && (
+                    <div className="rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-2.5 py-1.5 text-[11px] text-[#9F1239]">
+                      Admin Note: {req.adminRemarks}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* My Paid Boost Requests Tracker */}
+        {boostRequests.length > 0 && (
+          <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+            <div className="flex items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+              <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B]">
+                <Rocket className="w-4 h-4 text-[#7E22CE]" />
+                <span>My Product Boost Requests ({boostRequests.length})</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {boostRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 space-y-2 text-xs"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-bold text-sm text-[#1F122B] truncate">
+                        {req.productName}
+                      </div>
+                      <div className="text-[#5B4B6B] font-mono-num mt-0.5">
+                        Boost {req.boostPercentage}% · {req.durationDays}{' '}
+                        {req.durationDays === 1 ? 'Day' : 'Days'} ·{' '}
                         <strong className="text-[#7E22CE]">
                           {formatCurrency(req.amount, currencySymbol)}
                         </strong>
@@ -2439,6 +2675,315 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                     {submittingHighlight
                       ? 'Submitting...'
                       : 'Submit Highlight Request'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* Paid Percentage Boost Request Modal */}
+        {boostTargetProduct && (
+          <div
+            className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-5"
+            role="dialog"
+            aria-modal="true"
+          >
+            <form
+              onSubmit={handleSubmitBoostRequest}
+              className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-3xl border border-[#EFE2F5] bg-white p-5 sm:p-6 space-y-4 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-[#F4ECF8] pb-3">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7E22CE]">
+                    <Rocket className="w-3.5 h-3.5" />
+                    <span>Boost Product Ranking (1% – 100%)</span>
+                  </div>
+                  <h3 className="font-display-serif text-lg font-bold text-[#1F122B] mt-0.5">
+                    {boostTargetProduct.name}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    closeSellerSubLayer(() => setBoostTargetProduct(null))
+                  }
+                  className="p-1.5 rounded-lg text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {sellerProducts.length > 1 && (
+                <div>
+                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                    Select Product to Boost
+                  </label>
+                  <select
+                    value={boostTargetProduct.id}
+                    onChange={(e) => {
+                      const found = sellerProducts.find(
+                        (p) => p.id === e.target.value
+                      );
+                      if (found) setBoostTargetProduct(found);
+                    }}
+                    className={inputClass}
+                  >
+                    {sellerProducts.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({formatCurrency(p.sellingPrice, currencySymbol)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {boostError && (
+                <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2.5 text-xs font-medium text-[#BE123C]">
+                  {boostError}
+                </div>
+              )}
+
+              {/* Manual Boost Power 1%–100% */}
+              <BoostPowerControl
+                value={boostPct}
+                onChange={setBoostPct}
+                disabled={submittingBoost}
+                label="Choose Boost Power (1% – 100%)"
+              />
+
+              {/* Boost Duration (Days) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-bold text-[#4A3B59]">
+                    Boost Duration (Days)
+                  </label>
+                  <span className="text-[11px] text-[#6B5B7B] font-mono-num">
+                    Rate: 10% for 1 Day = {formatCurrency(20, currencySymbol)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[1, 3, 7, 14, 30].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      disabled={submittingBoost}
+                      onClick={() => setBoostDays(d)}
+                      className={`rounded-xl border px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                        boostDays === d
+                          ? 'border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                          : 'border-[#E6D9EE] bg-white text-[#5B4B6B]'
+                      }`}
+                    >
+                      {d} {d === 1 ? 'Day' : 'Days'}
+                    </button>
+                  ))}
+                  <div className="inline-flex items-center gap-1.5 ml-auto">
+                    <span className="text-[11px] text-[#6B5B7B]">Days:</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={365}
+                      disabled={submittingBoost}
+                      value={boostDays}
+                      onChange={(e) =>
+                        setBoostDays(
+                          Math.min(
+                            365,
+                            Math.max(1, Math.round(Number(e.target.value) || 1))
+                          )
+                        )
+                      }
+                      className="w-16 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-xs font-mono-num font-bold text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Calculated Fee Summary */}
+              <div className="rounded-2xl border border-[#FBCFE8] bg-gradient-to-r from-[#FFF5FA] to-[#FAF5FF] p-3.5 flex items-center justify-between gap-3">
+                <div className="text-xs text-[#4A3B59] space-y-0.5">
+                  <div className="font-bold text-[#1F122B]">
+                    Total Boost Fee ({clampBoostPercentage(boostPct, 20)}% ×{' '}
+                    {boostDays} {boostDays === 1 ? 'Day' : 'Days'})
+                  </div>
+                  <div className="text-[11px] font-mono-num text-[#6B5B7B]">
+                    ({clampBoostPercentage(boostPct, 20)} ÷ 10) × {boostDays} ×{' '}
+                    {formatCurrency(20, currencySymbol)}
+                  </div>
+                </div>
+                <div className="font-mono-num text-xl font-bold text-[#7E22CE] shrink-0">
+                  {formatCurrency(boostFeeAmount, currencySymbol)}
+                </div>
+              </div>
+
+              {/* Online Payment Verification Box */}
+              <div className="rounded-2xl border border-[#E9D5FF] bg-[#FAF5FF] p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] font-semibold text-[#6B5B7B]">
+                      Pay {formatCurrency(boostFeeAmount, currencySymbol)} Online to Admin UPI ID:
+                    </div>
+                    <div className="font-mono-num text-sm sm:text-base font-bold text-[#6D28D9] select-all">
+                      {activeHighlightUpi}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleCopyBoostUpi}
+                      className="inline-flex items-center gap-1 rounded-xl border border-[#D8B4FE] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#7E22CE] hover:bg-[#FAF5FF] cursor-pointer"
+                    >
+                      {boostUpiCopied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-[#15803D]" />
+                          <span className="text-[#15803D]">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </button>
+                    <a
+                      href={boostUpiDeepLink}
+                      className="rounded-xl bg-[#7E22CE] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95"
+                    >
+                      Pay App
+                    </a>
+                  </div>
+                </div>
+
+                {(adminLivePayment.upiNumber ||
+                  adminLivePayment.bankAccountNo ||
+                  adminLivePayment.bankName ||
+                  adminLivePayment.qrDataUrl) && (
+                  <div className="rounded-xl border border-[#EFE2F5] bg-white p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="text-[11px] text-[#4A3B59] space-y-0.5">
+                      {adminLivePayment.upiNumber && (
+                        <div className="font-mono-num">
+                          UPI Number: <strong>{adminLivePayment.upiNumber}</strong>
+                        </div>
+                      )}
+                      {adminLivePayment.bankAccountName && (
+                        <div>
+                          Account Holder: <strong>{adminLivePayment.bankAccountName}</strong>
+                        </div>
+                      )}
+                      {adminLivePayment.bankName && (
+                        <div>
+                          Bank: <strong>{adminLivePayment.bankName}</strong>
+                        </div>
+                      )}
+                      {adminLivePayment.bankAccountNo && (
+                        <div className="font-mono-num">
+                          A/C No: <strong>{adminLivePayment.bankAccountNo}</strong>
+                        </div>
+                      )}
+                      {adminLivePayment.bankIfscBranch && (
+                        <div>
+                          IFSC / Branch: <strong>{adminLivePayment.bankIfscBranch}</strong>
+                        </div>
+                      )}
+                    </div>
+                    {adminLivePayment.qrDataUrl && (
+                      <div className="flex flex-col items-center shrink-0">
+                        <img
+                          src={adminLivePayment.qrDataUrl}
+                          alt="Admin Boost Payment QR"
+                          referrerPolicy="no-referrer"
+                          className="w-24 h-24 rounded-lg border border-[#D8B4FE] object-contain bg-white p-1"
+                        />
+                        <span className="text-[10px] font-semibold text-[#6D28D9] mt-0.5">
+                          Scan QR to Pay
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                    Transaction / UTR ID (optional if uploading screenshot)
+                  </label>
+                  <input
+                    type="text"
+                    value={boostTxRef}
+                    onChange={(e) => setBoostTxRef(e.target.value)}
+                    placeholder="e.g. 412345678901"
+                    className="w-full rounded-xl border border-[#E6D9EE] bg-white px-3 py-2 text-xs font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold text-[#4A3B59]">
+                    Upload Payment Screenshot (Saved to Cloudinary)
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <label className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-white px-3 py-2 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>
+                        {uploadingBoostShot
+                          ? `Uploading${uploadBoostShotProgress !== null ? ` ${uploadBoostShotProgress}%` : ''}...`
+                          : boostScreenshot
+                            ? 'Change Screenshot'
+                            : 'Upload Screenshot'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={uploadingBoostShot}
+                        onChange={handleUploadBoostScreenshot}
+                        className="sr-only"
+                      />
+                    </label>
+                    {boostScreenshot && (
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={getOptimizedMediaUrl(boostScreenshot, 'image')}
+                          alt="Boost payment screenshot"
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-10 rounded-lg object-cover border border-[#D8B4FE]"
+                        />
+                        <span className="text-xs font-semibold text-[#15803D] inline-flex items-center gap-1">
+                          <ImageIcon className="w-3.5 h-3.5" />
+                          Attached
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setBoostScreenshot('')}
+                          className="text-xs font-semibold text-[#BE123C] cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#F4ECF8]">
+                <button
+                  type="button"
+                  onClick={() =>
+                    closeSellerSubLayer(() => setBoostTargetProduct(null))
+                  }
+                  className="rounded-xl border border-[#E6D9EE] px-4 py-2 text-xs font-semibold text-[#5B4B6B] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingBoost || uploadingBoostShot}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-55"
+                >
+                  <Rocket className="w-3.5 h-3.5" />
+                  <span>
+                    {submittingBoost
+                      ? 'Submitting...'
+                      : `Submit Boost (${formatCurrency(boostFeeAmount, currencySymbol)})`}
                   </span>
                 </button>
               </div>

@@ -48,8 +48,10 @@ service cloud.firestore {
         && data.stockQty is number && data.stockQty >= 0
         && (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 1000))
         && (!('boosted' in data) || data.boosted is bool)
+        && (!('boostPercentage' in data) || (data.boostPercentage is number && data.boostPercentage >= 0 && data.boostPercentage <= 100))
         && (!('boostLevel' in data) || (data.boostLevel is number && data.boostLevel >= 0 && data.boostLevel <= 5))
-        && (!('boostExpiresAt' in data) || (data.boostExpiresAt is string && data.boostExpiresAt.size() <= 60));
+        && (!('boostExpiresAt' in data) || (data.boostExpiresAt is string && data.boostExpiresAt.size() <= 60))
+        && (!('boostSource' in data) || data.boostSource in ['admin', 'seller']);
     }
 
     function isValidInvoice(data) {
@@ -180,6 +182,28 @@ service cloud.firestore {
       allow list: if true;
       allow get: if isValidId(requestId);
       allow create, update: if isValidId(requestId) && isValidHighlightRequest(request.resource.data);
+      allow delete: if isValidId(requestId);
+    }
+
+    function isValidBoostRequest(data) {
+      return data.keys().hasAll(['id', 'productId', 'productName', 'sellerId', 'sellerName', 'boostPercentage', 'durationDays', 'amount', 'status', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.productId is string && data.productId.size() > 0 && data.productId.size() <= 128
+        && data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 200
+        && data.sellerId is string && data.sellerId.size() > 0 && data.sellerId.size() <= 128
+        && data.sellerName is string && data.sellerName.size() >= 1 && data.sellerName.size() <= 160
+        && data.boostPercentage is number && data.boostPercentage >= 1 && data.boostPercentage <= 100
+        && data.durationDays is number && data.durationDays >= 1 && data.durationDays <= 365
+        && data.amount is number && data.amount >= 1
+        && (!('paymentScreenshotDataUrl' in data) || (data.paymentScreenshotDataUrl is string && data.paymentScreenshotDataUrl.size() <= 1000))
+        && (!('transactionRef' in data) || (data.transactionRef is string && data.transactionRef.size() <= 120))
+        && data.status in ['pending_approval', 'approved', 'rejected'];
+    }
+
+    match /boost_requests/{requestId} {
+      allow list: if true;
+      allow get: if isValidId(requestId);
+      allow create, update: if isValidId(requestId) && isValidBoostRequest(request.resource.data);
       allow delete: if isValidId(requestId);
     }
 

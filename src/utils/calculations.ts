@@ -875,6 +875,7 @@ export function createEmptyWorkspace(): WorkspaceData {
     sellerApplications: [],
     supportChats: [],
     highlightRequests: [],
+    boostRequests: [],
     subscriptions: [],
   };
 }

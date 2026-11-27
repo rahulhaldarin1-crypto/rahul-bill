@@ -15,6 +15,8 @@ import {
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
   AdminPaymentSettings,
+  BoostRequest,
+  BoostRequestStatus,
   BusinessSettings,
   CategoryInterestEntry,
   Client,
@@ -52,6 +54,10 @@ import {
   SupportSenderRole,
   WorkspaceData,
 } from '../types/business';
+import {
+  calculateSellerBoostFee,
+  clampBoostPercentage,
+} from './smartDiscovery';
 import {
   encryptRunningPassword,
   hashCustomerPassword,
@@ -117,6 +123,7 @@ const SELLER_APPLICATIONS_COL = 'seller_applications';
 const SELLER_FOLLOWS_COL = 'seller_follows';
 const PRODUCT_REVIEWS_COL = 'product_reviews';
 const HIGHLIGHT_REQUESTS_COL = 'highlight_requests';
+const BOOST_REQUESTS_COL = 'boost_requests';
 const SUPPORT_CHATS_COL = 'support_chats';
 const EMAIL_OTPS_COL = 'email_otps';
 const MEDIA_RECORDS_COL = 'media_records';
@@ -715,6 +722,7 @@ export const firestoreService = {
       sellerApplications,
       supportChatsRaw,
       highlightRequests,
+      boostRequests,
       sellerFollows,
       productReviews,
       subscriptions,
@@ -728,6 +736,7 @@ export const firestoreService = {
       fetchCol<SellerApplication>(SELLER_APPLICATIONS_COL),
       fetchCol<SupportChatThread>(SUPPORT_CHATS_COL),
       fetchCol<HighlightRequest>(HIGHLIGHT_REQUESTS_COL),
+      fetchColSafe<BoostRequest>(BOOST_REQUESTS_COL),
       fetchColSafe<SellerFollowRecord>(SELLER_FOLLOWS_COL),
       fetchColSafe<ProductReview>(PRODUCT_REVIEWS_COL),
       fetchColSafe<DeliverySubscription>(SUBSCRIPTIONS_COL),
@@ -745,6 +754,7 @@ export const firestoreService = {
       sellerApplications,
       supportChats: sortDescByUpdated(supportChatsRaw),
       highlightRequests,
+      boostRequests,
       sellerFollows,
       productReviews,
       subscriptions,
@@ -909,6 +919,21 @@ export const firestoreService = {
       (err) => reportError(OperationType.LIST, HIGHLIGHT_REQUESTS_COL, err)
     );
 
+    const unsubBoostRequests = onSnapshot(
+      collection(db, BOOST_REQUESTS_COL),
+      (snap) => {
+        const boostRequests = sortDescByCreated(
+          snap.docs.map((d) => d.data() as BoostRequest)
+        );
+        onUpdate((prev) => ({ ...prev, boostRequests }));
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, BOOST_REQUESTS_COL, err);
+        }
+      }
+    );
+
     const unsubSellerFollows = onSnapshot(
       collection(db, SELLER_FOLLOWS_COL),
       (snap) => {
@@ -966,6 +991,7 @@ export const firestoreService = {
       unsubSellerApps();
       unsubSupportChats();
       unsubHighlightRequests();
+      unsubBoostRequests();
       unsubSellerFollows();
       unsubProductReviews();
       unsubSubscriptions();
@@ -5785,8 +5811,10 @@ export const firestoreService = {
     productId: string,
     payload: {
       boosted: boolean;
+      boostPercentage?: number;
       boostLevel?: number;
       boostExpiresAt?: string;
+      boostSource?: 'admin' | 'seller';
     }
   ): Promise<Product> {
     const cleanId = String(productId || '').trim();
@@ -5797,16 +5825,39 @@ export const firestoreService = {
       if (!snap.exists()) throw new Error('Product not found.');
       const existing = snap.data() as Product;
       const nowIso = new Date().toISOString();
-      const clampedLevel = payload.boosted
-        ? Math.min(5, Math.max(1, Math.round(Number(payload.boostLevel) || existing.boostLevel || 3)))
+
+      const fallbackPct =
+        existing.boostPercentage && existing.boostPercentage > 0
+          ? existing.boostPercentage
+          : existing.boostLevel && existing.boostLevel > 0
+            ? existing.boostLevel * 20
+            : 50;
+      const requestedPct =
+        payload.boostPercentage !== undefined
+          ? payload.boostPercentage
+          : payload.boostLevel !== undefined && payload.boostLevel > 0
+            ? payload.boostLevel * 20
+            : fallbackPct;
+      const clampedPct = payload.boosted
+        ? clampBoostPercentage(requestedPct, 50)
+        : 0;
+      const derivedLevel = payload.boosted
+        ? Math.min(5, Math.max(1, Math.ceil(clampedPct / 20)))
         : 0;
 
       const updated: Product = stripUndefinedDeep({
         ...existing,
         boosted: Boolean(payload.boosted),
-        boostLevel: payload.boosted ? clampedLevel : undefined,
+        boostPercentage: payload.boosted ? clampedPct : undefined,
+        boostLevel: payload.boosted ? derivedLevel : undefined,
         boostExpiresAt: payload.boosted
           ? String(payload.boostExpiresAt || '').trim() || undefined
+          : undefined,
+        boostSource: payload.boosted
+          ? payload.boostSource || existing.boostSource || 'admin'
+          : undefined,
+        activeBoostRequestId: payload.boosted
+          ? existing.activeBoostRequestId
           : undefined,
         boostUpdatedAt: nowIso,
         updatedAt: nowIso,
@@ -5819,6 +5870,257 @@ export const firestoreService = {
       }
       handleFirestoreError(error, OperationType.UPDATE, `${PRODUCTS_COL}/${cleanId}`);
     }
+  },
+
+  async submitBoostRequest(payload: {
+    sellerId: string;
+    productId: string;
+    boostPercentage: number;
+    durationDays: number;
+    transactionRef?: string;
+    paymentScreenshotDataUrl?: string;
+  }): Promise<BoostRequest> {
+    const sellerRef = doc(db, SELLER_APPLICATIONS_COL, payload.sellerId);
+    const productRef = doc(db, PRODUCTS_COL, payload.productId);
+    const settingsRef = doc(db, SETTINGS_COL, SETTINGS_DOC);
+    const paymentSettingsRef = doc(db, PAYMENT_SETTINGS_COL, PAYMENT_SETTINGS_DOC);
+
+    let seller: SellerApplication;
+    let product: Product;
+    let settings: BusinessSettings;
+    let livePaymentUpi = '';
+
+    try {
+      const [sellerSnap, prodSnap, settingsSnap, paySnap] = await Promise.all([
+        getDoc(sellerRef),
+        getDoc(productRef),
+        getDoc(settingsRef),
+        getDoc(paymentSettingsRef),
+      ]);
+      if (!sellerSnap.exists()) throw new Error('Seller account not found.');
+      seller = sellerSnap.data() as SellerApplication;
+      if (seller.status !== 'approved' || seller.accountActivated === false) {
+        throw new Error('Only approved sellers can submit paid boost requests.');
+      }
+      if (!prodSnap.exists()) throw new Error('Selected product not found.');
+      product = prodSnap.data() as Product;
+      if (product.sellerId !== seller.id) {
+        throw new Error('You can only boost your own products.');
+      }
+      settings = settingsSnap.exists()
+        ? mergeBusinessSettings(settingsSnap.data() as Partial<BusinessSettings>)
+        : mergeBusinessSettings();
+      if (paySnap.exists()) {
+        livePaymentUpi = String(
+          (paySnap.data() as Partial<AdminPaymentSettings>).upiId || ''
+        ).trim();
+      }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('Seller account') ||
+          error.message.includes('Only approved sellers') ||
+          error.message.includes('Selected product') ||
+          error.message.includes('own products'))
+      ) {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.GET, BOOST_REQUESTS_COL);
+    }
+
+    const pct = clampBoostPercentage(payload.boostPercentage, 10);
+    const durationDays = Math.min(
+      365,
+      Math.max(1, Math.round(Number(payload.durationDays) || 1))
+    );
+    const amount = calculateSellerBoostFee(pct, durationDays);
+
+    const cleanTxRef = String(payload.transactionRef || '').trim();
+    const cleanShot = String(payload.paymentScreenshotDataUrl || '').trim();
+    if (!cleanShot && !cleanTxRef) {
+      throw new Error(
+        'Please upload your payment screenshot or enter the Transaction / UTR ID.'
+      );
+    }
+    if (cleanShot && !/^https?:\/\//i.test(cleanShot)) {
+      throw new Error('Payment screenshot must be uploaded securely first.');
+    }
+
+    const now = new Date().toISOString();
+    const gallery =
+      Array.isArray(product.imageDataUrls) && product.imageDataUrls.length > 0
+        ? product.imageDataUrls
+        : product.imageDataUrl
+          ? [product.imageDataUrl]
+          : [];
+
+    const request: BoostRequest = stripUndefinedDeep({
+      id: `bst-${crypto.randomUUID()}`,
+      productId: product.id,
+      productName: product.name,
+      productCategory: product.category || '',
+      productImageDataUrl: gallery[0] || '',
+      sellerId: seller.id,
+      sellerCode: seller.sellerCode || '',
+      sellerName: seller.name,
+      sellerPhone: seller.phone,
+      boostPercentage: pct,
+      durationDays,
+      amount,
+      upiIdUsed:
+        livePaymentUpi ||
+        settings.highlightConfig?.upiId ||
+        settings.upiId ||
+        HIGHLIGHT_UPI_ID,
+      transactionRef: cleanTxRef,
+      paymentScreenshotDataUrl: cleanShot,
+      status: 'pending_approval',
+      adminRemarks: '',
+      approvedAt: '',
+      expiresAt: '',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, BOOST_REQUESTS_COL, request.id), request);
+      return request;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.CREATE,
+        `${BOOST_REQUESTS_COL}/${request.id}`
+      );
+    }
+  },
+
+  async updateBoostRequestStatus(
+    requestId: string,
+    status: BoostRequestStatus,
+    adminRemarks?: string
+  ): Promise<{ request: BoostRequest; product: Product | null }> {
+    const reqRef = doc(db, BOOST_REQUESTS_COL, requestId);
+    try {
+      const snap = await getDoc(reqRef);
+      if (!snap.exists()) throw new Error('Boost request not found.');
+      const existing = snap.data() as BoostRequest;
+      const now = new Date().toISOString();
+
+      let approvedAt = existing.approvedAt || '';
+      let expiresAt = existing.expiresAt || '';
+      if (status === 'approved') {
+        approvedAt = now;
+        const ms = Math.max(1, existing.durationDays || 1) * 86_400_000;
+        expiresAt = new Date(Date.now() + ms).toISOString();
+      } else if (status === 'rejected') {
+        expiresAt = '';
+      }
+
+      const pct = clampBoostPercentage(existing.boostPercentage, 10);
+      const updatedRequest: BoostRequest = stripUndefinedDeep({
+        ...existing,
+        boostPercentage: pct,
+        status,
+        adminRemarks:
+          adminRemarks !== undefined
+            ? adminRemarks.trim()
+            : existing.adminRemarks || '',
+        approvedAt,
+        expiresAt,
+        updatedAt: now,
+      });
+
+      const prodRef = doc(db, PRODUCTS_COL, existing.productId);
+      const prodSnap = await getDoc(prodRef);
+      let updatedProduct: Product | null = null;
+
+      const batch = writeBatch(db);
+      batch.set(reqRef, updatedRequest);
+
+      if (prodSnap.exists()) {
+        const prod = prodSnap.data() as Product;
+        if (status === 'approved') {
+          updatedProduct = stripUndefinedDeep({
+            ...prod,
+            boosted: true,
+            boostPercentage: pct,
+            boostLevel: Math.min(5, Math.max(1, Math.ceil(pct / 20))),
+            boostExpiresAt: expiresAt,
+            boostSource: 'seller',
+            activeBoostRequestId: existing.id,
+            boostUpdatedAt: now,
+            updatedAt: now,
+          });
+          batch.set(prodRef, updatedProduct);
+        } else if (
+          status === 'rejected' &&
+          prod.activeBoostRequestId === existing.id
+        ) {
+          updatedProduct = stripUndefinedDeep({
+            ...prod,
+            boosted: false,
+            boostPercentage: undefined,
+            boostLevel: undefined,
+            boostExpiresAt: undefined,
+            boostSource: undefined,
+            activeBoostRequestId: undefined,
+            boostUpdatedAt: now,
+            updatedAt: now,
+          });
+          batch.set(prodRef, updatedProduct);
+        }
+      }
+
+      await batch.commit();
+      return { request: updatedRequest, product: updatedProduct };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Boost request not found.') {
+        throw error;
+      }
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${BOOST_REQUESTS_COL}/${requestId}`
+      );
+    }
+  },
+
+  async deleteBoostRequest(requestId: string): Promise<{ ok: boolean }> {
+    try {
+      await deleteDoc(doc(db, BOOST_REQUESTS_COL, requestId));
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.DELETE,
+        `${BOOST_REQUESTS_COL}/${requestId}`
+      );
+    }
+  },
+
+  subscribeSellerBoostRequests(
+    sellerId: string,
+    onList: (requests: BoostRequest[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      query(
+        collection(db, BOOST_REQUESTS_COL),
+        where('sellerId', '==', sellerId)
+      ),
+      (snap) => {
+        onList(
+          sortDescByCreated(snap.docs.map((d) => d.data() as BoostRequest))
+        );
+      },
+      (err) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, BOOST_REQUESTS_COL);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
   },
 
   async incrementProductPopularity(

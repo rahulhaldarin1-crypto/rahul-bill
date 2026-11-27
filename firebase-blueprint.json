@@ -95,6 +95,13 @@
         "sellerPaymentBankAccountNo": { "type": "string", "maxLength": 60 },
         "sellerPaymentBankIfscBranch": { "type": "string", "maxLength": 160 },
         "sellerPaymentQrDataUrl": { "type": "string", "maxLength": 350000 },
+        "boosted": { "type": "boolean" },
+        "boostPercentage": { "type": "number" },
+        "boostLevel": { "type": "number" },
+        "boostExpiresAt": { "type": "string", "maxLength": 60 },
+        "boostUpdatedAt": { "type": "string", "maxLength": 60 },
+        "boostSource": { "type": "string", "enum": ["admin", "seller"] },
+        "activeBoostRequestId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "maxLength": 40 },
         "updatedAt": { "type": "string", "maxLength": 40 }
       },
@@ -245,6 +252,32 @@
         "updatedAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "productId", "productName", "sellerId", "sellerName", "durationDays", "amount", "status", "createdAt", "updatedAt"]
+    },
+    "BoostRequest": {
+      "title": "BoostRequest",
+      "description": "Paid seller product boost request with manual 1-100% power, duration days, and online payment verification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "sellerId": { "type": "string", "maxLength": 128 },
+        "sellerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sellerPhone": { "type": "string", "maxLength": 40 },
+        "boostPercentage": { "type": "number" },
+        "durationDays": { "type": "number" },
+        "amount": { "type": "number" },
+        "upiIdUsed": { "type": "string", "maxLength": 120 },
+        "transactionRef": { "type": "string", "maxLength": 120 },
+        "paymentScreenshotDataUrl": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["pending_approval", "approved", "rejected"] },
+        "adminRemarks": { "type": "string", "maxLength": 400 },
+        "approvedAt": { "type": "string", "maxLength": 60 },
+        "expiresAt": { "type": "string", "maxLength": 60 },
+        "createdAt": { "type": "string", "maxLength": 60 },
+        "updatedAt": { "type": "string", "maxLength": 60 }
+      },
+      "required": ["id", "productId", "productName", "sellerId", "sellerName", "boostPercentage", "durationDays", "amount", "status", "createdAt", "updatedAt"]
     },
     "SupportChatThread": {
       "title": "SupportChatThread",
@@ -402,6 +435,10 @@
     "/highlight_requests/{requestId}": {
       "schema": { "$ref": "#/entities/HighlightRequest" },
       "description": "Paid seller product highlight and offer-seat promotion requests."
+    },
+    "/boost_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/BoostRequest" },
+      "description": "Paid seller percentage-based product boost requests requiring online payment verification."
     },
     "/support_chats/{chatId}": {
       "schema": { "$ref": "#/entities/SupportChatThread" },

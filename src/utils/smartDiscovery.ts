@@ -38,6 +38,7 @@ export interface SmartDiscoverableItem {
   highlighted?: boolean;
   highlightPlacement?: HighlightPlacementRule;
   boosted?: boolean;
+  boostPercentage?: number;
   boostLevel?: number;
   boostExpiresAt?: string;
   size?: string;
@@ -126,14 +127,48 @@ export function isProductBoostActive(
   return expiresMs > nowMs;
 }
 
-export function getEffectiveBoostLevel(
-  prod: Pick<Product, 'boosted' | 'boostLevel' | 'boostExpiresAt'> | SmartDiscoverableItem,
+export function clampBoostPercentage(raw?: number, fallback = 50): number {
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return Math.min(100, Math.max(1, Math.round(fallback)));
+  return Math.min(100, Math.max(1, Math.round(num)));
+}
+
+export function calculateSellerBoostFee(
+  boostPercentage: number,
+  durationDays: number
+): number {
+  const pct = clampBoostPercentage(boostPercentage, 10);
+  const days = Math.min(365, Math.max(1, Math.round(Number(durationDays) || 1)));
+  return Math.max(1, Math.round((pct / 10) * days * 20));
+}
+
+export function getEffectiveBoostPercentage(
+  prod:
+    | Pick<Product, 'boosted' | 'boostPercentage' | 'boostLevel' | 'boostExpiresAt'>
+    | SmartDiscoverableItem,
   nowMs = Date.now()
 ): number {
   if (!isProductBoostActive(prod, nowMs)) return 0;
-  const raw = Number(prod.boostLevel);
-  if (!Number.isFinite(raw)) return 3;
-  return Math.min(5, Math.max(1, Math.round(raw)));
+  const pctRaw = Number(prod.boostPercentage);
+  if (Number.isFinite(pctRaw) && pctRaw > 0) {
+    return Math.min(100, Math.max(1, Math.round(pctRaw)));
+  }
+  const lvlRaw = Number(prod.boostLevel);
+  if (Number.isFinite(lvlRaw) && lvlRaw > 0) {
+    return Math.min(100, Math.max(1, Math.round(lvlRaw * 20)));
+  }
+  return 50;
+}
+
+export function getEffectiveBoostLevel(
+  prod:
+    | Pick<Product, 'boosted' | 'boostPercentage' | 'boostLevel' | 'boostExpiresAt'>
+    | SmartDiscoverableItem,
+  nowMs = Date.now()
+): number {
+  const pct = getEffectiveBoostPercentage(prod, nowMs);
+  if (pct <= 0) return 0;
+  return Math.min(5, Math.max(1, Math.ceil(pct / 20)));
 }
 
 export function createEmptyEngagementProfile(): CustomerEngagementProfile {
@@ -668,11 +703,10 @@ export function computeCompositeSmartScore(
   const canonicalId = (item.catalogProductId || item.id).replace(/^cat-/, '');
   let score = 0;
 
-  // 1. Admin Boost Controller weight (strongest priority tier)
-  const boostLevel = getEffectiveBoostLevel(item, nowMs);
-  if (boostLevel > 0) {
-    const boostBaseMap = [0, 55, 82, 115, 150, 190];
-    score += boostBaseMap[boostLevel] || 115;
+  // 1. Percentage-Based Admin / Approved Seller Boost weight (1%–100%)
+  const boostPct = getEffectiveBoostPercentage(item, nowMs);
+  if (boostPct > 0) {
+    score += 25 + (boostPct / 100) * 175;
   }
 
   // 2. Seller Paid Highlight weight (respects placementRule)
@@ -926,8 +960,8 @@ export function getSimilarProducts<T extends SmartDiscoverableItem>(
       score += Math.max(0, priceCloseness) * 26;
 
       // Boost / highlight / stock / popularity
-      const boostLvl = getEffectiveBoostLevel(item, nowMs);
-      if (boostLvl > 0) score += boostLvl * 4;
+      const boostPct = getEffectiveBoostPercentage(item, nowMs);
+      if (boostPct > 0) score += (boostPct / 100) * 24;
       if (item.highlighted) score += 8;
       if (item.stockQty !== undefined && item.stockQty <= 0) score -= 25;
 
@@ -1021,8 +1055,8 @@ export function getComplementaryCrossSellProducts<T extends SmartDiscoverableIte
       }
 
       // Boost & popularity
-      const boostLvl = getEffectiveBoostLevel(item, nowMs);
-      if (boostLvl > 0) score += boostLvl * 5;
+      const boostPct = getEffectiveBoostPercentage(item, nowMs);
+      if (boostPct > 0) score += (boostPct / 100) * 25;
       if (item.highlighted) score += 10;
       if (item.stockQty !== undefined && item.stockQty <= 0) score -= 25;
 
@@ -1104,8 +1138,8 @@ export function getCartAwareRecommendations<T extends SmartDiscoverableItem>(
       const catAff = Number(profile.categoryScores?.[item.category] || 0);
       if (catAff > 0) score += Math.min(15, Math.log1p(catAff) * 4);
 
-      const boostLvl = getEffectiveBoostLevel(item, nowMs);
-      if (boostLvl > 0) score += boostLvl * 5;
+      const boostPct = getEffectiveBoostPercentage(item, nowMs);
+      if (boostPct > 0) score += (boostPct / 100) * 25;
       if (item.highlighted) score += 8;
 
       const sig = popularityByProductId.get(cid);

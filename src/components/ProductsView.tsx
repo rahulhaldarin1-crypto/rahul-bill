@@ -13,6 +13,7 @@ import {
   Plus,
   QrCode,
   RefreshCw,
+  Rocket,
   Search,
   Star,
   Trash2,
@@ -38,8 +39,13 @@ import {
   uploadMediaToCloudinary,
 } from '../utils/cloudinary';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
+import {
+  getEffectiveBoostPercentage,
+  isProductBoostActive,
+} from '../utils/smartDiscovery';
 import { ConfirmModal } from './ConfirmModal';
 import { ImageCropModal } from './ImageCropModal';
+import { ProductBoostModal } from './ProductBoostModal';
 
 export interface SellerProductContext {
   sellerId: string;
@@ -54,7 +60,18 @@ interface ProductsViewProps {
   sellerContext?: SellerProductContext;
   hideBackButton?: boolean;
   pendingHighlightProductIds?: Set<string>;
+  pendingBoostProductIds?: Set<string>;
   onRequestHighlight?: (prod: Product) => void;
+  onRequestBoost?: (prod: Product) => void;
+  onUpdateProductBoost?: (
+    productId: string,
+    payload: {
+      boosted: boolean;
+      boostPercentage?: number;
+      boostExpiresAt?: string;
+      boostSource?: 'admin' | 'seller';
+    }
+  ) => Promise<void>;
   onBack: () => void;
   onSaveProduct: (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
@@ -152,7 +169,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   sellerContext,
   hideBackButton = false,
   pendingHighlightProductIds,
+  pendingBoostProductIds,
   onRequestHighlight,
+  onRequestBoost,
+  onUpdateProductBoost,
   onBack,
   onSaveProduct,
   onDeleteProduct,
@@ -160,6 +180,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
+  const [boostModalProduct, setBoostModalProduct] = useState<Product | null>(null);
   const [detailImageIndex, setDetailImageIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
@@ -1601,6 +1622,41 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 <span>Open Link</span>
               </a>
             )}
+            {(sellerContext ? onRequestBoost : onUpdateProductBoost) && (() => {
+              const detailBoostActive = isProductBoostActive(activeDetailProduct);
+              const detailBoostPct = getEffectiveBoostPercentage(activeDetailProduct);
+              const detailBoostPending = Boolean(
+                pendingBoostProductIds?.has(activeDetailProduct.id)
+              );
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (sellerContext && onRequestBoost) {
+                      onRequestBoost(activeDetailProduct);
+                    } else if (!sellerContext && onUpdateProductBoost) {
+                      setBoostModalProduct(activeDetailProduct);
+                    }
+                  }}
+                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold cursor-pointer ${
+                    detailBoostActive
+                      ? 'border-[#F472B6] bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                      : detailBoostPending
+                        ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                        : 'border-[#D8B4FE] bg-[#FAF5FF] text-[#7E22CE] hover:border-[#DB2777] hover:text-[#DB2777]'
+                  }`}
+                >
+                  <Rocket className="w-3.5 h-3.5" />
+                  <span>
+                    {detailBoostActive
+                      ? `Boosted ${detailBoostPct}%`
+                      : detailBoostPending
+                        ? 'Boost Pending'
+                        : 'Boost'}
+                  </span>
+                </button>
+              );
+            })()}
             <button
               type="button"
               onClick={() => downloadProductDetailsFile(activeDetailProduct)}
@@ -1912,6 +1968,15 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           </div>
         </div>
 
+        {!sellerContext && onUpdateProductBoost && (
+          <ProductBoostModal
+            product={boostModalProduct}
+            currencySymbol={currencySymbol}
+            onClose={() => setBoostModalProduct(null)}
+            onSaveBoost={onUpdateProductBoost}
+          />
+        )}
+
         <ConfirmModal
           open={Boolean(deleteTarget)}
           title="Delete Product"
@@ -2015,6 +2080,11 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             const hasPendingHighlight = Boolean(
               pendingHighlightProductIds?.has(prod.id)
             );
+            const activeBoost = isProductBoostActive(prod);
+            const activeBoostPct = getEffectiveBoostPercentage(prod);
+            const hasPendingBoost = Boolean(
+              pendingBoostProductIds?.has(prod.id)
+            );
 
             return (
               <div
@@ -2061,6 +2131,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       <span className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 rounded-md bg-[#B45309] px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-white">
                         <Star className="w-2.5 h-2.5 sm:w-3 sm:h-3 shrink-0" />
                         <span>Pending</span>
+                      </span>
+                    )}
+                    {activeBoost && (
+                      <span className="absolute top-1.5 right-1.5 inline-flex items-center gap-0.5 rounded-md bg-gradient-to-r from-[#7E22CE] to-[#DB2777] px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-white">
+                        <Rocket className="w-2.5 h-2.5 shrink-0" />
+                        <span>{activeBoostPct}%</span>
                       </span>
                     )}
                     {(gallery.length > 0 || prod.videoUrl) && (
@@ -2238,6 +2314,42 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       </button>
                     )}
                     <div className="flex items-center gap-1 shrink-0">
+                      {(sellerContext ? onRequestBoost : onUpdateProductBoost) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (sellerContext && onRequestBoost) {
+                              onRequestBoost(prod);
+                            } else if (!sellerContext && onUpdateProductBoost) {
+                              setBoostModalProduct(prod);
+                            }
+                          }}
+                          className={`inline-flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-lg border text-[10px] sm:text-[11px] font-semibold cursor-pointer transition-colors ${
+                            activeBoost
+                              ? 'border-[#F472B6] bg-gradient-to-r from-[#DB2777] to-[#7E22CE] text-white'
+                              : hasPendingBoost
+                                ? 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                                : 'border-[#D8B4FE] bg-[#FAF5FF] text-[#7E22CE] hover:border-[#DB2777] hover:text-[#DB2777]'
+                          }`}
+                          title={
+                            activeBoost
+                              ? `Boosted at ${activeBoostPct}% — click to adjust`
+                              : hasPendingBoost
+                                ? 'Boost payment pending admin approval'
+                                : 'Boost product ranking (1%–100%)'
+                          }
+                        >
+                          <Rocket className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+                          <span>
+                            {activeBoost
+                              ? `${activeBoostPct}%`
+                              : hasPendingBoost
+                                ? 'Pending'
+                                : 'Boost'}
+                          </span>
+                        </button>
+                      )}
                       {(() => {
                         const safeExternalUrl = getSafeHttpUrl(prod.sourceUrl);
                         if (!safeExternalUrl) return null;
@@ -2296,6 +2408,15 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             );
           })}
         </div>
+      )}
+
+      {!sellerContext && onUpdateProductBoost && (
+        <ProductBoostModal
+          product={boostModalProduct}
+          currencySymbol={currencySymbol}
+          onClose={() => setBoostModalProduct(null)}
+          onSaveBoost={onUpdateProductBoost}
+        />
       )}
 
       <ConfirmModal

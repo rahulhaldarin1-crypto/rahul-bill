@@ -299,6 +299,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
               highlighted: Boolean(prod.highlighted),
               highlightPlacement: prod.highlightPlacement,
               boosted: Boolean(prod.boosted),
+              boostPercentage: prod.boostPercentage,
               boostLevel: prod.boostLevel,
               boostExpiresAt: prod.boostExpiresAt,
               size: prod.size,

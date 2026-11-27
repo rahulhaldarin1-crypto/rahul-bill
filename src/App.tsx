@@ -44,6 +44,7 @@ import {
   AdminPaymentSettings,
   AppRoute,
   BangladeshConfig,
+  BoostRequestStatus,
   BusinessSettings,
   Client,
   CustomerOrder,
@@ -704,8 +705,10 @@ export default function App() {
     productId: string,
     payload: {
       boosted: boolean;
+      boostPercentage?: number;
       boostLevel?: number;
       boostExpiresAt?: string;
+      boostSource?: 'admin' | 'seller';
     }
   ) => {
     const updated = await api.updateProductBoost(productId, payload);
@@ -715,7 +718,7 @@ export default function App() {
     }));
     showToast(
       updated.boosted
-        ? `Boost activated for ${updated.name} (Level ${updated.boostLevel || 3}).`
+        ? `Boost activated for ${updated.name} (${updated.boostPercentage || 50}%).`
         : `Boost turned off for ${updated.name}.`
     );
   };
@@ -932,6 +935,43 @@ export default function App() {
       ),
     }));
     showToast('Highlight request deleted.');
+  };
+
+  const handleUpdateBoostRequestStatus = async (
+    requestId: string,
+    status: BoostRequestStatus,
+    adminRemarks?: string
+  ) => {
+    const res = await api.updateBoostRequestStatus(
+      requestId,
+      status,
+      adminRemarks
+    );
+    setWorkspace((prev) => ({
+      ...prev,
+      boostRequests: (prev.boostRequests || []).map((r) =>
+        r.id === res.request.id ? res.request : r
+      ),
+      products: res.product
+        ? prev.products.map((p) => (p.id === res.product!.id ? res.product! : p))
+        : prev.products,
+    }));
+    showToast(
+      status === 'approved'
+        ? `Boost (${res.request.boostPercentage}%) activated for ${res.request.productName}!`
+        : `Boost request marked as ${status}.`
+    );
+  };
+
+  const handleDeleteBoostRequest = async (requestId: string) => {
+    await api.deleteBoostRequest(requestId);
+    setWorkspace((prev) => ({
+      ...prev,
+      boostRequests: (prev.boostRequests || []).filter(
+        (r) => r.id !== requestId
+      ),
+    }));
+    showToast('Boost request deleted.');
   };
 
   const handleRestoreBackup = async (backup: WorkspaceData) => {
@@ -1469,6 +1509,7 @@ export default function App() {
             currencySymbol={currencySymbol}
             defaultLowStock={workspace.settings.lowStockThreshold || 5}
             onBack={goBack}
+            onUpdateProductBoost={handleUpdateProductBoost}
             onSaveProduct={handleSaveProduct}
             onDeleteProduct={handleDeleteProduct}
           />
@@ -1682,9 +1723,12 @@ export default function App() {
         {route === 'boost-controller' && (
           <BoostControllerView
             products={workspace.products}
+            boostRequests={workspace.boostRequests || []}
             currencySymbol={currencySymbol}
             onBack={goBack}
             onUpdateProductBoost={handleUpdateProductBoost}
+            onUpdateBoostRequestStatus={handleUpdateBoostRequestStatus}
+            onDeleteBoostRequest={handleDeleteBoostRequest}
           />
         )}
       </main>

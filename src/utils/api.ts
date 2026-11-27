@@ -1,5 +1,7 @@
 import {
   AdminPaymentSettings,
+  BoostRequest,
+  BoostRequestStatus,
   BusinessSettings,
   Client,
   CloudinaryMediaRecord,
@@ -789,11 +791,52 @@ export const api = {
     productId: string,
     payload: {
       boosted: boolean;
+      boostPercentage?: number;
       boostLevel?: number;
       boostExpiresAt?: string;
+      boostSource?: 'admin' | 'seller';
     }
   ) {
     return firestoreService.updateProductBoost(productId, payload);
+  },
+
+  submitBoostRequest(payload: {
+    sellerId: string;
+    productId: string;
+    boostPercentage: number;
+    durationDays: number;
+    transactionRef?: string;
+    paymentScreenshotDataUrl?: string;
+  }) {
+    return firestoreService.submitBoostRequest(payload);
+  },
+
+  updateBoostRequestStatus(
+    requestId: string,
+    status: BoostRequestStatus,
+    adminRemarks?: string
+  ) {
+    return firestoreService.updateBoostRequestStatus(
+      requestId,
+      status,
+      adminRemarks
+    );
+  },
+
+  deleteBoostRequest(requestId: string) {
+    return firestoreService.deleteBoostRequest(requestId);
+  },
+
+  subscribeSellerBoostRequests(
+    sellerId: string,
+    onList: (requests: BoostRequest[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeSellerBoostRequests(
+      sellerId,
+      onList,
+      onError
+    );
   },
 
   incrementProductPopularity(

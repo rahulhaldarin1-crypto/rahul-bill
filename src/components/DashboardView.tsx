@@ -59,6 +59,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     sellerApplications = [],
     supportChats = [],
     subscriptions = [],
+    boostRequests = [],
   } = workspace;
   const sym = settings.currencySymbol || '₹';
   const pendingOrdersCount = orders.filter((o) => o.status === 'Pending').length;
@@ -84,6 +85,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   );
   const activeBoostedCount = products.filter((p) =>
     isProductBoostActive(p)
+  ).length;
+  const pendingBoostRequestsCount = boostRequests.filter(
+    (r) => r.status === 'pending_approval'
   ).length;
 
   const summary = useMemo(() => {
@@ -300,14 +304,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     {
       route: 'boost-controller',
       title: 'Boost Controller',
-      subtitle: 'Promote selected products in Storefront smart ranking, rotation & recommendations',
+      subtitle: 'Control 1%–100% product boost power, review seller boost payments & durations',
       metric:
-        activeBoostedCount > 0
-          ? `${activeBoostedCount} Boosted`
-          : 'Standard Feed',
+        pendingBoostRequestsCount > 0
+          ? `${pendingBoostRequestsCount} Pending · ${activeBoostedCount} Active`
+          : activeBoostedCount > 0
+            ? `${activeBoostedCount} Boosted`
+            : 'Standard Feed',
       icon: Rocket,
       accentBg: 'from-[#DB2777] to-[#7E22CE]',
-      accentText: activeBoostedCount > 0 ? 'text-[#DB2777]' : 'text-[#7E22CE]',
+      accentText:
+        pendingBoostRequestsCount > 0
+          ? 'text-[#BE123C]'
+          : activeBoostedCount > 0
+            ? 'text-[#DB2777]'
+            : 'text-[#7E22CE]',
       borderHover: 'hover:border-[#F472B6]',
     },
   ];
@@ -396,7 +407,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <Rocket className="w-4 h-4 text-[#DB2777]" />
             <span>
               Boost Controller
-              {activeBoostedCount > 0 ? ` (${activeBoostedCount})` : ''}
+              {pendingBoostRequestsCount > 0
+                ? ` (${pendingBoostRequestsCount} Pending)`
+                : activeBoostedCount > 0
+                  ? ` (${activeBoostedCount})`
+                  : ''}
             </span>
           </button>
         </div>
