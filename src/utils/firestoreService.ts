@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   onSnapshot,
   query,
   setDoc,
@@ -19,6 +20,7 @@ import {
   Client,
   CloudinaryMediaRecord,
   CustomerCartItem,
+  CustomerEngagementProfile,
   CustomerOrder,
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
@@ -3121,6 +3123,26 @@ export const firestoreService = {
       batch.set(doc(db, CLIENTS_COL, client.id), client);
       batch.set(doc(db, ORDERS_COL, order.id), order);
       await batch.commit();
+      // Best-effort non-blocking popularity update for ordered products
+      const qtyByProductId = new Map<string, number>();
+      for (const item of normalizedItems) {
+        const pid = String(item.productId || '').replace(/^cat-/, '').trim();
+        if (pid) {
+          qtyByProductId.set(
+            pid,
+            (qtyByProductId.get(pid) || 0) + Math.max(1, Number(item.quantity) || 1)
+          );
+        }
+      }
+      if (qtyByProductId.size > 0) {
+        void Promise.allSettled(
+          Array.from(qtyByProductId.entries()).map(([pid, qty]) =>
+            updateDoc(doc(db, PRODUCTS_COL, pid), {
+              orderCount: increment(qty),
+            })
+          )
+        );
+      }
       syncRecordsToGoogleSheetsBackground({ client, order });
       return { order, client };
     } catch (error) {
@@ -5756,6 +5778,79 @@ export const firestoreService = {
         OperationType.DELETE,
         `${SUBSCRIPTIONS_COL}/${subscriptionId}`
       );
+    }
+  },
+
+  async updateProductBoost(
+    productId: string,
+    payload: {
+      boosted: boolean;
+      boostLevel?: number;
+      boostExpiresAt?: string;
+    }
+  ): Promise<Product> {
+    const cleanId = String(productId || '').trim();
+    if (!cleanId) throw new Error('Invalid product ID.');
+    const ref = doc(db, PRODUCTS_COL, cleanId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Product not found.');
+      const existing = snap.data() as Product;
+      const nowIso = new Date().toISOString();
+      const clampedLevel = payload.boosted
+        ? Math.min(5, Math.max(1, Math.round(Number(payload.boostLevel) || existing.boostLevel || 3)))
+        : 0;
+
+      const updated: Product = stripUndefinedDeep({
+        ...existing,
+        boosted: Boolean(payload.boosted),
+        boostLevel: payload.boosted ? clampedLevel : undefined,
+        boostExpiresAt: payload.boosted
+          ? String(payload.boostExpiresAt || '').trim() || undefined
+          : undefined,
+        boostUpdatedAt: nowIso,
+        updatedAt: nowIso,
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Product not found.') {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.UPDATE, `${PRODUCTS_COL}/${cleanId}`);
+    }
+  },
+
+  async incrementProductPopularity(
+    productId: string,
+    field: 'viewCount' | 'wishlistCount' | 'orderCount',
+    delta = 1
+  ): Promise<void> {
+    const cleanId = String(productId || '').replace(/^cat-/, '').trim();
+    const step = Math.round(Number(delta) || 0);
+    if (!cleanId || step === 0) return;
+    try {
+      await updateDoc(doc(db, PRODUCTS_COL, cleanId), {
+        [field]: increment(step),
+      });
+    } catch {
+      // Non-blocking popularity telemetry
+    }
+  },
+
+  async syncCustomerEngagementProfile(
+    clientId: string,
+    profile: CustomerEngagementProfile
+  ): Promise<void> {
+    const cleanClientId = String(clientId || '').trim();
+    if (!cleanClientId) return;
+    try {
+      await updateDoc(doc(db, CLIENTS_COL, cleanClientId), {
+        engagementProfile: stripUndefinedDeep(profile),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Non-blocking engagement sync
     }
   },
 };

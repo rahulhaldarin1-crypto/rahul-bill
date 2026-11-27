@@ -87,6 +87,24 @@ import {
 } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import {
+  computeCompositeSmartScore,
+  getComplementaryCrossSellProducts,
+  getSimilarProducts,
+  getSmartRotationSeed,
+  isProductBoostActive,
+  mergeSmartProfiles,
+  ProductPopularitySignals,
+  rankSmartShoppingFeed,
+  readImpressionCounts,
+  readLocalSmartProfile,
+  readRecentlyViewedIds,
+  recordFeedImpressions,
+  recordRecentlyViewedProduct,
+  recordSmartInteraction,
+  scoreProductSearchMatch,
+  SmartInteractionType,
+} from '../utils/smartDiscovery';
+import {
   BANGLADESH_CHARGE_NOTICE,
   buildBangladeshWhatsAppOrderUrl,
   convertInrToBdt,
@@ -168,6 +186,9 @@ interface PublicShopProduct {
   originalPrice?: number;
   highlighted?: boolean;
   highlightPlacement?: Product['highlightPlacement'];
+  boosted?: boolean;
+  boostLevel?: number;
+  boostExpiresAt?: string;
   size?: string;
   color?: string;
   stockQty?: number;
@@ -179,6 +200,10 @@ interface PublicShopProduct {
   sellerName?: string;
   sourceUrl?: string;
   sourcePlatform?: Product['sourcePlatform'];
+  viewCount?: number;
+  wishlistCount?: number;
+  orderCount?: number;
+  createdAt?: string;
   sellerPaymentUpiId?: string;
   sellerPaymentBankAccountName?: string;
   sellerPaymentBankName?: string;
@@ -273,6 +298,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>(
     readStoredFavoriteIds
   );
+  const [localSmartProfile, setLocalSmartProfile] = useState(
+    readLocalSmartProfile
+  );
+  const [recentlyViewedIds, setRecentlyViewedIds] = useState<string[]>(
+    readRecentlyViewedIds
+  );
+  const [rotationSeed] = useState(getSmartRotationSeed);
+  const [impressionCounts] = useState(() => readImpressionCounts());
+  const viewedThisSessionRef = useRef<Set<string>>(new Set());
+  const recordedFeedImpressionsRef = useRef<string>('');
+  const engagementSyncTimerRef = useRef<number | null>(null);
 
   // Follow & Product Review UI state
   const [followBusySellerId, setFollowBusySellerId] = useState<string | null>(null);
@@ -600,6 +636,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             originalPrice: prod.originalPrice,
             highlighted: isProductHighlightActive(prod),
             highlightPlacement: prod.highlightPlacement,
+            boosted: isProductBoostActive(prod),
+            boostLevel: prod.boostLevel,
+            boostExpiresAt: prod.boostExpiresAt,
             size: prod.size,
             color: prod.color,
             stockQty: prod.stockQty,
@@ -611,6 +650,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             sellerName: prod.sellerName,
             sourceUrl: prod.sourceUrl,
             sourcePlatform: prod.sourcePlatform,
+            viewCount: prod.viewCount,
+            wishlistCount: prod.wishlistCount,
+            orderCount: prod.orderCount,
+            createdAt: prod.createdAt,
             sellerPaymentUpiId: prod.sellerPaymentUpiId,
             sellerPaymentBankAccountName: prod.sellerPaymentBankAccountName,
             sellerPaymentBankName: prod.sellerPaymentBankName,
@@ -621,13 +664,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         })
       : [];
 
-    const combined = [...catalogItems, ...customItems];
-    if (placementRule === 'top_featured') {
-      return combined.sort(
-        (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
-      );
-    }
-    return combined;
+    return [...catalogItems, ...customItems];
   }, [
     viewPanel.shopping.items,
     viewPanel.shopping.includeCatalogProducts,
@@ -635,7 +672,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     approvedSellerIdsSet,
     blockedSellerIdsSet,
     sellersLoaded,
-    placementRule,
   ]);
 
   const reviewsByProductId = useMemo(() => {
@@ -686,33 +722,97 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setInStockOnlyFilter(false);
   };
 
-  const filteredShoppingItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+  const smartProfile = useMemo(
+    () => mergeSmartProfiles(localSmartProfile, loggedInCustomer),
+    [localSmartProfile, loggedInCustomer]
+  );
+
+  const popularityByProductId = useMemo(() => {
+    const map = new Map<string, ProductPopularitySignals>();
+    for (const item of shoppingItems) {
+      const canonicalId = (item.catalogProductId || item.id).replace(/^cat-/, '');
+      const ratingSummary = ratingSummaryByProductId.get(canonicalId);
+      map.set(canonicalId, {
+        avgRating: ratingSummary?.avg || 0,
+        reviewCount: ratingSummary?.count || 0,
+        orderCount: item.orderCount || 0,
+        wishlistCount: item.wishlistCount || 0,
+        viewCount: item.viewCount || 0,
+      });
+    }
+    for (const ord of customerOrders) {
+      const ordItems = Array.isArray(ord.items) && ord.items.length > 0 ? ord.items : [];
+      for (const it of ordItems) {
+        const cid = String(it.productId || it.id || '').replace(/^cat-/, '');
+        if (!cid) continue;
+        const curr = map.get(cid) || {};
+        map.set(cid, {
+          ...curr,
+          orderCount: (curr.orderCount || 0) + Math.max(1, Number(it.quantity) || 1),
+        });
+      }
+    }
+    return map;
+  }, [shoppingItems, ratingSummaryByProductId, customerOrders]);
+
+  const trackSmartEngagement = (
+    item: PublicShopProduct,
+    type: SmartInteractionType,
+    qty = 1
+  ) => {
+    const canonicalId = (item.catalogProductId || item.id).replace(/^cat-/, '');
+    const nextProfile = recordSmartInteraction({
+      productId: canonicalId,
+      category: item.category,
+      price: item.price,
+      type,
+      quantity: qty,
+    });
+    setLocalSmartProfile(nextProfile);
+
+    if (loggedInCustomer) {
+      if (engagementSyncTimerRef.current !== null) {
+        window.clearTimeout(engagementSyncTimerRef.current);
+      }
+      const customerId = loggedInCustomer.id;
+      engagementSyncTimerRef.current = window.setTimeout(() => {
+        void api.syncCustomerEngagementProfile(customerId, nextProfile);
+      }, 900);
+    }
+
+    if (item.catalogProductId) {
+      if (type === 'view') {
+        if (!viewedThisSessionRef.current.has(item.catalogProductId)) {
+          viewedThisSessionRef.current.add(item.catalogProductId);
+          void api.incrementProductPopularity(item.catalogProductId, 'viewCount', 1);
+        }
+      } else if (type === 'wishlist') {
+        void api.incrementProductPopularity(item.catalogProductId, 'wishlistCount', 1);
+      }
+    }
+  };
+
+  const smartSearchEvaluation = useMemo(() => {
+    const q = searchQuery.trim();
     let list =
       shoppingCategory === 'ALL'
         ? shoppingItems
         : shoppingItems.filter((item) => item.category === shoppingCategory);
 
+    const searchScores = new Map<string, number>();
+    let fuzzyUsed = false;
+
     if (q) {
-      const cleanQ = q.replace(/^#/, '');
-      list = list.filter((item) => {
-        const rawId = String(item.id || '').toLowerCase();
-        const catalogId = String(item.catalogProductId || '').toLowerCase();
-        const strippedId = rawId.replace(/^cat-/, '');
-        const productNo = String(item.productNumber || '').toLowerCase();
-        return (
-          rawId.includes(cleanQ) ||
-          catalogId.includes(cleanQ) ||
-          strippedId.includes(cleanQ) ||
-          productNo.includes(cleanQ) ||
-          String(item.name || '').toLowerCase().includes(q) ||
-          String(item.category || '').toLowerCase().includes(q) ||
-          String(item.size || '').toLowerCase().includes(q) ||
-          String(item.color || '').toLowerCase().includes(q) ||
-          String(item.description || '').toLowerCase().includes(q) ||
-          String(item.sellerName || '').toLowerCase().includes(q)
-        );
-      });
+      const matchedItems: PublicShopProduct[] = [];
+      for (const item of list) {
+        const res = scoreProductSearchMatch(item, q);
+        if (res.matched) {
+          matchedItems.push(item);
+          searchScores.set(item.id, res.score);
+          if (res.fuzzyUsed) fuzzyUsed = true;
+        }
+      }
+      list = matchedItems;
     }
 
     if (genderFilter !== 'ALL') {
@@ -726,12 +826,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           item.category === 'Fashion & Jewellery' ||
           item.category === 'Cosmetics & Makeup' ||
           item.category === 'Innerwear & Essentials' ||
+          item.category === "Women's Jewellery" ||
+          item.category === 'Cosmetics & Beauty Products' ||
+          item.category === "Women's Innerwear" ||
           /\b(women|womens|women's|girl|girls|ladies|saree|kurti|lehenga|blouse|bra|panty|lingerie|bangle|earring|necklace|bridal|lipstick|makeup|handbag|purse)\b/.test(
             haystack
           );
         const isUnisex =
           item.category === 'Perfumes & Fragrances' ||
           item.category === 'Watches & Accessories' ||
+          item.category === 'Fashion Accessories' ||
           item.category === 'Bags & Handbags' ||
           item.category === 'Gift Hampers & Combos' ||
           item.category === 'Home & Living' ||
@@ -777,32 +881,67 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
 
     if (sortBy === 'price_asc') {
-      return [...list].sort((a, b) => a.price - b.price);
+      return {
+        items: [...list].sort((a, b) => a.price - b.price),
+        fuzzyUsed,
+      };
     }
     if (sortBy === 'price_desc') {
-      return [...list].sort((a, b) => b.price - a.price);
+      return {
+        items: [...list].sort((a, b) => b.price - a.price),
+        fuzzyUsed,
+      };
     }
     if (sortBy === 'discount_desc') {
       const getDisc = (it: PublicShopProduct) =>
         it.originalPrice && it.originalPrice > it.price
           ? ((it.originalPrice - it.price) / it.originalPrice) * 100
           : 0;
-      return [...list].sort((a, b) => getDisc(b) - getDisc(a));
+      return {
+        items: [...list].sort((a, b) => getDisc(b) - getDisc(a)),
+        fuzzyUsed,
+      };
     }
     if (sortBy === 'rating_desc') {
       const getRating = (it: PublicShopProduct) => {
         const summary = ratingSummaryByProductId.get(it.catalogProductId || it.id);
         return summary ? summary.avg : 0;
       };
-      return [...list].sort((a, b) => getRating(b) - getRating(a));
+      return {
+        items: [...list].sort((a, b) => getRating(b) - getRating(a)),
+        fuzzyUsed,
+      };
     }
 
-    if (shoppingCategory !== 'ALL' && placementRule === 'priority_category') {
-      return [...list].sort(
-        (a, b) => Number(Boolean(b.highlighted)) - Number(Boolean(a.highlighted))
-      );
+    const rankingCtx = {
+      profile: smartProfile,
+      impressions: impressionCounts,
+      popularityByProductId,
+      rotationSeed,
+      placementRule,
+      selectedCategory: shoppingCategory,
+    };
+
+    if (q) {
+      const rankedSearch = [...list].sort((a, b) => {
+        const matchScoreDiff =
+          (searchScores.get(b.id) || 0) - (searchScores.get(a.id) || 0);
+        if (Math.abs(matchScoreDiff) > 45) return matchScoreDiff;
+        const smartB = computeCompositeSmartScore(b, rankingCtx);
+        const smartA = computeCompositeSmartScore(a, rankingCtx);
+        return (
+          (searchScores.get(b.id) || 0) * 10 +
+          smartB * 0.35 -
+          ((searchScores.get(a.id) || 0) * 10 + smartA * 0.35)
+        );
+      });
+      return { items: rankedSearch, fuzzyUsed };
     }
-    return list;
+
+    return {
+      items: rankSmartShoppingFeed(list, rankingCtx),
+      fuzzyUsed: false,
+    };
   }, [
     shoppingItems,
     shoppingCategory,
@@ -815,7 +954,69 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     sortBy,
     ratingSummaryByProductId,
     placementRule,
+    smartProfile,
+    impressionCounts,
+    popularityByProductId,
+    rotationSeed,
   ]);
+
+  const filteredShoppingItems = smartSearchEvaluation.items;
+  const searchRescuedWithFuzzy = smartSearchEvaluation.fuzzyUsed;
+
+  const recentlyViewedItems = useMemo(() => {
+    if (recentlyViewedIds.length === 0 || shoppingItems.length === 0) return [];
+    const byCanonical = new Map<string, PublicShopProduct>();
+    for (const item of shoppingItems) {
+      const cid = (item.catalogProductId || item.id).replace(/^cat-/, '');
+      if (!byCanonical.has(cid)) byCanonical.set(cid, item);
+    }
+    return recentlyViewedIds
+      .map((id) => byCanonical.get(id))
+      .filter((it): it is PublicShopProduct => Boolean(it));
+  }, [recentlyViewedIds, shoppingItems]);
+
+  const trendingFallbackItems = useMemo(() => {
+    if (shoppingItems.length === 0) return [];
+    const shownIds = new Set(
+      filteredShoppingItems.map((it) => (it.catalogProductId || it.id).replace(/^cat-/, ''))
+    );
+    const rankedAll = rankSmartShoppingFeed(shoppingItems, {
+      profile: smartProfile,
+      impressions: impressionCounts,
+      popularityByProductId,
+      rotationSeed,
+      placementRule,
+      selectedCategory: 'ALL',
+    });
+    return rankedAll
+      .filter((it) => !shownIds.has((it.catalogProductId || it.id).replace(/^cat-/, '')))
+      .slice(0, 10);
+  }, [
+    shoppingItems,
+    filteredShoppingItems,
+    smartProfile,
+    impressionCounts,
+    popularityByProductId,
+    rotationSeed,
+    placementRule,
+  ]);
+
+  useEffect(() => {
+    if (
+      sortBy !== 'featured' ||
+      hasActiveCatalogFilter ||
+      filteredShoppingItems.length === 0
+    ) {
+      return;
+    }
+    const topIds = filteredShoppingItems
+      .slice(0, 12)
+      .map((item) => (item.catalogProductId || item.id).replace(/^cat-/, ''));
+    const sig = `${rotationSeed}:${topIds.join(',')}`;
+    if (recordedFeedImpressionsRef.current === sig) return;
+    recordedFeedImpressionsRef.current = sig;
+    recordFeedImpressions(topIds);
+  }, [filteredShoppingItems, sortBy, hasActiveCatalogFilter, rotationSeed]);
 
   const hasDiscountContent =
     viewPanel.discount.enabled &&
@@ -868,6 +1069,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(nextIds));
     } catch {
       // ignore storage errors
+    }
+
+    if (!currentlyFav) {
+      trackSmartEngagement(item, 'wishlist', 1);
+    } else if (item.catalogProductId) {
+      void api.incrementProductPopularity(item.catalogProductId, 'wishlistCount', -1);
     }
 
     triggerStoreNotice(
@@ -1250,6 +1457,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       }
 
       const updated = await api.updateCustomerCart(client.id, existingCart);
+      trackSmartEngagement(product, 'cart', qtyToAdd);
       onCustomerUpdated?.(updated);
       triggerStoreNotice(`Added "${product.name}" to your cart.`);
     } catch (err) {
@@ -1688,6 +1896,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const handledQueryProductRef = useRef(false);
 
   const openProductDetail = (item: PublicShopProduct) => {
+    trackSmartEngagement(item, 'view', 1);
+    setRecentlyViewedIds(
+      recordRecentlyViewedProduct(item.catalogProductId || item.id)
+    );
     if (loggedInCustomer && item.category) {
       void api.trackCustomerCategoryActivity(loggedInCustomer.id, {
         category: item.category,
@@ -2056,6 +2268,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           paymentMethod === 'UPI' ? upiScreenshotDataUrl : '',
         customerNote: customerNote.trim(),
       });
+      trackSmartEngagement(selectedProduct, 'order', parsedQty);
       onCustomerUpdated?.(res.client);
       setPlacedOrder(res.order);
       setModalStep('success');
@@ -2474,6 +2687,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             bills={customerBills}
             settings={settings}
             products={products}
+            eligibleCatalogItems={shoppingItems}
+            popularityByProductId={popularityByProductId}
             paymentSettings={paymentSettings}
             sellerPaymentProfiles={sellerPaymentProfiles}
             subscriptions={customerSubscriptions}
@@ -3148,6 +3363,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             <span className="text-[#5B4B6B] font-mono-num">
                               Showing <strong>{filteredShoppingItems.length}</strong>{' '}
                               {filteredShoppingItems.length === 1 ? 'product' : 'products'}
+                              {searchRescuedWithFuzzy && searchQuery.trim() ? (
+                                <span className="ml-1.5 font-sans text-[#7E22CE] font-semibold">
+                                  · Smart typo match active
+                                </span>
+                              ) : null}
                             </span>
                             <button
                               type="button"
@@ -3220,26 +3440,147 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           )}
                         </div>
                       ) : hasActiveCatalogFilter && filteredShoppingItems.length === 0 ? (
-                        <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 py-12 px-4 text-center space-y-2.5">
-                          <div className="text-xs sm:text-sm font-semibold text-[#5B4B6B]">
-                            No products match your current search or filter selection.
+                        <div className="space-y-4">
+                          <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 py-10 px-4 text-center space-y-2.5">
+                            <div className="text-xs sm:text-sm font-semibold text-[#5B4B6B]">
+                              No products match your current search or filter selection.
+                            </div>
+                            <button
+                              type="button"
+                              onClick={resetAllShoppingFilters}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#FAF5FF] border border-[#D8B4FE] px-4 py-2 text-xs font-bold text-[#6D28D9] cursor-pointer"
+                            >
+                              Reset All Filters
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={resetAllShoppingFilters}
-                            className="inline-flex items-center gap-1.5 rounded-xl bg-[#FAF5FF] border border-[#D8B4FE] px-4 py-2 text-xs font-bold text-[#6D28D9] cursor-pointer"
-                          >
-                            Reset All Filters
-                          </button>
+
+                          {trendingFallbackItems.length > 0 && (
+                            <div className="space-y-2.5">
+                              <div className="flex items-center justify-between gap-2 px-1">
+                                <div className="text-xs sm:text-sm font-bold text-[#1F122B] flex items-center gap-1.5">
+                                  <Sparkles className="w-4 h-4 text-[#DB2777]" />
+                                  <span>Trending / Picks for You</span>
+                                </div>
+                                <span className="text-[11px] text-[#6B5B7B]">
+                                  Keep exploring top picks
+                                </span>
+                              </div>
+                              <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
+                                {trendingFallbackItems.map((item) => {
+                                  const mainImg =
+                                    item.imageDataUrls[0] || item.imageDataUrl || '';
+                                  return (
+                                    <div
+                                      key={`fallback-${item.id}`}
+                                      className="rounded-xl sm:rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] transition-all text-left"
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => openProductDetail(item)}
+                                        className="cursor-pointer w-full text-left"
+                                      >
+                                        <div className="aspect-square w-full bg-[#FDF9FC] border-b border-[#F4ECF8] overflow-hidden flex items-center justify-center">
+                                          {mainImg ? (
+                                            <img
+                                              src={getOptimizedMediaUrl(mainImg, 'image')}
+                                              alt={item.name}
+                                              referrerPolicy="no-referrer"
+                                              className="w-full h-full object-cover"
+                                            />
+                                          ) : (
+                                            <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
+                                          )}
+                                        </div>
+                                        <div className="p-2 sm:p-2.5 space-y-1">
+                                          <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
+                                            {item.category}
+                                          </div>
+                                          <div className="text-xs font-bold text-[#1F122B] line-clamp-2 leading-snug">
+                                            {item.name}
+                                          </div>
+                                          <div className="font-mono-num text-xs sm:text-sm font-bold text-[#1F122B]">
+                                            {isBangladesh
+                                              ? formatBdt(convertInrToBdt(item.price, bdtRate))
+                                              : formatCurrency(item.price, sym)}
+                                          </div>
+                                        </div>
+                                      </button>
+                                      <div className="px-2 pb-2 sm:px-2.5 sm:pb-2.5">
+                                        <button
+                                          type="button"
+                                          disabled={addingToCart}
+                                          onClick={() =>
+                                            void handleAddToCartAction(item, 1)
+                                          }
+                                          className="w-full rounded-xl border border-[#E6D9EE] bg-[#FAF5FF] py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                                        >
+                                          + Add to Cart
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
-                          {(hasActiveCatalogFilter
-                            ? filteredShoppingItems
-                            : sortBy === 'featured'
-                              ? shoppingItems
-                              : filteredShoppingItems
-                          ).map((item) => {
+                        <div className="space-y-4">
+                          {recentlyViewedItems.length > 0 &&
+                            !hasActiveCatalogFilter &&
+                            sortBy === 'featured' && (
+                              <div className="rounded-2xl border border-[#EFE2F5] bg-white/95 p-3 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-xs font-bold text-[#1F122B] flex items-center gap-1.5">
+                                    <Sparkles className="w-3.5 h-3.5 text-[#7E22CE]" />
+                                    <span>Recently Viewed</span>
+                                  </div>
+                                  <span className="text-[10px] font-semibold text-[#6B5B7B]">
+                                    Jump back in
+                                  </span>
+                                </div>
+                                <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+                                  {recentlyViewedItems.slice(0, 8).map((rv) => {
+                                    const rvImg =
+                                      rv.imageDataUrls[0] || rv.imageDataUrl || '';
+                                    return (
+                                      <button
+                                        key={`rv-${rv.id}`}
+                                        type="button"
+                                        onClick={() => openProductDetail(rv)}
+                                        className="w-28 sm:w-32 shrink-0 rounded-xl border border-[#EFE2F5] bg-[#FDFBFE] hover:border-[#9333EA] overflow-hidden text-left cursor-pointer transition-colors"
+                                      >
+                                        <div className="aspect-square w-full bg-[#FAF5FF] overflow-hidden flex items-center justify-center border-b border-[#F4ECF8]">
+                                          {rvImg ? (
+                                            <img
+                                              src={getOptimizedMediaUrl(rvImg, 'image')}
+                                              alt={rv.name}
+                                              referrerPolicy="no-referrer"
+                                              className="w-full h-full object-cover"
+                                            />
+                                          ) : (
+                                            <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                                          )}
+                                        </div>
+                                        <div className="p-1.5 space-y-0.5">
+                                          <div className="text-[11px] font-bold text-[#1F122B] truncate">
+                                            {rv.name}
+                                          </div>
+                                          <div className="text-[10px] font-mono-num font-bold text-[#7E22CE]">
+                                            {isBangladesh
+                                              ? formatBdt(convertInrToBdt(rv.price, bdtRate))
+                                              : formatCurrency(rv.price, sym)}
+                                          </div>
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                          <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
+                            {filteredShoppingItems.map((item) => {
                             const discountPercent =
                               item.originalPrice &&
                               item.originalPrice > item.price
@@ -3371,51 +3712,132 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                   </div>
                                 </div>
 
-                                <div className="px-2 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
-                                  <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
-                                    <span className="text-sm sm:text-base font-bold text-[#1F122B]">
-                                      {formatCurrency(item.price, sym)}
-                                    </span>
-                                    {isBangladesh && (
-                                      <span className="text-xs sm:text-sm font-bold text-[#0F766E]">
-                                        · {formatBdt(convertInrToBdt(item.price, bdtRate))}
+                                  <div className="px-2 sm:px-3 pb-2.5 sm:pb-3 pt-1 space-y-2">
+                                    <div className="font-mono-num flex items-baseline gap-1.5 flex-wrap">
+                                      <span className="text-sm sm:text-base font-bold text-[#1F122B]">
+                                        {formatCurrency(item.price, sym)}
                                       </span>
-                                    )}
-                                    {item.originalPrice &&
-                                      item.originalPrice > item.price && (
-                                        <span className="text-[11px] text-[#8E7C9E] line-through">
-                                          {formatCurrency(
-                                            item.originalPrice,
-                                            sym
-                                          )}
+                                      {isBangladesh && (
+                                        <span className="text-xs sm:text-sm font-bold text-[#0F766E]">
+                                          · {formatBdt(convertInrToBdt(item.price, bdtRate))}
                                         </span>
                                       )}
-                                  </div>
+                                      {item.originalPrice &&
+                                        item.originalPrice > item.price && (
+                                          <span className="text-[11px] text-[#8E7C9E] line-through">
+                                            {formatCurrency(
+                                              item.originalPrice,
+                                              sym
+                                            )}
+                                          </span>
+                                        )}
+                                    </div>
 
-                                  <div className="grid grid-cols-[auto_1fr] gap-1.5">
-                                    <button
-                                      type="button"
-                                      disabled={addingToCart}
-                                      onClick={() =>
-                                        handleAddToCartAction(item, 1)
-                                      }
-                                      title="Add to Cart"
-                                      className="inline-flex items-center justify-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
-                                    >
-                                      <ShoppingCart className="w-3.5 h-3.5" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => openProductDetail(item)}
-                                      className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-1.5 px-2 text-center text-[11px] font-semibold text-white hover:opacity-95 cursor-pointer"
-                                    >
-                                      View &amp; Order
-                                    </button>
+                                    {hasActiveSubscription && !isBangladesh && (
+                                      <div className="inline-flex items-center gap-1 text-[10px] font-bold text-[#15803D]">
+                                        <Truck className="w-3 h-3 shrink-0" />
+                                        <span>Free Delivery Eligible</span>
+                                      </div>
+                                    )}
+
+                                    <div className="grid grid-cols-[auto_1fr] gap-1.5">
+                                      <button
+                                        type="button"
+                                        disabled={addingToCart}
+                                        onClick={() =>
+                                          handleAddToCartAction(item, 1)
+                                        }
+                                        title="Add to Cart"
+                                        className="inline-flex items-center justify-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                                      >
+                                        <ShoppingCart className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openProductDetail(item)}
+                                        className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-1.5 px-2 text-center text-[11px] font-semibold text-white hover:opacity-95 cursor-pointer"
+                                      >
+                                        View &amp; Order
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
+                              );
+                            })}
+                          </div>
+
+                          {hasActiveCatalogFilter &&
+                            filteredShoppingItems.length > 0 &&
+                            filteredShoppingItems.length <= 3 &&
+                            trendingFallbackItems.length > 0 && (
+                              <div className="pt-2 space-y-2.5">
+                                <div className="flex items-center justify-between gap-2 px-1">
+                                  <div className="text-xs sm:text-sm font-bold text-[#1F122B] flex items-center gap-1.5">
+                                    <Sparkles className="w-4 h-4 text-[#DB2777]" />
+                                    <span>Trending / Picks for You</span>
+                                  </div>
+                                  <span className="text-[11px] text-[#6B5B7B]">
+                                    More picks you may like
+                                  </span>
+                                </div>
+                                <div className="w-full max-w-full grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
+                                  {trendingFallbackItems.slice(0, 8).map((item) => {
+                                    const mainImg =
+                                      item.imageDataUrls[0] || item.imageDataUrl || '';
+                                    return (
+                                      <div
+                                        key={`sparse-fb-${item.id}`}
+                                        className="rounded-xl sm:rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] transition-all text-left"
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={() => openProductDetail(item)}
+                                          className="cursor-pointer w-full text-left"
+                                        >
+                                          <div className="aspect-square w-full bg-[#FDF9FC] border-b border-[#F4ECF8] overflow-hidden flex items-center justify-center">
+                                            {mainImg ? (
+                                              <img
+                                                src={getOptimizedMediaUrl(mainImg, 'image')}
+                                                alt={item.name}
+                                                referrerPolicy="no-referrer"
+                                                className="w-full h-full object-cover"
+                                              />
+                                            ) : (
+                                              <ShoppingBag className="w-8 h-8 text-[#C084FC]" />
+                                            )}
+                                          </div>
+                                          <div className="p-2 sm:p-2.5 space-y-1">
+                                            <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
+                                              {item.category}
+                                            </div>
+                                            <div className="text-xs font-bold text-[#1F122B] line-clamp-2 leading-snug">
+                                              {item.name}
+                                            </div>
+                                            <div className="font-mono-num text-xs sm:text-sm font-bold text-[#1F122B]">
+                                              {isBangladesh
+                                                ? formatBdt(convertInrToBdt(item.price, bdtRate))
+                                                : formatCurrency(item.price, sym)}
+                                            </div>
+                                          </div>
+                                        </button>
+                                        <div className="px-2 pb-2 sm:px-2.5 sm:pb-2.5">
+                                          <button
+                                            type="button"
+                                            disabled={addingToCart}
+                                            onClick={() =>
+                                              void handleAddToCartAction(item, 1)
+                                            }
+                                            className="w-full rounded-xl border border-[#E6D9EE] bg-[#FAF5FF] py-1.5 text-[11px] font-semibold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer"
+                                          >
+                                            + Add to Cart
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                            );
-                          })}
+                            )}
                         </div>
                       )}
                     </section>
@@ -3504,6 +3926,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
           {/* Scrollable Body */}
           <div
+            data-product-modal-scroll="true"
             className={`flex-1 overflow-y-auto ${
               modalStep === 'detail' ? 'pb-24 sm:pb-24' : 'pb-10'
             }`}
@@ -3755,6 +4178,43 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         </div>
                       );
                     })()}
+
+                    {!isBangladesh && (
+                      hasActiveSubscription ? (
+                        <div className="mt-1 rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3 py-2 flex items-center justify-between gap-2 text-xs">
+                          <span className="inline-flex items-center gap-1.5 font-bold text-[#15803D]">
+                            <Truck className="w-3.5 h-3.5 shrink-0" />
+                            <span>Free Delivery Eligible · GG PASS Active</span>
+                          </span>
+                          <span className="font-mono-num font-bold text-[#166534] shrink-0">
+                            {subscriptionRemainingDays}d left
+                          </span>
+                        </div>
+                      ) : subscriptionStatus === 'pending' ? (
+                        <div className="mt-1 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-[11px] font-semibold text-[#B45309]">
+                          GG PASS ₹{SUBSCRIPTION_PLAN_PRICE} verification pending — Free Delivery unlocks on approval.
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            closeProductModal();
+                            handleOpenSubscriptionPurchase();
+                          }}
+                          className="mt-1 w-full rounded-xl border border-[#E9D5FF] bg-[#FAF5FF] hover:border-[#9333EA] px-3 py-2 flex items-center justify-between gap-2 text-left text-xs transition-colors cursor-pointer"
+                        >
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-[#6D28D9]">
+                            <Sparkles className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
+                            <span>
+                              Get <strong>GG PASS ₹{SUBSCRIPTION_PLAN_PRICE}</strong> (28 Days) for Free Delivery on COD orders
+                            </span>
+                          </span>
+                          <span className="text-[11px] font-bold text-[#DB2777] shrink-0">
+                            Activate →
+                          </span>
+                        </button>
+                      )
+                    )}
                   </div>
 
                   {/* Verified Seller Info + Follow + View Store (Public Store Info Only) */}
@@ -4152,6 +4612,142 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             </div>
                           ))}
                         </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Similar Products & Smart Cross-Sell Recommendations */}
+                {(() => {
+                  const cartItemsList = Array.isArray(loggedInCustomer?.cart)
+                    ? loggedInCustomer!.cart
+                    : [];
+                  const similarList = getSimilarProducts(
+                    selectedProduct,
+                    shoppingItems,
+                    popularityByProductId,
+                    rotationSeed,
+                    6
+                  );
+                  const crossSellList = getComplementaryCrossSellProducts(
+                    selectedProduct,
+                    shoppingItems,
+                    smartProfile,
+                    popularityByProductId,
+                    rotationSeed,
+                    6,
+                    cartItemsList
+                  );
+
+                  if (similarList.length === 0 && crossSellList.length === 0) {
+                    return null;
+                  }
+
+                  const renderRecStrip = (
+                    title: string,
+                    subtitle: string,
+                    items: PublicShopProduct[]
+                  ) => {
+                    if (items.length === 0) return null;
+                    return (
+                      <div className="space-y-2.5">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold text-[#1F122B] flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-[#DB2777] shrink-0" />
+                              <span>{title}</span>
+                            </h3>
+                            <p className="text-[11px] text-[#6B5B7B]">{subtitle}</p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                          {items.map((rec) => {
+                            const recImg =
+                              rec.imageDataUrls[0] || rec.imageDataUrl || '';
+                            const recPriceLabel = isBangladesh
+                              ? formatBdt(convertInrToBdt(rec.price, bdtRate))
+                              : formatCurrency(rec.price, sym);
+                            return (
+                              <div
+                                key={rec.id}
+                                className="rounded-2xl border border-[#EFE2F5] bg-white overflow-hidden flex flex-col justify-between hover:border-[#9333EA] transition-all"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    openProductDetail(rec);
+                                    const modalScroll = document.querySelector(
+                                      '[data-product-modal-scroll]'
+                                    );
+                                    modalScroll?.scrollTo({
+                                      top: 0,
+                                      behavior: 'smooth',
+                                    });
+                                  }}
+                                  className="text-left w-full cursor-pointer"
+                                >
+                                  <div className="aspect-square w-full bg-[#FDF9FC] border-b border-[#F4ECF8] overflow-hidden flex items-center justify-center">
+                                    {recImg ? (
+                                      <img
+                                        src={getOptimizedMediaUrl(recImg, 'image')}
+                                        alt={rec.name}
+                                        referrerPolicy="no-referrer"
+                                        className="w-full h-full object-cover"
+                                      />
+                                    ) : (
+                                      <ShoppingBag className="w-6 h-6 text-[#C084FC]" />
+                                    )}
+                                  </div>
+                                  <div className="p-2.5 space-y-1">
+                                    <div className="text-[10px] font-semibold text-[#7E22CE] truncate">
+                                      {rec.category}
+                                    </div>
+                                    <div className="text-xs font-bold text-[#1F122B] line-clamp-2 leading-snug">
+                                      {rec.name}
+                                    </div>
+                                    <div className="font-mono-num text-xs font-bold text-[#1F122B]">
+                                      {recPriceLabel}
+                                    </div>
+                                  </div>
+                                </button>
+
+                                <div className="px-2.5 pb-2.5">
+                                  <button
+                                    type="button"
+                                    disabled={addingToCart}
+                                    onClick={() =>
+                                      void handleAddToCartAction(rec, 1)
+                                    }
+                                    className="w-full inline-flex items-center justify-center gap-1 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-2.5 py-1.5 text-[11px] font-bold text-[#6D28D9] hover:border-[#9333EA] cursor-pointer disabled:opacity-60"
+                                  >
+                                    <Plus className="w-3 h-3 shrink-0" />
+                                    <span>Add to Cart</span>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  return (
+                    <div className="md:col-span-2 pt-5 border-t border-[#F4ECF8] space-y-5">
+                      {renderRecStrip(
+                        'Similar Products',
+                        `More picks in ${selectedProduct.category} & nearby price range`,
+                        similarList
+                      )}
+                      {renderRecStrip(
+                        cartItemsList.length > 0
+                          ? 'Complete Your Cart & Look · Smart Add-Ons'
+                          : 'Complete Your Look · Recommended Add-Ons',
+                        cartItemsList.length > 0
+                          ? 'Tailored from your cart items & complementary categories'
+                          : 'Complementary styles shoppers frequently pair together',
+                        crossSellList
                       )}
                     </div>
                   );
@@ -5131,7 +5727,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             </div>
             {(
               [
-                { id: 'featured', label: 'Featured & Relevance' },
+                { id: 'featured', label: 'For You · Smart Mix' },
                 { id: 'price_asc', label: 'Price: Low to High' },
                 { id: 'price_desc', label: 'Price: High to Low' },
                 { id: 'discount_desc', label: 'Highest Discount' },

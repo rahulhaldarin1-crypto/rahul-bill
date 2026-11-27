@@ -17,7 +17,8 @@ export type AppRoute =
   | 'help-chat'
   | 'smart-offers-mail'
   | 'bangladesh-control'
-  | 'subscriptions';
+  | 'subscriptions'
+  | 'boost-controller';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -256,6 +257,14 @@ export interface CategoryInterestEntry {
   lastActivityAt: string;
 }
 
+export interface CustomerEngagementProfile {
+  categoryScores: Record<string, number>;
+  productScores: Record<string, number>;
+  priceAvg: number;
+  priceCount: number;
+  updatedAt: string;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -280,6 +289,7 @@ export interface Client {
   referredBy?: string;
   categoryInterests?: Record<string, CategoryInterestEntry>;
   totalCategoryOrders?: number;
+  engagementProfile?: CustomerEngagementProfile;
   createdAt: string;
   updatedAt: string;
 }
@@ -303,6 +313,13 @@ export interface Product {
   highlightExpiresAt?: string;
   highlightPlacement?: HighlightPlacementRule;
   highlightPlanTitle?: string;
+  boosted?: boolean;
+  boostLevel?: number;
+  boostExpiresAt?: string;
+  boostUpdatedAt?: string;
+  viewCount?: number;
+  wishlistCount?: number;
+  orderCount?: number;
   stockQty: number;
   lowStockAlert: number;
   size: string;

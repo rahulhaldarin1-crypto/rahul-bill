@@ -65,6 +65,15 @@ import {
 import { getOptimizedMediaUrl, uploadMediaToCloudinary } from '../utils/cloudinary';
 import { sanitizeNumericInput } from '../utils/numberInput';
 import {
+  getCartAwareRecommendations,
+  getSmartRotationSeed,
+  mergeSmartProfiles,
+  ProductPopularitySignals,
+  readLocalSmartProfile,
+  recordSmartInteraction,
+  SmartDiscoverableItem,
+} from '../utils/smartDiscovery';
+import {
   BANGLADESH_CHARGE_NOTICE,
   buildBangladeshWhatsAppOrderUrl,
   convertInrToBdt,
@@ -80,12 +89,21 @@ import { SubscriptionPurchaseModal } from './SubscriptionPurchaseModal';
 
 export type CustomerDashboardTab = 'cart' | 'orders' | 'bills';
 
+export interface CartRecommendationItem extends SmartDiscoverableItem {
+  imageDataUrl?: string;
+  imageDataUrls?: string[];
+  sourceUrl?: string;
+  sourcePlatform?: Product['sourcePlatform'];
+}
+
 interface CustomerDashboardViewProps {
   client: Client;
   orders: CustomerOrder[];
   bills: Invoice[];
   settings?: BusinessSettings;
   products?: Product[];
+  eligibleCatalogItems?: CartRecommendationItem[];
+  popularityByProductId?: Map<string, ProductPopularitySignals>;
   paymentSettings?: AdminPaymentSettings;
   sellerPaymentProfiles?: Record<string, SellerPublicPaymentProfile>;
   subscriptions?: DeliverySubscription[];
@@ -102,6 +120,8 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   bills,
   settings,
   products = [],
+  eligibleCatalogItems,
+  popularityByProductId,
   paymentSettings,
   sellerPaymentProfiles,
   subscriptions = [],
@@ -255,6 +275,66 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     () => hasActiveDeliverySubscription(subscriptions, client.id, nowMs),
     [subscriptions, client.id, nowMs]
   );
+
+  const [cartSmartSeed] = useState(() => getSmartRotationSeed());
+  const cartAwareSuggestions = useMemo(() => {
+    if (cart.length === 0) return [];
+    const catalogPool: CartRecommendationItem[] =
+      eligibleCatalogItems && eligibleCatalogItems.length > 0
+        ? eligibleCatalogItems
+        : products
+            .filter(
+              (prod) =>
+                !prod.sellerApprovalStatus ||
+                prod.sellerApprovalStatus === 'approved'
+            )
+            .map((prod) => ({
+              id: `cat-${prod.id}`,
+              catalogProductId: prod.id,
+              productNumber: prod.productNumber,
+              name: prod.name,
+              category: prod.category,
+              price: prod.sellingPrice,
+              originalPrice: prod.originalPrice,
+              highlighted: Boolean(prod.highlighted),
+              highlightPlacement: prod.highlightPlacement,
+              boosted: Boolean(prod.boosted),
+              boostLevel: prod.boostLevel,
+              boostExpiresAt: prod.boostExpiresAt,
+              size: prod.size,
+              color: prod.color,
+              stockQty: prod.stockQty,
+              imageDataUrl: prod.imageDataUrls?.[0] || prod.imageDataUrl || '',
+              imageDataUrls: prod.imageDataUrls,
+              description: prod.description,
+              sellerId: prod.sellerId,
+              sellerName: prod.sellerName,
+              sourceUrl: prod.sourceUrl,
+              sourcePlatform: prod.sourcePlatform,
+              viewCount: prod.viewCount,
+              wishlistCount: prod.wishlistCount,
+              orderCount: prod.orderCount,
+              createdAt: prod.createdAt,
+            }));
+
+    const localProfile = readLocalSmartProfile();
+    const mergedProfile = mergeSmartProfiles(localProfile, client);
+    return getCartAwareRecommendations(
+      cart,
+      catalogPool,
+      mergedProfile,
+      popularityByProductId || new Map(),
+      cartSmartSeed,
+      4
+    );
+  }, [
+    cart,
+    eligibleCatalogItems,
+    products,
+    client,
+    popularityByProductId,
+    cartSmartSeed,
+  ]);
 
   const codDeliveryCharge =
     paymentMethod === 'COD' && !hasActiveSubscription
@@ -469,6 +549,51 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
 
   const handleClearCart = async () => {
     await syncCart([]);
+  };
+
+  const handleAddRecommendedToCart = async (rec: CartRecommendationItem) => {
+    const nextCart: CustomerCartItem[] = [...cart];
+    const idx = nextCart.findIndex(
+      (c) =>
+        c.id === rec.id ||
+        (rec.catalogProductId && c.productId === rec.catalogProductId)
+    );
+    if (idx >= 0) {
+      nextCart[idx] = {
+        ...nextCart[idx],
+        quantity: Math.max(1, (nextCart[idx].quantity || 1) + 1),
+      };
+    } else {
+      nextCart.push({
+        id: rec.id,
+        productId: rec.catalogProductId,
+        productNumber: rec.productNumber,
+        name: rec.name,
+        category: rec.category,
+        size: rec.size,
+        color: rec.color,
+        price: rec.price,
+        originalPrice: rec.originalPrice,
+        quantity: 1,
+        imageDataUrl:
+          rec.imageDataUrl ||
+          (Array.isArray(rec.imageDataUrls) ? rec.imageDataUrls[0] : '') ||
+          '',
+        sellerId: rec.sellerId,
+        sellerName: rec.sellerName,
+        sourceUrl: rec.sourceUrl,
+        sourcePlatform: rec.sourcePlatform,
+      });
+    }
+    await syncCart(nextCart);
+    const nextProfile = recordSmartInteraction({
+      productId: (rec.catalogProductId || rec.id).replace(/^cat-/, ''),
+      category: rec.category,
+      price: rec.price,
+      type: 'cart',
+      quantity: 1,
+    });
+    void api.syncCustomerEngagementProfile(client.id, nextProfile);
   };
 
   const handleCopyUpi = async (upiValue: string) => {
@@ -690,6 +815,19 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
           paymentMethod === 'UPI' ? upiScreenshotDataUrl : '',
         customerNote: checkoutNote.trim(),
       });
+      let latestProfile = undefined;
+      for (const ordItem of orderItems) {
+        latestProfile = recordSmartInteraction({
+          productId: ordItem.productId || ordItem.id,
+          category: ordItem.productCategory,
+          price: ordItem.unitPrice,
+          type: 'order',
+          quantity: ordItem.quantity,
+        });
+      }
+      if (latestProfile) {
+        void api.syncCustomerEngagementProfile(client.id, latestProfile);
+      }
       onClientUpdated({ ...res.client, cart: [] });
       setUpiScreenshotDataUrl('');
       setCheckoutNote('');
@@ -1405,6 +1543,81 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     )}
                   </div>
                 </div>
+
+                {cartAwareSuggestions.length > 0 && (
+                  <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]">
+                        <Sparkles className="w-3.5 h-3.5 text-[#DB2777]" />
+                        <span>Recommended Add-Ons for Your Cart</span>
+                      </div>
+                      {hasActiveSubscription && (
+                        <span className="text-[10px] font-bold text-[#047857]">
+                          Free Delivery Eligible
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {cartAwareSuggestions.map((rec) => {
+                        const thumb =
+                          rec.imageDataUrl ||
+                          (Array.isArray(rec.imageDataUrls)
+                            ? rec.imageDataUrls[0]
+                            : '') ||
+                          '';
+                        return (
+                          <div
+                            key={rec.id}
+                            className="rounded-xl border border-[#EFE2F5] bg-white p-2.5 flex items-center gap-2.5"
+                          >
+                            <div className="w-12 h-12 rounded-lg border border-[#EFE2F5] bg-[#FDF9FC] overflow-hidden shrink-0 flex items-center justify-center">
+                              {thumb ? (
+                                <img
+                                  src={getOptimizedMediaUrl(thumb, 'image')}
+                                  alt={rec.name}
+                                  width={48}
+                                  height={48}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover block"
+                                />
+                              ) : (
+                                <ShoppingBag className="w-4 h-4 text-[#C084FC]" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-bold text-[#1F122B] truncate">
+                                {rec.name}
+                              </div>
+                              <div className="text-[10px] text-[#6B5B7B] truncate">
+                                {rec.category}
+                              </div>
+                              <div className="flex items-baseline gap-1.5 font-mono-num mt-0.5">
+                                <span className="text-xs font-bold text-[#7E22CE]">
+                                  {formatCurrency(rec.price, sym)}
+                                </span>
+                                {rec.originalPrice &&
+                                  rec.originalPrice > rec.price && (
+                                    <span className="text-[10px] text-[#8E7C9E] line-through">
+                                      {formatCurrency(rec.originalPrice, sym)}
+                                    </span>
+                                  )}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={cartBusy}
+                              onClick={() => handleAddRecommendedToCart(rec)}
+                              className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-[#FDF2F8] border border-[#FBCFE8] px-2.5 py-1.5 text-[11px] font-bold text-[#BE185D] hover:bg-[#FCE7F3] cursor-pointer disabled:opacity-50"
+                            >
+                              <Plus className="w-3 h-3" />
+                              <span>Add</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Cart Checkout Form (Bangladesh WhatsApp Order vs India COD/UPI) */}

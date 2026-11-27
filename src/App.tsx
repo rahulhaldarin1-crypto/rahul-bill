@@ -20,6 +20,7 @@ import {
 import { AdminLockView } from './components/AdminLockView';
 import { AppBackground } from './components/AppBackground';
 import { BangladeshControlView } from './components/BangladeshControlView';
+import { BoostControllerView } from './components/BoostControllerView';
 import { BrandLogo } from './components/BrandLogo';
 import { ClientBillView } from './components/ClientBillView';
 import { ClientListView } from './components/ClientListView';
@@ -697,6 +698,26 @@ export default function App() {
       setCustomerProducts((prev) => prev.filter((p) => p.id !== id));
     }
     showToast('Product removed.');
+  };
+
+  const handleUpdateProductBoost = async (
+    productId: string,
+    payload: {
+      boosted: boolean;
+      boostLevel?: number;
+      boostExpiresAt?: string;
+    }
+  ) => {
+    const updated = await api.updateProductBoost(productId, payload);
+    setWorkspace((prev) => ({
+      ...prev,
+      products: prev.products.map((p) => (p.id === updated.id ? updated : p)),
+    }));
+    showToast(
+      updated.boosted
+        ? `Boost activated for ${updated.name} (Level ${updated.boostLevel || 3}).`
+        : `Boost turned off for ${updated.name}.`
+    );
   };
 
   const handleSaveInvoice = async (
@@ -1655,6 +1676,15 @@ export default function App() {
               }));
               showToast('Subscription record deleted.');
             }}
+          />
+        )}
+
+        {route === 'boost-controller' && (
+          <BoostControllerView
+            products={workspace.products}
+            currencySymbol={currencySymbol}
+            onBack={goBack}
+            onUpdateProductBoost={handleUpdateProductBoost}
           />
         )}
       </main>

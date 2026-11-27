@@ -4,6 +4,7 @@ import {
   Client,
   CloudinaryMediaRecord,
   CustomerCartItem,
+  CustomerEngagementProfile,
   CustomerOrder,
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
@@ -782,5 +783,31 @@ export const api = {
 
   deleteDeliverySubscription(subscriptionId: string) {
     return firestoreService.deleteDeliverySubscription(subscriptionId);
+  },
+
+  updateProductBoost(
+    productId: string,
+    payload: {
+      boosted: boolean;
+      boostLevel?: number;
+      boostExpiresAt?: string;
+    }
+  ) {
+    return firestoreService.updateProductBoost(productId, payload);
+  },
+
+  incrementProductPopularity(
+    productId: string,
+    field: 'viewCount' | 'wishlistCount' | 'orderCount',
+    delta = 1
+  ) {
+    return firestoreService.incrementProductPopularity(productId, field, delta);
+  },
+
+  syncCustomerEngagementProfile(
+    clientId: string,
+    profile: CustomerEngagementProfile
+  ) {
+    return firestoreService.syncCustomerEngagementProfile(clientId, profile);
   },
 };

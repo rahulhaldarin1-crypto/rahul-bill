@@ -10,6 +10,7 @@ import {
   Mail,
   Megaphone,
   Package,
+  Rocket,
   Settings,
   ShoppingBag,
   Sparkles,
@@ -25,6 +26,7 @@ import {
   resolveSubscriptionEffectiveStatus,
   todayIsoDate,
 } from '../utils/calculations';
+import { isProductBoostActive } from '../utils/smartDiscovery';
 import { BrandLogo } from './BrandLogo';
 
 interface DashboardViewProps {
@@ -80,6 +82,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     (sum, t) => sum + Math.max(0, Number(t.unreadForAdmin) || 0),
     0
   );
+  const activeBoostedCount = products.filter((p) =>
+    isProductBoostActive(p)
+  ).length;
 
   const summary = useMemo(() => {
     const today = todayIsoDate();
@@ -292,6 +297,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       accentText: 'text-[#7E22CE]',
       borderHover: 'hover:border-[#F472B6]',
     },
+    {
+      route: 'boost-controller',
+      title: 'Boost Controller',
+      subtitle: 'Promote selected products in Storefront smart ranking, rotation & recommendations',
+      metric:
+        activeBoostedCount > 0
+          ? `${activeBoostedCount} Boosted`
+          : 'Standard Feed',
+      icon: Rocket,
+      accentBg: 'from-[#DB2777] to-[#7E22CE]',
+      accentText: activeBoostedCount > 0 ? 'text-[#DB2777]' : 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#F472B6]',
+    },
   ];
 
   return (
@@ -368,6 +386,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {pendingSubscriptionsCount > 0
                 ? ` (${pendingSubscriptionsCount})`
                 : ''}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('boost-controller')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#F3D5E8] bg-gradient-to-r from-[#FFF5FA] to-[#FAF5FF] px-4 py-3 text-sm font-semibold text-[#9D174D] hover:border-[#DB2777] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Rocket className="w-4 h-4 text-[#DB2777]" />
+            <span>
+              Boost Controller
+              {activeBoostedCount > 0 ? ` (${activeBoostedCount})` : ''}
             </span>
           </button>
         </div>

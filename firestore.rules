@@ -46,7 +46,10 @@ service cloud.firestore {
         && data.purchasePrice is number && data.purchasePrice >= 0
         && data.sellingPrice is number && data.sellingPrice >= 0
         && data.stockQty is number && data.stockQty >= 0
-        && (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 1000));
+        && (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 1000))
+        && (!('boosted' in data) || data.boosted is bool)
+        && (!('boostLevel' in data) || (data.boostLevel is number && data.boostLevel >= 0 && data.boostLevel <= 5))
+        && (!('boostExpiresAt' in data) || (data.boostExpiresAt is string && data.boostExpiresAt.size() <= 60));
     }
 
     function isValidInvoice(data) {
