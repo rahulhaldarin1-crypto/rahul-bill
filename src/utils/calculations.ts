@@ -4,11 +4,13 @@ import {
   AdminPaymentSettings,
   BangladeshConfig,
   BusinessSettings,
+  DeliverySubscription,
   HighlightConfig,
   Invoice,
   InvoiceLineItem,
   Product,
   SellerPublicPaymentProfile,
+  SubscriptionStatus,
   ViewPanelConfig,
   WorkspaceData,
 } from '../types/business';
@@ -546,6 +548,8 @@ export const DEFAULT_VIEW_PANEL_CONFIG: ViewPanelConfig = {
     title: '',
     subtitle: '',
     linkUrl: '',
+    subscriptionAdMode: false,
+    autoCycleSubscriptionAd: false,
   },
   discount: {
     enabled: true,
@@ -799,6 +803,10 @@ export function mergeBusinessSettings(
       advertisement: {
         ...DEFAULT_VIEW_PANEL_CONFIG.advertisement,
         ...(rawVp?.advertisement || {}),
+        subscriptionAdMode: Boolean(rawVp?.advertisement?.subscriptionAdMode),
+        autoCycleSubscriptionAd:
+          !rawVp?.advertisement?.subscriptionAdMode &&
+          Boolean(rawVp?.advertisement?.autoCycleSubscriptionAd),
       },
       discount: {
         ...DEFAULT_VIEW_PANEL_CONFIG.discount,
@@ -866,7 +874,87 @@ export function createEmptyWorkspace(): WorkspaceData {
     sellerApplications: [],
     supportChats: [],
     highlightRequests: [],
+    subscriptions: [],
   };
+}
+
+export const SUBSCRIPTION_PLAN_PRICE = 99;
+export const SUBSCRIPTION_DURATION_DAYS = 28;
+
+export function resolveSubscriptionExpiresAtMs(
+  sub?: Pick<DeliverySubscription, 'approvedAt' | 'expiresAt' | 'durationDays'> | null
+): number | null {
+  if (!sub) return null;
+  if (sub.expiresAt) {
+    const parsed = new Date(sub.expiresAt).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  if (sub.approvedAt) {
+    const approvedMs = new Date(sub.approvedAt).getTime();
+    if (!Number.isNaN(approvedMs)) {
+      const days = Math.max(1, Number(sub.durationDays) || SUBSCRIPTION_DURATION_DAYS);
+      return approvedMs + days * 86_400_000;
+    }
+  }
+  return null;
+}
+
+export function resolveSubscriptionEffectiveStatus(
+  sub?: DeliverySubscription | null,
+  nowMs = Date.now()
+): SubscriptionStatus | null {
+  if (!sub) return null;
+  if (sub.status === 'active') {
+    const expMs = resolveSubscriptionExpiresAtMs(sub);
+    if (expMs !== null && nowMs >= expMs) {
+      return 'expired';
+    }
+    return 'active';
+  }
+  return sub.status;
+}
+
+export function getSubscriptionRemainingDays(
+  sub?: DeliverySubscription | null,
+  nowMs = Date.now()
+): number {
+  if (!sub) return 0;
+  if (resolveSubscriptionEffectiveStatus(sub, nowMs) !== 'active') return 0;
+  const expMs = resolveSubscriptionExpiresAtMs(sub);
+  if (expMs === null) return 0;
+  const remainingMs = Math.max(0, expMs - nowMs);
+  return Math.max(0, Math.floor(remainingMs / 86_400_000));
+}
+
+export function pickPrimaryCustomerSubscription(
+  subscriptions: DeliverySubscription[],
+  nowMs = Date.now()
+): DeliverySubscription | null {
+  if (!Array.isArray(subscriptions) || subscriptions.length === 0) return null;
+  const sorted = [...subscriptions].sort((a, b) =>
+    String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+  );
+  const active = sorted.find(
+    (s) => resolveSubscriptionEffectiveStatus(s, nowMs) === 'active'
+  );
+  if (active) return active;
+  const pending = sorted.find(
+    (s) => resolveSubscriptionEffectiveStatus(s, nowMs) === 'pending'
+  );
+  if (pending) return pending;
+  return sorted[0] || null;
+}
+
+export function hasActiveDeliverySubscription(
+  subscriptions: DeliverySubscription[],
+  userId?: string | null,
+  nowMs = Date.now()
+): boolean {
+  if (!Array.isArray(subscriptions) || subscriptions.length === 0) return false;
+  return subscriptions.some((s) => {
+    if (userId && s.userId !== userId) return false;
+    return resolveSubscriptionEffectiveStatus(s, nowMs) === 'active';
+  });
 }
 
 export function getCustomerReferralCode(client: {

@@ -12,6 +12,7 @@ import {
   Package,
   Settings,
   ShoppingBag,
+  Sparkles,
   Store,
   TrendingUp,
   Truck,
@@ -19,7 +20,11 @@ import {
   Users,
 } from 'lucide-react';
 import { AppRoute, WorkspaceData } from '../types/business';
-import { formatCurrency, todayIsoDate } from '../utils/calculations';
+import {
+  formatCurrency,
+  resolveSubscriptionEffectiveStatus,
+  todayIsoDate,
+} from '../utils/calculations';
 import { BrandLogo } from './BrandLogo';
 
 interface DashboardViewProps {
@@ -51,9 +56,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     orders = [],
     sellerApplications = [],
     supportChats = [],
+    subscriptions = [],
   } = workspace;
   const sym = settings.currencySymbol || '₹';
   const pendingOrdersCount = orders.filter((o) => o.status === 'Pending').length;
+  const pendingSubscriptionsCount = subscriptions.filter(
+    (s) => resolveSubscriptionEffectiveStatus(s) === 'pending'
+  ).length;
+  const activeSubscriptionsCount = subscriptions.filter(
+    (s) => resolveSubscriptionEffectiveStatus(s) === 'active'
+  ).length;
   const pendingSellerAppsCount = sellerApplications.filter(
     (a) => a.status === 'pending'
   ).length;
@@ -242,7 +254,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           settings.viewPanel?.advertisement?.enabled &&
             Boolean(
               settings.viewPanel?.advertisement?.imageDataUrl ||
-                settings.viewPanel?.advertisement?.title
+                settings.viewPanel?.advertisement?.videoUrl ||
+                settings.viewPanel?.advertisement?.title ||
+                settings.viewPanel?.advertisement?.subscriptionAdMode ||
+                settings.viewPanel?.advertisement?.autoCycleSubscriptionAd
             ),
           settings.viewPanel?.discount?.enabled,
           settings.viewPanel?.shopping?.enabled,
@@ -252,6 +267,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       accentBg: 'from-[#DB2777] to-[#7E22CE]',
       accentText: 'text-[#9D174D]',
       borderHover: 'hover:border-[#F472B6]',
+    },
+    {
+      route: 'subscriptions',
+      title: 'Subscriptions (₹99 Pass)',
+      subtitle: 'Verify online ₹99 payment proofs & manage 28-day Free Delivery subscribers',
+      metric:
+        pendingSubscriptionsCount > 0
+          ? `${pendingSubscriptionsCount} Pending`
+          : `${activeSubscriptionsCount} Active`,
+      icon: Sparkles,
+      accentBg: 'from-[#9333EA] to-[#DB2777]',
+      accentText:
+        pendingSubscriptionsCount > 0 ? 'text-[#BE123C]' : 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#C084FC]',
     },
     {
       route: 'smart-offers-mail',
@@ -327,6 +356,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <Globe className="w-4 h-4 text-[#0F766E]" />
             <span>Bangladesh</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('subscriptions')}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#E9D5FF] bg-[#FAF5FF] px-4 py-3 text-sm font-semibold text-[#6D28D9] hover:border-[#7E22CE] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Sparkles className="w-4 h-4 text-[#7E22CE]" />
+            <span>
+              Subscriptions
+              {pendingSubscriptionsCount > 0
+                ? ` (${pendingSubscriptionsCount})`
+                : ''}
+            </span>
           </button>
         </div>
       </section>

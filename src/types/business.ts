@@ -16,7 +16,8 @@ export type AppRoute =
   | 'customer-seller-contacts'
   | 'help-chat'
   | 'smart-offers-mail'
-  | 'bangladesh-control';
+  | 'bangladesh-control'
+  | 'subscriptions';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -45,6 +46,7 @@ export type MediaEntityType =
   | 'payment_qr'
   | 'order_payment'
   | 'highlight_payment'
+  | 'subscription_payment'
   | 'seller_kyc'
   | 'seller_profile'
   | 'customer_avatar'
@@ -114,6 +116,8 @@ export interface ViewPanelConfig {
     title: string;
     subtitle: string;
     linkUrl: string;
+    subscriptionAdMode?: boolean;
+    autoCycleSubscriptionAd?: boolean;
   };
   discount: {
     enabled: boolean;
@@ -614,6 +618,32 @@ export interface EmailOtpRecord {
   updatedAt: string;
 }
 
+export type SubscriptionStatus = 'pending' | 'active' | 'expired' | 'rejected';
+
+export interface DeliverySubscriptionPaymentDetails {
+  paymentScreenshotUrl: string;
+  transactionId?: string;
+  upiIdUsed?: string;
+}
+
+export interface DeliverySubscription {
+  id: string;
+  userId: string;
+  userName: string;
+  userPhone: string;
+  userEmail?: string;
+  planPrice: number;
+  durationDays: number;
+  paymentMethod: 'online';
+  paymentDetails: DeliverySubscriptionPaymentDetails;
+  status: SubscriptionStatus;
+  adminRemarks?: string;
+  createdAt: string;
+  updatedAt?: string;
+  approvedAt?: string;
+  expiresAt?: string;
+}
+
 export interface WorkspaceData {
   settings: BusinessSettings;
   paymentSettings?: AdminPaymentSettings;
@@ -628,6 +658,7 @@ export interface WorkspaceData {
   highlightRequests: HighlightRequest[];
   sellerFollows?: SellerFollowRecord[];
   productReviews?: ProductReview[];
+  subscriptions?: DeliverySubscription[];
 }
 
 export type SentMailRecipientType =

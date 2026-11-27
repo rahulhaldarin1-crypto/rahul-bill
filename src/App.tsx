@@ -37,6 +37,7 @@ import { SellerHubManageView } from './components/SellerHubManageView';
 import { SettingsView } from './components/SettingsView';
 import { SmartOffersMailView } from './components/SmartOffersMailView';
 import { StartPortal } from './components/StartPortal';
+import { SubscriptionsAdminView } from './components/SubscriptionsAdminView';
 import { ViewPanelControlView } from './components/ViewPanelControlView';
 import {
   AdminPaymentSettings,
@@ -46,6 +47,7 @@ import {
   Client,
   CustomerOrder,
   DeliveryStatus,
+  DeliverySubscription,
   ExpenseRecord,
   HighlightConfig,
   HighlightRequestStatus,
@@ -115,6 +117,9 @@ export default function App() {
   const [isolatedCustomer, setIsolatedCustomer] = useState<Client | null>(null);
   const [isolatedCustomerOrders, setIsolatedCustomerOrders] = useState<CustomerOrder[]>([]);
   const [isolatedCustomerBills, setIsolatedCustomerBills] = useState<Invoice[]>([]);
+  const [isolatedCustomerSubscriptions, setIsolatedCustomerSubscriptions] = useState<
+    DeliverySubscription[]
+  >([]);
 
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(false);
   const [adminAuthChecked, setAdminAuthChecked] = useState<boolean>(() => !adminOnlyMode);
@@ -472,6 +477,7 @@ export default function App() {
       setIsolatedCustomer(null);
       setIsolatedCustomerOrders([]);
       setIsolatedCustomerBills([]);
+      setIsolatedCustomerSubscriptions([]);
       return;
     }
 
@@ -484,6 +490,7 @@ export default function App() {
           setIsolatedCustomer(null);
           setIsolatedCustomerOrders([]);
           setIsolatedCustomerBills([]);
+          setIsolatedCustomerSubscriptions([]);
           setCustomerSessionId(null);
           setCustomerSessionIdState(null);
           return;
@@ -501,9 +508,20 @@ export default function App() {
       }
     );
 
+    const unsubSubscriptions = api.subscribeCustomerSubscriptions(
+      customerSessionId,
+      (subs) => {
+        if (active) setIsolatedCustomerSubscriptions(subs);
+      },
+      () => {
+        // ignore transient snapshot errors
+      }
+    );
+
     return () => {
       active = false;
       unsubscribe();
+      unsubSubscriptions();
     };
   }, [adminOnlyMode, customerSessionId]);
 
@@ -1058,10 +1076,18 @@ export default function App() {
     setIsolatedCustomer(null);
     setIsolatedCustomerOrders([]);
     setIsolatedCustomerBills([]);
+    setIsolatedCustomerSubscriptions([]);
   }, []);
 
   const handleCustomerUpdated = useCallback((client: Client) => {
     setIsolatedCustomer(client);
+  }, []);
+
+  const handleSubscriptionCreated = useCallback((sub: DeliverySubscription) => {
+    setIsolatedCustomerSubscriptions((prev) => [
+      sub,
+      ...prev.filter((s) => s.id !== sub.id),
+    ]);
   }, []);
 
   const handleToggleFollowSeller = useCallback(
@@ -1169,9 +1195,11 @@ export default function App() {
         loggedInCustomer={isolatedCustomer}
         customerOrders={isolatedCustomerOrders}
         customerBills={isolatedCustomerBills}
+        customerSubscriptions={isolatedCustomerSubscriptions}
         onCustomerLogin={handleCustomerLogin}
         onCustomerLogout={handleCustomerLogout}
         onCustomerUpdated={handleCustomerUpdated}
+        onSubscriptionCreated={handleSubscriptionCreated}
         onSaveProduct={handleSaveProduct}
         onDeleteProduct={handleDeleteProduct}
         onToggleFollowSeller={handleToggleFollowSeller}
@@ -1586,6 +1614,46 @@ export default function App() {
                 nonce: Date.now(),
               });
               navigateTo('smart-offers-mail');
+            }}
+          />
+        )}
+
+        {route === 'subscriptions' && (
+          <SubscriptionsAdminView
+            subscriptions={workspace.subscriptions || []}
+            currencySymbol={currencySymbol}
+            onBack={goBack}
+            onUpdateStatus={async (subscriptionId, action, adminRemarks) => {
+              const updated = await api.updateDeliverySubscriptionStatus(
+                subscriptionId,
+                action,
+                adminRemarks
+              );
+              setWorkspace((prev) => ({
+                ...prev,
+                subscriptions: (prev.subscriptions || []).map((s) =>
+                  s.id === updated.id ? updated : s
+                ),
+              }));
+              showToast(
+                action === 'approve'
+                  ? 'Subscription approved — 28-day Free Delivery timer started!'
+                  : action === 'extend'
+                    ? 'Subscription extended by +28 days.'
+                    : action === 'reject'
+                      ? 'Subscription request rejected.'
+                      : 'Subscription cancelled.'
+              );
+            }}
+            onDelete={async (subscriptionId) => {
+              await api.deleteDeliverySubscription(subscriptionId);
+              setWorkspace((prev) => ({
+                ...prev,
+                subscriptions: (prev.subscriptions || []).filter(
+                  (s) => s.id !== subscriptionId
+                ),
+              }));
+              showToast('Subscription record deleted.');
             }}
           />
         )}

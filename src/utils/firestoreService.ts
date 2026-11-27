@@ -23,6 +23,8 @@ import {
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
   DeliveryStatus,
+  DeliverySubscription,
+  DeliverySubscriptionPaymentDetails,
   EmailOtpPurpose,
   EmailOtpRecord,
   ExpenseRecord,
@@ -42,6 +44,7 @@ import {
   SellerFollowRecord,
   SellerPublicPaymentProfile,
   SentMailRecord,
+  SubscriptionStatus,
   SupportChatMessage,
   SupportChatThread,
   SupportSenderRole,
@@ -66,6 +69,7 @@ import {
   generateNextInvoiceNumber,
   generateProductNumber,
   getCustomerReferralCode,
+  hasActiveDeliverySubscription,
   HIGHLIGHT_UPI_ID,
   isProductHighlightActive,
   mergeAdminPaymentSettings,
@@ -76,6 +80,10 @@ import {
   normalizeSupportName,
   OTP_MAX_ATTEMPTS,
   phoneNumbersMatch,
+  resolveSubscriptionEffectiveStatus,
+  resolveSubscriptionExpiresAtMs,
+  SUBSCRIPTION_DURATION_DAYS,
+  SUBSCRIPTION_PLAN_PRICE,
   todayIsoDate,
   validateAdultDateOfBirth,
   validateEnglishName,
@@ -110,6 +118,7 @@ const HIGHLIGHT_REQUESTS_COL = 'highlight_requests';
 const SUPPORT_CHATS_COL = 'support_chats';
 const EMAIL_OTPS_COL = 'email_otps';
 const MEDIA_RECORDS_COL = 'media_records';
+const SUBSCRIPTIONS_COL = 'subscriptions';
 const SENT_MAIL_BOX_DOC = 'sent_mail_box';
 const SENT_MAIL_LOCAL_KEY = 'gg_admin_sent_mail_box_v1';
 
@@ -706,6 +715,7 @@ export const firestoreService = {
       highlightRequests,
       sellerFollows,
       productReviews,
+      subscriptions,
     ] = await Promise.all([
       fetchCol<Client>(CLIENTS_COL),
       fetchCol<Product>(PRODUCTS_COL),
@@ -718,6 +728,7 @@ export const firestoreService = {
       fetchCol<HighlightRequest>(HIGHLIGHT_REQUESTS_COL),
       fetchColSafe<SellerFollowRecord>(SELLER_FOLLOWS_COL),
       fetchColSafe<ProductReview>(PRODUCT_REVIEWS_COL),
+      fetchColSafe<DeliverySubscription>(SUBSCRIPTIONS_COL),
     ]);
 
     return {
@@ -734,6 +745,7 @@ export const firestoreService = {
       highlightRequests,
       sellerFollows,
       productReviews,
+      subscriptions,
     };
   },
 
@@ -925,6 +937,21 @@ export const firestoreService = {
       }
     );
 
+    const unsubSubscriptions = onSnapshot(
+      collection(db, SUBSCRIPTIONS_COL),
+      (snap) => {
+        const subscriptions = sortDescByCreated(
+          snap.docs.map((d) => d.data() as DeliverySubscription)
+        );
+        onUpdate((prev) => ({ ...prev, subscriptions }));
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, SUBSCRIPTIONS_COL, err);
+        }
+      }
+    );
+
     return () => {
       unsubSettings();
       unsubPaymentSettings();
@@ -939,6 +966,7 @@ export const firestoreService = {
       unsubHighlightRequests();
       unsubSellerFollows();
       unsubProductReviews();
+      unsubSubscriptions();
     };
   },
 
@@ -2879,8 +2907,23 @@ export const firestoreService = {
     const subtotal = Number(
       normalizedItems.reduce((s, it) => s + it.lineTotal, 0).toFixed(2)
     );
+    let hasFreeDeliverySub = false;
+    if (paymentMethod === 'COD' && payload.clientId) {
+      try {
+        const subSnap = await getDocs(
+          query(
+            collection(db, SUBSCRIPTIONS_COL),
+            where('userId', '==', payload.clientId)
+          )
+        );
+        const userSubs = subSnap.docs.map((d) => d.data() as DeliverySubscription);
+        hasFreeDeliverySub = hasActiveDeliverySubscription(userSubs, payload.clientId);
+      } catch {
+        hasFreeDeliverySub = false;
+      }
+    }
     const deliveryCharge =
-      paymentMethod === 'COD'
+      paymentMethod === 'COD' && !hasFreeDeliverySub
         ? Number((COD_DELIVERY_CHARGE_PER_ITEM * totalQty).toFixed(2))
         : 0;
     const totalAmount = Number((subtotal + deliveryCharge).toFixed(2));
@@ -3059,7 +3102,11 @@ export const firestoreService = {
       paymentRecipientName: String(payload.paymentRecipientName || '').trim(),
       paymentScreenshotDataUrl:
         paymentMethod === 'UPI' ? String(payload.paymentScreenshotDataUrl || '') : '',
-      customerNote: String(payload.customerNote || '').trim(),
+      customerNote: hasFreeDeliverySub
+        ? [String(payload.customerNote || '').trim(), 'Free Delivery Subscription Applied']
+            .filter(Boolean)
+            .join(' · ')
+        : String(payload.customerNote || '').trim(),
       status: 'Pending',
       invoiceId: '',
       invoiceNumber: '',
@@ -5501,6 +5548,214 @@ export const firestoreService = {
       return merged;
     } catch {
       return optimistic;
+    }
+  },
+
+  subscribeCustomerSubscriptions(
+    userId: string,
+    onList: (subs: DeliverySubscription[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      query(collection(db, SUBSCRIPTIONS_COL), where('userId', '==', userId)),
+      (snap) => {
+        const list = sortDescByCreated(
+          snap.docs.map((d) => d.data() as DeliverySubscription)
+        );
+        onList(list);
+      },
+      (err) => {
+        if (isPermissionDeniedError(err)) {
+          onList([]);
+          return;
+        }
+        try {
+          handleFirestoreError(err, OperationType.LIST, SUBSCRIPTIONS_COL);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
+  async createDeliverySubscription(payload: {
+    userId: string;
+    userName: string;
+    userPhone: string;
+    userEmail?: string;
+    paymentScreenshotUrl: string;
+    transactionId?: string;
+    upiIdUsed?: string;
+  }): Promise<DeliverySubscription> {
+    const cleanUserId = String(payload.userId || '').trim();
+    const cleanUserName = String(payload.userName || '').trim() || 'Customer';
+    const cleanUserPhone = String(payload.userPhone || '').trim();
+    const cleanUserEmail = String(payload.userEmail || '').trim().toLowerCase();
+    const screenshotUrl = String(payload.paymentScreenshotUrl || '').trim();
+
+    if (!cleanUserId) {
+      throw new Error('Please sign in to purchase the Free Delivery Subscription.');
+    }
+    if (!screenshotUrl) {
+      throw new Error(
+        'Payment screenshot proof is mandatory for the ₹99 subscription.'
+      );
+    }
+
+    try {
+      const existingSnap = await getDocs(
+        query(collection(db, SUBSCRIPTIONS_COL), where('userId', '==', cleanUserId))
+      );
+      const existingSubs = existingSnap.docs.map(
+        (d) => d.data() as DeliverySubscription
+      );
+      const nowMs = Date.now();
+      const activeSub = existingSubs.find(
+        (s) => resolveSubscriptionEffectiveStatus(s, nowMs) === 'active'
+      );
+      if (activeSub) {
+        throw new Error(
+          'You already have an active Free Delivery Subscription.'
+        );
+      }
+      const pendingSub = existingSubs.find(
+        (s) => resolveSubscriptionEffectiveStatus(s, nowMs) === 'pending'
+      );
+      if (pendingSub) {
+        throw new Error(
+          'Your subscription payment is already under verification by the Admin.'
+        );
+      }
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message.includes('already have an active') ||
+          err.message.includes('already under verification'))
+      ) {
+        throw err;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const paymentDetails: DeliverySubscriptionPaymentDetails = stripUndefinedDeep({
+      paymentScreenshotUrl: screenshotUrl,
+      transactionId: String(payload.transactionId || '').trim() || undefined,
+      upiIdUsed: String(payload.upiIdUsed || '').trim() || undefined,
+    });
+
+    const subscription: DeliverySubscription = stripUndefinedDeep({
+      id: `sub-${crypto.randomUUID()}`,
+      userId: cleanUserId,
+      userName: cleanUserName,
+      userPhone: cleanUserPhone || 'Not provided',
+      userEmail: cleanUserEmail || undefined,
+      planPrice: SUBSCRIPTION_PLAN_PRICE,
+      durationDays: SUBSCRIPTION_DURATION_DAYS,
+      paymentMethod: 'online',
+      paymentDetails,
+      status: 'pending' as SubscriptionStatus,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, SUBSCRIPTIONS_COL, subscription.id), subscription);
+      return subscription;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `${SUBSCRIPTIONS_COL}/${subscription.id}`
+      );
+    }
+  },
+
+  async updateDeliverySubscriptionStatus(
+    subscriptionId: string,
+    action: 'approve' | 'reject' | 'cancel' | 'extend',
+    adminRemarks?: string
+  ): Promise<DeliverySubscription> {
+    const ref = doc(db, SUBSCRIPTIONS_COL, subscriptionId);
+    let existing: DeliverySubscription;
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        throw new Error('Subscription record not found.');
+      }
+      existing = snap.data() as DeliverySubscription;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'Subscription record not found.'
+      ) {
+        throw error;
+      }
+      handleFirestoreError(
+        error,
+        OperationType.GET,
+        `${SUBSCRIPTIONS_COL}/${subscriptionId}`
+      );
+    }
+
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const cleanRemarks = String(adminRemarks || '').trim();
+    const durationMs =
+      Math.max(1, Number(existing.durationDays) || SUBSCRIPTION_DURATION_DAYS) *
+      86_400_000;
+
+    let nextStatus: SubscriptionStatus = existing.status;
+    let nextApprovedAt = existing.approvedAt;
+    let nextExpiresAt = existing.expiresAt;
+
+    if (action === 'approve') {
+      nextStatus = 'active';
+      nextApprovedAt = nowIso;
+      nextExpiresAt = new Date(nowMs + durationMs).toISOString();
+    } else if (action === 'extend') {
+      nextStatus = 'active';
+      nextApprovedAt = existing.approvedAt || nowIso;
+      const existingExpMs = resolveSubscriptionExpiresAtMs(existing);
+      const baseMs =
+        existingExpMs !== null && existingExpMs > nowMs ? existingExpMs : nowMs;
+      nextExpiresAt = new Date(baseMs + durationMs).toISOString();
+    } else if (action === 'reject') {
+      nextStatus = 'rejected';
+    } else if (action === 'cancel') {
+      nextStatus = 'expired';
+      nextExpiresAt = nowIso;
+    }
+
+    const updated: DeliverySubscription = stripUndefinedDeep({
+      ...existing,
+      status: nextStatus,
+      approvedAt: nextApprovedAt,
+      expiresAt: nextExpiresAt,
+      adminRemarks: cleanRemarks || existing.adminRemarks,
+      updatedAt: nowIso,
+    });
+
+    try {
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${SUBSCRIPTIONS_COL}/${subscriptionId}`
+      );
+    }
+  },
+
+  async deleteDeliverySubscription(subscriptionId: string): Promise<void> {
+    try {
+      await deleteDoc(doc(db, SUBSCRIPTIONS_COL, subscriptionId));
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.DELETE,
+        `${SUBSCRIPTIONS_COL}/${subscriptionId}`
+      );
     }
   },
 };

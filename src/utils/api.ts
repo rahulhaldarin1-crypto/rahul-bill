@@ -8,6 +8,7 @@ import {
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
   DeliveryStatus,
+  DeliverySubscription,
   EmailOtpPurpose,
   ExpenseRecord,
   HighlightRequest,
@@ -745,5 +746,41 @@ export const api = {
 
   appendSentMailHistory(entries: SentMailRecord[]) {
     return firestoreService.appendSentMailHistory(entries);
+  },
+
+  subscribeCustomerSubscriptions(
+    userId: string,
+    onList: (subs: DeliverySubscription[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeCustomerSubscriptions(userId, onList, onError);
+  },
+
+  createDeliverySubscription(payload: {
+    userId: string;
+    userName: string;
+    userPhone: string;
+    userEmail?: string;
+    paymentScreenshotUrl: string;
+    transactionId?: string;
+    upiIdUsed?: string;
+  }) {
+    return firestoreService.createDeliverySubscription(payload);
+  },
+
+  updateDeliverySubscriptionStatus(
+    subscriptionId: string,
+    action: 'approve' | 'reject' | 'cancel' | 'extend',
+    adminRemarks?: string
+  ) {
+    return firestoreService.updateDeliverySubscriptionStatus(
+      subscriptionId,
+      action,
+      adminRemarks
+    );
+  },
+
+  deleteDeliverySubscription(subscriptionId: string) {
+    return firestoreService.deleteDeliverySubscription(subscriptionId);
   },
 };

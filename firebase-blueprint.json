@@ -341,6 +341,29 @@
         "createdAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "appSource", "uploadedByRole", "relatedEntityType", "folder", "publicId", "secureUrl", "resourceType", "createdAt"]
+    },
+    "DeliverySubscription": {
+      "title": "DeliverySubscription",
+      "description": "₹99 / 28 Days Free Delivery Subscription with online-only payment screenshot proof and admin activation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "userPhone": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "userEmail": { "type": "string", "maxLength": 160 },
+        "planPrice": { "type": "number" },
+        "durationDays": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["online"] },
+        "paymentDetails": { "type": "object" },
+        "status": { "type": "string", "enum": ["pending", "active", "expired", "rejected"] },
+        "adminRemarks": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 },
+        "approvedAt": { "type": "string", "maxLength": 40 },
+        "expiresAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "userId", "userName", "userPhone", "planPrice", "durationDays", "paymentMethod", "paymentDetails", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -399,6 +422,10 @@
     "/media_records/{recordId}": {
       "schema": { "$ref": "#/entities/MediaRecord" },
       "description": "Cloudinary uploaded media records across Seller Hub, Customer Hub, and Admin Panel."
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/DeliverySubscription" },
+      "description": "₹99 / 28 Days Free Delivery subscriptions with online payment screenshot proof."
     }
   }
 }

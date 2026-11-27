@@ -269,6 +269,32 @@ service cloud.firestore {
       allow delete: if isValidId(recordId);
     }
 
+    function isValidSubscription(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'userPhone', 'planPrice', 'durationDays', 'paymentMethod', 'paymentDetails', 'status', 'createdAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 160
+        && data.userPhone is string && data.userPhone.size() >= 1 && data.userPhone.size() <= 40
+        && (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 160))
+        && data.planPrice is number && data.planPrice == 99
+        && data.durationDays is number && data.durationDays >= 1 && data.durationDays <= 365
+        && data.paymentMethod == 'online'
+        && data.paymentDetails is map
+        && data.paymentDetails.paymentScreenshotUrl is string
+        && data.paymentDetails.paymentScreenshotUrl.size() >= 10
+        && data.paymentDetails.paymentScreenshotUrl.size() <= 1000
+        && (!('transactionId' in data.paymentDetails) || (data.paymentDetails.transactionId is string && data.paymentDetails.transactionId.size() <= 120))
+        && data.status in ['pending', 'active', 'expired', 'rejected']
+        && data.createdAt is string && data.createdAt.size() <= 60;
+    }
+
+    match /subscriptions/{subscriptionId} {
+      allow list: if true;
+      allow get: if isValidId(subscriptionId);
+      allow create, update: if isValidId(subscriptionId) && isValidSubscription(request.resource.data);
+      allow delete: if isValidId(subscriptionId);
+    }
+
     match /test/connection {
       allow get: if true;
     }

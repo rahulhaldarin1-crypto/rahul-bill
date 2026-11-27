@@ -29,6 +29,7 @@ import {
   ShoppingBag,
   ShoppingCart,
   SlidersHorizontal,
+  Sparkles,
   Star,
   Store,
   Tag,
@@ -49,6 +50,7 @@ import {
   CustomerCartItem,
   CustomerOrder,
   CustomerOrderPaymentMethod,
+  DeliverySubscription,
   Invoice,
   MediaResourceType,
   Product,
@@ -63,11 +65,17 @@ import {
   DEFAULT_ADMIN_UPI_ID,
   DEFAULT_VIEW_PANEL_CONFIG,
   PRODUCT_CATEGORIES,
+  SUBSCRIPTION_DURATION_DAYS,
+  SUBSCRIPTION_PLAN_PRICE,
   buildUpiDeepLink,
   formatCurrency,
+  getSubscriptionRemainingDays,
+  hasActiveDeliverySubscription,
   isProductHighlightActive,
   normalizeAsianPhone,
+  pickPrimaryCustomerSubscription,
   resolveEffectivePaymentDetails,
+  resolveSubscriptionEffectiveStatus,
   stripPlus91Prefix,
   validateEnglishName,
 } from '../utils/calculations';
@@ -103,6 +111,7 @@ import { HelpCenterChatView } from './HelpCenterChatView';
 import { OfflineIndicator, PWAInstallButton } from './PWAInstallButton';
 import { ReferEarnView } from './ReferEarnView';
 import { SellerHubView } from './SellerHubView';
+import { SubscriptionPurchaseModal } from './SubscriptionPurchaseModal';
 
 interface StartPortalProps {
   settings?: BusinessSettings;
@@ -121,9 +130,11 @@ interface StartPortalProps {
   loggedInCustomer?: Client | null;
   customerOrders?: CustomerOrder[];
   customerBills?: Invoice[];
+  customerSubscriptions?: DeliverySubscription[];
   onCustomerLogin?: (client: Client) => void;
   onCustomerLogout?: () => void;
   onCustomerUpdated?: (client: Client) => void;
+  onSubscriptionCreated?: (subscription: DeliverySubscription) => void;
   onSaveProduct?: (
     payload: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>,
     existingId?: string,
@@ -180,6 +191,7 @@ type PendingAuthAction =
   | { type: 'order'; product: PublicShopProduct; qty: number }
   | { type: 'account'; tab: CustomerDashboardTab }
   | { type: 'portal'; view: 'seller-hub' | 'help-center' | 'refer-earn' }
+  | { type: 'subscription' }
   | { type: 'follow'; sellerId: string }
   | {
       type: 'review';
@@ -229,9 +241,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   loggedInCustomer = null,
   customerOrders = [],
   customerBills = [],
+  customerSubscriptions = [],
   onCustomerLogin,
   onCustomerLogout,
   onCustomerUpdated,
+  onSubscriptionCreated,
   onSaveProduct,
   onDeleteProduct,
   onToggleFollowSeller,
@@ -281,9 +295,23 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [pendingAction, setPendingAction] = useState<PendingAuthAction>(null);
   const [pendingOnboardingUser, setPendingOnboardingUser] =
     useState<GoogleOnboardingSeed | null>(null);
+  const [subscriptionModalOpen, setSubscriptionModalOpen] = useState(false);
+  const [autoCycleShowSubscription, setAutoCycleShowSubscription] =
+    useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   // Store Toast
   const [storeNotice, setStoreNotice] = useState('');
+
+  useEffect(() => {
+    const refresh = () => setNowMs(Date.now());
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -428,13 +456,59 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     };
   }, [settings?.viewPanel]);
 
+  const hasRegularAdContent = Boolean(
+    ((viewPanel.advertisement.videoUrl || viewPanel.advertisement.imageDataUrl) &&
+      !failedAdImage) ||
+      viewPanel.advertisement.title.trim()
+  );
+  const isSubscriptionAdMode = Boolean(
+    viewPanel.advertisement.subscriptionAdMode
+  );
+  const isAutoCycleAd =
+    !isSubscriptionAdMode &&
+    Boolean(viewPanel.advertisement.autoCycleSubscriptionAd);
   const showAdvertisement =
     viewPanel.advertisement.enabled &&
-    Boolean(
-      ((viewPanel.advertisement.videoUrl || viewPanel.advertisement.imageDataUrl) &&
-        !failedAdImage) ||
-        viewPanel.advertisement.title.trim()
-    );
+    (isSubscriptionAdMode || isAutoCycleAd || hasRegularAdContent);
+
+  useEffect(() => {
+    if (!viewPanel.advertisement.enabled || !isAutoCycleAd) {
+      setAutoCycleShowSubscription(false);
+      return;
+    }
+    if (!hasRegularAdContent) {
+      setAutoCycleShowSubscription(true);
+      return;
+    }
+    setAutoCycleShowSubscription(false);
+    const interval = window.setInterval(() => {
+      setAutoCycleShowSubscription((prev) => !prev);
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [viewPanel.advertisement.enabled, isAutoCycleAd, hasRegularAdContent]);
+
+  const primarySubscription = useMemo(
+    () => pickPrimaryCustomerSubscription(customerSubscriptions, nowMs),
+    [customerSubscriptions, nowMs]
+  );
+  const subscriptionStatus = useMemo(
+    () => resolveSubscriptionEffectiveStatus(primarySubscription, nowMs),
+    [primarySubscription, nowMs]
+  );
+  const subscriptionRemainingDays = useMemo(
+    () => getSubscriptionRemainingDays(primarySubscription, nowMs),
+    [primarySubscription, nowMs]
+  );
+  const hasActiveSubscription = useMemo(
+    () =>
+      Boolean(loggedInCustomer?.id) &&
+      hasActiveDeliverySubscription(
+        customerSubscriptions,
+        loggedInCustomer?.id,
+        nowMs
+      ),
+    [customerSubscriptions, loggedInCustomer?.id, nowMs]
+  );
 
   const approvedSellerIdsSet = useMemo(
     () => new Set(approvedSellerIds),
@@ -1237,6 +1311,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       return;
     }
 
+    if (action.type === 'subscription') {
+      setSubscriptionModalOpen(true);
+      return;
+    }
+
     if (action.type === 'cart') {
       await addItemToClientCart(client, action.product, action.qty);
       return;
@@ -1454,6 +1533,31 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     setAccountTab(tab);
     setPortalView('account');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleOpenSubscriptionPurchase = () => {
+    if (!loggedInCustomer) {
+      openAuthForAction(
+        { type: 'subscription' },
+        `Sign in or create an account to activate the ₹${SUBSCRIPTION_PLAN_PRICE} / ${SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass.`
+      );
+      return;
+    }
+    if (hasActiveSubscription) {
+      handleOpenAccount('orders');
+      triggerStoreNotice(
+        `Your ₹${SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass is active (${subscriptionRemainingDays} দিন বাকি)!`
+      );
+      return;
+    }
+    if (subscriptionStatus === 'pending') {
+      handleOpenAccount('orders');
+      triggerStoreNotice(
+        'Your ₹99 subscription screenshot is under Admin verification.'
+      );
+      return;
+    }
+    setSubscriptionModalOpen(true);
   };
 
   // Recover mobile browser Google Sign-In redirect result automatically (routing seller intent to Seller Hub)
@@ -1761,7 +1865,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     ? Number((parsedQty * selectedProduct.price).toFixed(2))
     : 0;
   const codDeliveryCharge =
-    paymentMethod === 'COD' ? COD_DELIVERY_CHARGE_PER_ITEM * parsedQty : 0;
+    paymentMethod === 'COD' && !hasActiveSubscription
+      ? COD_DELIVERY_CHARGE_PER_ITEM * parsedQty
+      : 0;
   const checkoutTotal = Number(
     (checkoutSubtotal + codDeliveryCharge).toFixed(2)
   );
@@ -1969,6 +2075,52 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     adMediaRawSrc,
     viewPanel.advertisement.mediaType
   );
+
+  const subscriptionAdBannerCard = (
+    <button
+      type="button"
+      onClick={handleOpenSubscriptionPurchase}
+      className="w-full max-w-full text-left rounded-2xl overflow-hidden border border-[#E9D5FF] bg-gradient-to-r from-[#7E22CE] via-[#9333EA] to-[#DB2777] text-white p-4 sm:p-6 shadow-sm hover:opacity-95 transition-opacity cursor-pointer"
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
+        <div className="space-y-1 min-w-0">
+          <div className="inline-flex items-center gap-1.5 rounded-md bg-white/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
+            <Sparkles className="w-3 h-3" />
+            <span>
+              {hasActiveSubscription
+                ? `Active Pass · ${subscriptionRemainingDays} দিন বাকি`
+                : subscriptionStatus === 'pending'
+                  ? 'Verification Pending'
+                  : 'Limited Offer · Online Payment Only'}
+            </span>
+          </div>
+          <div className="font-display-serif text-lg sm:text-2xl font-bold leading-snug">
+            ₹{SUBSCRIPTION_PLAN_PRICE} / {SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Subscription
+          </div>
+          <p className="text-xs sm:text-sm text-white/90">
+            {hasActiveSubscription
+              ? 'ফ্রি ডেলিভারি পাস সক্রিয় আছে — আপনার সকল যোগ্য অর্ডারে ₹0 ডেলিভারি চার্জ!'
+              : 'মাত্র ₹99-এ ২৮ দিনের জন্য আনলিমিটেড ফ্রি ডেলিভারি পান। এখনই সাবস্ক্রাইব করুন!'}
+          </p>
+        </div>
+
+        <span className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-xs sm:text-sm font-bold text-[#7E22CE] shrink-0 whitespace-nowrap shadow-xs">
+          <Truck className="w-4 h-4 text-[#DB2777]" />
+          <span>
+            {hasActiveSubscription
+              ? 'View Active Pass'
+              : subscriptionStatus === 'pending'
+                ? 'View Status'
+                : `Subscribe ₹${SUBSCRIPTION_PLAN_PRICE}`}
+          </span>
+        </span>
+      </div>
+    </button>
+  );
+
+  const showSubscriptionBannerNow =
+    isSubscriptionAdMode ||
+    (isAutoCycleAd && (autoCycleShowSubscription || !hasRegularAdContent));
 
   const adBannerCard = (
     <div className="w-full max-w-full rounded-2xl overflow-hidden border border-[#EFE2F5] bg-white/95 backdrop-blur-md shadow-sm relative">
@@ -2309,6 +2461,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             products={products}
             paymentSettings={paymentSettings}
             sellerPaymentProfiles={sellerPaymentProfiles}
+            subscriptions={customerSubscriptions}
             initialTab={accountTab}
             onBackToShop={() => setPortalView('shop')}
             onLogout={() => {
@@ -2317,6 +2470,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               triggerStoreNotice('Signed out of customer account.');
             }}
             onClientUpdated={(updated) => onCustomerUpdated?.(updated)}
+            onSubscriptionCreated={onSubscriptionCreated}
           />
         ) : portalView === 'seller-hub' ? (
           <SellerHubView
@@ -2780,7 +2934,9 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             {/* ADVERTISEMENT BANNER */}
             {showAdvertisement && (
               <section className="no-print" aria-label="Featured Advertisement">
-                {isSafeHttpUrl(viewPanel.advertisement.linkUrl) ? (
+                {showSubscriptionBannerNow ? (
+                  subscriptionAdBannerCard
+                ) : isSafeHttpUrl(viewPanel.advertisement.linkUrl) ? (
                   <a
                     href={viewPanel.advertisement.linkUrl.trim()}
                     target="_blank"
@@ -4035,9 +4191,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     <div className="flex justify-between text-[#5B4B6B]">
                       <span>
                         Delivery Fee{' '}
-                        {paymentMethod === 'COD'
-                          ? `(COD ₹${COD_DELIVERY_CHARGE_PER_ITEM} × ${parsedQty})`
-                          : '(Online UPI Free)'}
+                        {hasActiveSubscription
+                          ? '(Free Delivery Pass)'
+                          : paymentMethod === 'COD'
+                            ? `(COD ₹${COD_DELIVERY_CHARGE_PER_ITEM} × ${parsedQty})`
+                            : '(Online UPI Free)'}
                       </span>
                       <span
                         className={`font-mono-num font-semibold ${
@@ -4046,11 +4204,55 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       >
                         {codDeliveryCharge > 0
                           ? `+ ${formatCurrency(codDeliveryCharge, sym)}`
-                          : 'FREE'}
+                          : hasActiveSubscription
+                            ? '₹0 - Free Delivery Subscription Applied'
+                            : 'FREE'}
                       </span>
                     </div>
                   </div>
                 </div>
+
+                {/* Free Delivery Subscription Benefit Banner at Product Checkout */}
+                {hasActiveSubscription ? (
+                  <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 font-bold text-[#15803D]">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>
+                        ₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass Active ({subscriptionRemainingDays} দিন বাকি)
+                      </span>
+                    </span>
+                    <span className="font-mono-num font-bold text-[#166534] shrink-0">
+                      ₹0 Delivery
+                    </span>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-[#E9D5FF] bg-gradient-to-r from-[#FAF5FF] to-[#FDF2F8] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="font-bold text-[#6D28D9] flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
+                        <span>
+                          {subscriptionStatus === 'pending'
+                            ? '₹99 Free Delivery Pass — Verification Pending'
+                            : `Get ₹${SUBSCRIPTION_PLAN_PRICE} / ${SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass!`}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-[#5B4B6B]">
+                        {subscriptionStatus === 'pending'
+                          ? 'Your payment screenshot is awaiting Admin approval.'
+                          : 'Skip delivery charges on eligible orders (Online payment + screenshot only).'}
+                      </div>
+                    </div>
+                    {subscriptionStatus !== 'pending' && (
+                      <button
+                        type="button"
+                        onClick={() => setSubscriptionModalOpen(true)}
+                        className="rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 py-1.5 text-[11px] font-bold text-white hover:opacity-95 cursor-pointer shrink-0"
+                      >
+                        Subscribe ₹{SUBSCRIPTION_PLAN_PRICE}
+                      </button>
+                    )}
+                  </div>
+                )}
 
                 {orderError && (
                   <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C]">
@@ -4221,8 +4423,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       </div>
                       <p className="text-xs text-[#6B5B7B] mt-1">
                         Pay when your order arrives.{' '}
-                        <strong className="text-[#B45309]">
-                          + ₹{COD_DELIVERY_CHARGE_PER_ITEM}/item delivery fee
+                        <strong
+                          className={
+                            hasActiveSubscription ? 'text-[#15803D]' : 'text-[#B45309]'
+                          }
+                        >
+                          {hasActiveSubscription
+                            ? '₹0 Free Delivery Subscription Applied'
+                            : `+ ₹${COD_DELIVERY_CHARGE_PER_ITEM}/item delivery fee`}
                         </strong>
                       </p>
                     </button>
@@ -5269,6 +5477,22 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           )
         }
         onSuccess={handleCustomerAuthSuccess}
+      />
+
+      {/* ₹99 Free Delivery Subscription Checkout Modal (Online Only) */}
+      <SubscriptionPurchaseModal
+        open={subscriptionModalOpen}
+        client={loggedInCustomer}
+        settings={settings}
+        paymentSettings={paymentSettings}
+        onClose={() => setSubscriptionModalOpen(false)}
+        onSuccess={(created) => {
+          setSubscriptionModalOpen(false);
+          onSubscriptionCreated?.(created);
+          triggerStoreNotice(
+            '₹99 Subscription request submitted! Admin approval will start your 28-day pass.'
+          );
+        }}
       />
 
       {/* Offline Status Indicator & Storefront Notification Toast */}

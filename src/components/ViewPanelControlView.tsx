@@ -8,8 +8,10 @@ import {
   Package,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   ShoppingBag,
+  Sparkles,
   Tag,
   Trash2,
   Upload,
@@ -201,6 +203,44 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
     await persistConfig(
       next,
       nextEnabled ? 'Advertisement enabled in View Panel.' : 'Advertisement hidden.'
+    );
+  };
+
+  const handleToggleSubscriptionAdMode = async () => {
+    const nextValue = !draft.advertisement.subscriptionAdMode;
+    const next: ViewPanelConfig = {
+      ...draft,
+      advertisement: {
+        ...draft.advertisement,
+        enabled: nextValue ? true : draft.advertisement.enabled,
+        subscriptionAdMode: nextValue,
+        autoCycleSubscriptionAd: nextValue ? false : draft.advertisement.autoCycleSubscriptionAd,
+      },
+    };
+    await persistConfig(
+      next,
+      nextValue
+        ? 'Subscription Ad Mode enabled — Customer ad banner now shows only the ₹99 Free Delivery Subscription Ad.'
+        : 'Subscription Ad Mode turned off.'
+    );
+  };
+
+  const handleToggleAutoCycleAd = async () => {
+    const nextValue = !draft.advertisement.autoCycleSubscriptionAd;
+    const next: ViewPanelConfig = {
+      ...draft,
+      advertisement: {
+        ...draft.advertisement,
+        enabled: nextValue ? true : draft.advertisement.enabled,
+        autoCycleSubscriptionAd: nextValue,
+        subscriptionAdMode: nextValue ? false : draft.advertisement.subscriptionAdMode,
+      },
+    };
+    await persistConfig(
+      next,
+      nextValue
+        ? 'Auto Mode enabled — Ad area will cycle between uploaded ad & ₹99 Subscription Ad every 3 seconds.'
+        : 'Auto 3-second Ad Cycle turned off.'
     );
   };
 
@@ -516,7 +556,15 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
               id: 'advertisement',
               label: 'Advertisement',
               icon: Megaphone,
-              activeFlag: draft.advertisement.enabled && Boolean(draft.advertisement.imageDataUrl || draft.advertisement.title),
+              activeFlag:
+                draft.advertisement.enabled &&
+                Boolean(
+                  draft.advertisement.imageDataUrl ||
+                    draft.advertisement.videoUrl ||
+                    draft.advertisement.title ||
+                    draft.advertisement.subscriptionAdMode ||
+                    draft.advertisement.autoCycleSubscriptionAd
+                ),
             },
             {
               id: 'discount',
@@ -581,6 +629,61 @@ export const ViewPanelControlView: React.FC<ViewPanelControlViewProps> = ({
                 {draft.advertisement.enabled ? 'Visible on View Panel' : 'Hidden on View Panel'}
               </span>
             </button>
+          </div>
+
+          {/* Subscription Ad Mode & Auto 3s Cycle Controls */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 rounded-2xl border border-[#E9D5FF] bg-[#FAF5FF]/70 p-4">
+            <div className="rounded-xl border border-[#EFE2F5] bg-white p-3.5 flex items-start justify-between gap-3">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]">
+                  <Sparkles className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
+                  <span>Subscription Ad Mode (সাবস্ক্রিপশন অ্যাড মোড)</span>
+                </div>
+                <p className="text-[11px] text-[#6B5B7B] leading-relaxed">
+                  Hides regular uploaded ad media and displays ONLY the clickable &ldquo;₹99 / 28 Days Free Delivery Pass&rdquo; banner.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(draft.advertisement.subscriptionAdMode)}
+                disabled={busy}
+                onClick={handleToggleSubscriptionAdMode}
+                className={`rounded-xl px-3 py-1.5 text-xs font-bold border whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                  draft.advertisement.subscriptionAdMode
+                    ? 'border-[#7E22CE] bg-[#7E22CE] text-white'
+                    : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#5B4B6B] hover:border-[#9333EA]'
+                }`}
+              >
+                {draft.advertisement.subscriptionAdMode ? 'ON' : 'OFF'}
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-[#EFE2F5] bg-white p-3.5 flex items-start justify-between gap-3">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-[#1F122B]">
+                  <RefreshCw className="w-3.5 h-3.5 text-[#7E22CE] shrink-0" />
+                  <span>Auto (অটো — 3-Second Cycle)</span>
+                </div>
+                <p className="text-[11px] text-[#6B5B7B] leading-relaxed">
+                  Automatically cycles customer ad banner between uploaded ad photo/video and the ₹99 Subscription Ad every 3 seconds.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(draft.advertisement.autoCycleSubscriptionAd)}
+                disabled={busy}
+                onClick={handleToggleAutoCycleAd}
+                className={`rounded-xl px-3 py-1.5 text-xs font-bold border whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                  draft.advertisement.autoCycleSubscriptionAd
+                    ? 'border-[#DB2777] bg-[#DB2777] text-white'
+                    : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#5B4B6B] hover:border-[#DB2777]'
+                }`}
+              >
+                {draft.advertisement.autoCycleSubscriptionAd ? 'ON' : 'OFF'}
+              </button>
+            </div>
           </div>
 
           {/* Banner Upload & Preview (Image or Video via Cloudinary) */}

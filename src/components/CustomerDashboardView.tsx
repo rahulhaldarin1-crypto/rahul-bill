@@ -5,6 +5,7 @@ import {
   Camera,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   Download,
@@ -18,8 +19,10 @@ import {
   Plus,
   Printer,
   QrCode,
+  ShieldCheck,
   ShoppingBag,
   ShoppingCart,
+  Sparkles,
   Trash2,
   Truck,
   Upload,
@@ -33,6 +36,7 @@ import {
   CustomerOrder,
   CustomerOrderItem,
   CustomerOrderPaymentMethod,
+  DeliverySubscription,
   Invoice,
   Product,
   SellerPublicPaymentProfile,
@@ -46,9 +50,16 @@ import {
   EffectivePaymentDetails,
   exportInvoiceElementToPdf,
   formatCurrency,
+  getSubscriptionRemainingDays,
+  hasActiveDeliverySubscription,
   normalizeAsianPhone,
+  pickPrimaryCustomerSubscription,
   resolveEffectivePaymentDetails,
+  resolveSubscriptionEffectiveStatus,
+  resolveSubscriptionExpiresAtMs,
   stripPlus91Prefix,
+  SUBSCRIPTION_DURATION_DAYS,
+  SUBSCRIPTION_PLAN_PRICE,
   validateEnglishName,
 } from '../utils/calculations';
 import { getOptimizedMediaUrl, uploadMediaToCloudinary } from '../utils/cloudinary';
@@ -65,6 +76,7 @@ import {
 } from '../utils/region';
 import { CustomerAvatar } from './CustomerAvatar';
 import { ScaledInvoicePreview } from './ScaledInvoicePreview';
+import { SubscriptionPurchaseModal } from './SubscriptionPurchaseModal';
 
 export type CustomerDashboardTab = 'cart' | 'orders' | 'bills';
 
@@ -76,10 +88,12 @@ interface CustomerDashboardViewProps {
   products?: Product[];
   paymentSettings?: AdminPaymentSettings;
   sellerPaymentProfiles?: Record<string, SellerPublicPaymentProfile>;
+  subscriptions?: DeliverySubscription[];
   initialTab?: CustomerDashboardTab;
   onBackToShop: () => void;
   onLogout: () => void;
   onClientUpdated: (client: Client) => void;
+  onSubscriptionCreated?: (subscription: DeliverySubscription) => void;
 }
 
 export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
@@ -90,10 +104,12 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   products = [],
   paymentSettings,
   sellerPaymentProfiles,
+  subscriptions = [],
   initialTab = 'cart',
   onBackToShop,
   onLogout,
   onClientUpdated,
+  onSubscriptionCreated,
 }) => {
   const { isBangladesh: geoBangladesh } = useBangladeshDetection();
   const bdConfig = resolveBangladeshConfig(settings);
@@ -147,10 +163,22 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const [checkoutError, setCheckoutError] = useState('');
   const [orderNotice, setOrderNotice] = useState('');
 
-  // Bill Viewer
+  // Bill Viewer & Subscription Modal
   const [viewingBill, setViewingBill] = useState<Invoice | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [subModalOpen, setSubModalOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const sheetRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const refresh = () => setNowMs(Date.now());
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -207,8 +235,31 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
     [cart]
   );
 
+  const primarySubscription = useMemo(
+    () => pickPrimaryCustomerSubscription(subscriptions, nowMs),
+    [subscriptions, nowMs]
+  );
+  const subscriptionStatus = useMemo(
+    () => resolveSubscriptionEffectiveStatus(primarySubscription, nowMs),
+    [primarySubscription, nowMs]
+  );
+  const subscriptionRemainingDays = useMemo(
+    () => getSubscriptionRemainingDays(primarySubscription, nowMs),
+    [primarySubscription, nowMs]
+  );
+  const subscriptionExpiresAtMs = useMemo(
+    () => resolveSubscriptionExpiresAtMs(primarySubscription),
+    [primarySubscription]
+  );
+  const hasActiveSubscription = useMemo(
+    () => hasActiveDeliverySubscription(subscriptions, client.id, nowMs),
+    [subscriptions, client.id, nowMs]
+  );
+
   const codDeliveryCharge =
-    paymentMethod === 'COD' ? COD_DELIVERY_CHARGE_PER_ITEM * cartItemCount : 0;
+    paymentMethod === 'COD' && !hasActiveSubscription
+      ? COD_DELIVERY_CHARGE_PER_ITEM * cartItemCount
+      : 0;
   const checkoutGrandTotal = Number(
     (cartSubtotal + codDeliveryCharge).toFixed(2)
   );
@@ -983,6 +1034,145 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         </div>
       </section>
 
+      {/* ₹99 FREE DELIVERY SUBSCRIPTION CARD (CUSTOMER ACCOUNT) */}
+      <section className="w-full max-w-full overflow-hidden rounded-3xl border border-[#E9D5FF] bg-gradient-to-br from-[#FAF5FF] via-white to-[#FDF2F8] p-5 sm:p-6 space-y-4 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1.5 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-[#7E22CE] to-[#DB2777] px-2.5 py-1 text-[11px] font-bold text-white">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass</span>
+              </span>
+              {subscriptionStatus === 'active' && (
+                <span className="inline-flex items-center gap-1 rounded-lg border border-[#BBF7D0] bg-[#F0FDF4] px-2.5 py-1 text-[11px] font-bold text-[#15803D]">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Active Pass</span>
+                </span>
+              )}
+              {subscriptionStatus === 'pending' && (
+                <span className="inline-flex items-center gap-1 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-2.5 py-1 text-[11px] font-bold text-[#B45309]">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Verification Pending</span>
+                </span>
+              )}
+              {subscriptionStatus === 'expired' && (
+                <span className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#475569]">
+                  Expired
+                </span>
+              )}
+              {subscriptionStatus === 'rejected' && (
+                <span className="rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-2.5 py-1 text-[11px] font-bold text-[#BE123C]">
+                  Rejected — Re-apply
+                </span>
+              )}
+            </div>
+
+            {subscriptionStatus === 'active' ? (
+              <div className="space-y-1">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                  Free Delivery Pass Active!
+                </h2>
+                <p className="text-xs text-[#5B4B6B]">
+                  Enjoy ₹0 delivery fee on all eligible orders.
+                  {subscriptionExpiresAtMs && (
+                    <span className="ml-1 font-mono-num text-[#6D28D9] font-semibold">
+                      (Valid till {new Date(subscriptionExpiresAtMs).toISOString().slice(0, 10)})
+                    </span>
+                  )}
+                </p>
+              </div>
+            ) : subscriptionStatus === 'pending' ? (
+              <div className="space-y-1">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                  Payment Verification Pending
+                </h2>
+                <p className="text-xs text-[#5B4B6B]">
+                  আপনার ₹{SUBSCRIPTION_PLAN_PRICE} পেমেন্ট স্ক্রিনশট অ্যাডমিনের যাচাইয়ের জন্য জমা হয়েছে। অ্যাপ্রুভ হলেই {SUBSCRIPTION_DURATION_DAYS} দিনের ফ্রি ডেলিভারি শুরু হবে।
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <h2 className="font-display-serif text-lg sm:text-xl font-bold text-[#1F122B]">
+                  {formatCurrency(SUBSCRIPTION_PLAN_PRICE, sym)} /{' '}
+                  {SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass
+                </h2>
+                <p className="text-xs text-[#5B4B6B]">
+                  মাত্র ₹{SUBSCRIPTION_PLAN_PRICE}-এ ২৮ দিনের জন্য আনলিমিটেড ফ্রি ডেলিভারি সুবিধা নিন!
+                </p>
+              </div>
+            )}
+          </div>
+
+          {subscriptionStatus === 'active' ? (
+            <div className="rounded-2xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-3 text-center shrink-0">
+              <div className="font-mono-num text-2xl font-bold text-[#15803D]">
+                {subscriptionRemainingDays} দিন বাকি
+              </div>
+              <div className="text-[11px] font-semibold text-[#166534]">
+                {subscriptionRemainingDays}{' '}
+                {subscriptionRemainingDays === 1 ? 'day' : 'days'} remaining
+              </div>
+            </div>
+          ) : subscriptionStatus === 'pending' ? (
+            <div className="flex items-center gap-3 rounded-2xl border border-[#FDE68A] bg-[#FFFBEB] px-3.5 py-2.5 shrink-0">
+              {primarySubscription?.paymentDetails?.paymentScreenshotUrl && (
+                <img
+                  src={getOptimizedMediaUrl(
+                    primarySubscription.paymentDetails.paymentScreenshotUrl,
+                    'image'
+                  )}
+                  alt="Uploaded subscription proof"
+                  referrerPolicy="no-referrer"
+                  className="w-12 h-12 max-w-full rounded-xl object-cover border border-[#FDE68A] shrink-0"
+                />
+              )}
+              <div className="text-xs space-y-0.5">
+                <div className="font-bold text-[#B45309]">
+                  Screenshot Uploaded
+                </div>
+                <div className="text-[11px] text-[#92400E]">
+                  Awaiting Admin Approval
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setSubModalOpen(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-5 py-3 text-xs sm:text-sm font-bold text-white shadow-sm hover:opacity-95 cursor-pointer shrink-0 whitespace-nowrap"
+            >
+              <Sparkles className="w-4 h-4 shrink-0" />
+              <span>
+                ₹{SUBSCRIPTION_PLAN_PRICE} / {SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass
+              </span>
+            </button>
+          )}
+        </div>
+
+        {subscriptionStatus !== 'active' && subscriptionStatus !== 'pending' && (
+          <div className="rounded-2xl border border-[#EFE2F5] bg-white/90 p-3.5 space-y-1.5 text-[11px] text-[#5B4B6B]">
+            <div className="font-bold text-[#1F122B] flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-[#7E22CE]" />
+              <span>Terms &amp; Rules (সাবস্ক্রিপশনের নিয়মাবলী)</span>
+            </div>
+            <ul className="list-disc pl-4 space-y-1">
+              <li>
+                Validity: <strong>28 days</strong> from Admin activation/approval (অ্যাক্টিভেশনের দিন থেকে ২৮ দিন মেয়াদ)।
+              </li>
+              <li>
+                Free delivery (<strong>₹0 delivery fee</strong>) on eligible orders during the active pass period (যোগ্য অর্ডারে ফ্রি ডেলিভারি)।
+              </li>
+              <li>
+                <strong>Online payment + screenshot proof required</strong>; Cash on Delivery (COD) is disabled (শুধুমাত্র অনলাইন পেমেন্ট ও স্ক্রিনশট বাধ্যতামূলক)।
+              </li>
+              <li>
+                Non-refundable ₹{SUBSCRIPTION_PLAN_PRICE} pass; auto-expires automatically after 28 days (অফেরতযোগ্য ও ২৮ দিন পর অটো-এক্সপায়ার হবে)।
+              </li>
+            </ul>
+          </div>
+        )}
+      </section>
+
       {/* TAB 1: CART & MULTI-ITEM CHECKOUT */}
       {activeTab === 'cart' && (
         <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-5">
@@ -1332,6 +1522,48 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   />
                 </div>
 
+                {/* Free Delivery Subscription Banner inside Cart Checkout */}
+                {hasActiveSubscription ? (
+                  <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 font-bold text-[#15803D]">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>
+                        ₹{SUBSCRIPTION_PLAN_PRICE} Free Delivery Pass Active ({subscriptionRemainingDays} দিন বাকি)
+                      </span>
+                    </span>
+                    <span className="font-mono-num font-bold text-[#166534] shrink-0">
+                      ₹0 Delivery
+                    </span>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-[#E9D5FF] bg-gradient-to-r from-[#FAF5FF] to-[#FDF2F8] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="font-bold text-[#6D28D9] flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-[#DB2777] shrink-0" />
+                        <span>
+                          {subscriptionStatus === 'pending'
+                            ? '₹99 Free Delivery Pass — Verification Pending'
+                            : `Save delivery fees with ₹${SUBSCRIPTION_PLAN_PRICE} / ${SUBSCRIPTION_DURATION_DAYS} Days Free Delivery Pass!`}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-[#5B4B6B]">
+                        {subscriptionStatus === 'pending'
+                          ? 'Admin approval pending on your uploaded screenshot.'
+                          : 'Online payment + screenshot only (COD disabled for pass).'}
+                      </div>
+                    </div>
+                    {subscriptionStatus !== 'pending' && (
+                      <button
+                        type="button"
+                        onClick={() => setSubModalOpen(true)}
+                        className="rounded-lg bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-3 py-1.5 text-[11px] font-bold text-white hover:opacity-95 cursor-pointer shrink-0"
+                      >
+                        Buy ₹{SUBSCRIPTION_PLAN_PRICE} Pass
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Payment Methods */}
                 <div className="grid grid-cols-2 gap-2.5">
                   <button
@@ -1350,8 +1582,14 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                       <span>Cash on Delivery</span>
                       <Truck className="w-3.5 h-3.5 text-[#7E22CE]" />
                     </div>
-                    <div className="text-[10px] font-semibold text-[#B45309] mt-1">
-                      + ₹{COD_DELIVERY_CHARGE_PER_ITEM}/item COD delivery fee
+                    <div
+                      className={`text-[10px] font-semibold mt-1 ${
+                        hasActiveSubscription ? 'text-[#15803D]' : 'text-[#B45309]'
+                      }`}
+                    >
+                      {hasActiveSubscription
+                        ? '₹0 Free Delivery Subscription Applied'
+                        : `+ ₹${COD_DELIVERY_CHARGE_PER_ITEM}/item COD delivery fee`}
                     </div>
                   </button>
                   <button
@@ -1387,9 +1625,11 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   <div className="flex items-center justify-between text-[#5B4B6B]">
                     <span>
                       Delivery Charge{' '}
-                      {paymentMethod === 'COD'
-                        ? `(COD ₹${COD_DELIVERY_CHARGE_PER_ITEM} × ${cartItemCount})`
-                        : '(UPI Free)'}
+                      {hasActiveSubscription
+                        ? '(Free Delivery Pass)'
+                        : paymentMethod === 'COD'
+                          ? `(COD ₹${COD_DELIVERY_CHARGE_PER_ITEM} × ${cartItemCount})`
+                          : '(UPI Free)'}
                     </span>
                     <span
                       className={`font-mono-num font-semibold ${
@@ -1398,7 +1638,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                     >
                       {codDeliveryCharge > 0
                         ? `+ ${formatCurrency(codDeliveryCharge, sym)}`
-                        : 'FREE'}
+                        : hasActiveSubscription
+                          ? '₹0 - Free Delivery Subscription Applied'
+                          : 'FREE'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between pt-1 border-t border-[#F4ECF8] font-bold text-[#1F122B]">
@@ -1858,6 +2100,21 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
           )}
         </section>
       )}
+
+      <SubscriptionPurchaseModal
+        open={subModalOpen}
+        client={client}
+        settings={settings}
+        paymentSettings={paymentSettings}
+        onClose={() => setSubModalOpen(false)}
+        onSuccess={(created) => {
+          setSubModalOpen(false);
+          onSubscriptionCreated?.(created);
+          setOrderNotice(
+            '₹99 Subscription request submitted! Your Free Delivery Pass will activate once Admin approves your payment screenshot.'
+          );
+        }}
+      />
     </div>
   );
 };
