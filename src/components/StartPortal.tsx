@@ -214,8 +214,21 @@ interface PublicShopProduct {
 }
 
 type PendingAuthAction =
-  | { type: 'cart'; product: PublicShopProduct; qty: number }
-  | { type: 'order'; product: PublicShopProduct; qty: number }
+  | {
+      type: 'cart';
+      product: PublicShopProduct;
+      qty: number;
+      selectedSize?: string;
+      selectedImageUrl?: string;
+      redirectToCart?: boolean;
+    }
+  | {
+      type: 'order';
+      product: PublicShopProduct;
+      qty: number;
+      selectedSize?: string;
+      selectedImageUrl?: string;
+    }
   | { type: 'account'; tab: CustomerDashboardTab }
   | { type: 'portal'; view: 'seller-hub' | 'help-center' | 'refer-earn' }
   | { type: 'subscription' }
@@ -426,19 +439,26 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [selectedProduct, setSelectedProduct] =
     useState<PublicShopProduct | null>(null);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
-  const [modalStep, setModalStep] = useState<'detail' | 'checkout' | 'success'>(
-    'detail'
-  );
+  const [selectedProductImageUrl, setSelectedProductImageUrl] = useState('');
+  const [modalStep, setModalStep] = useState<
+    'detail' | 'address' | 'checkout' | 'success'
+  >('detail');
   const [orderQty, setOrderQty] = useState('1');
   const [selectedVariantSize, setSelectedVariantSize] = useState('');
   const [addingToCart, setAddingToCart] = useState(false);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerWhatsapp, setCustomerWhatsapp] = useState('');
+  const [customerEmailInput, setCustomerEmailInput] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
   const [customerCity, setCustomerCity] = useState('');
   const [customerState, setCustomerState] = useState('');
   const [customerPinCode, setCustomerPinCode] = useState('');
+  const [selectedAddressOptionId, setSelectedAddressOptionId] = useState('primary');
+  const [addingNewAddressMode, setAddingNewAddressMode] = useState(false);
+  const [saveNewAddressToAccount, setSaveNewAddressToAccount] = useState(true);
+  const [addressStepError, setAddressStepError] = useState('');
+  const [savingAddressContinue, setSavingAddressContinue] = useState(false);
   const [customerNote, setCustomerNote] = useState('');
   const [paymentMethod, setPaymentMethod] =
     useState<CustomerOrderPaymentMethod>('COD');
@@ -1149,7 +1169,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     viewingSellerId: string | null;
     accountTab: CustomerDashboardTab;
     selectedProductId: string | null;
-    modalStep: 'detail' | 'checkout' | 'success';
+    modalStep: 'detail' | 'address' | 'checkout' | 'success';
     authModalOpen: boolean;
     activeSheet: CustomerSheetType;
   }
@@ -1299,15 +1319,23 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             shoppingItemsRef.current.find((i) => i.id === customerState.selectedProductId) || null;
           setSelectedProduct(found);
           setSelectedVariantSize(
-            found ? parseProductVariantOptions(found.size)[0] || '' : ''
+            found
+              ? parseProductVariantOptions(found.size, found.category)[0] || ''
+              : ''
+          );
+          setSelectedProductImageUrl(
+            found ? found.imageDataUrls[0] || found.imageDataUrl || '' : ''
           );
           setModalStep(customerState.modalStep || 'detail');
           setOrderError('');
+          setAddressStepError('');
         } else {
           setSelectedProduct(null);
           setSelectedVariantSize('');
+          setSelectedProductImageUrl('');
           setPlacedOrder(null);
           setOrderError('');
+          setAddressStepError('');
         }
         return;
       }
@@ -1419,23 +1447,50 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const addItemToClientCart = async (
     client: Client,
     product: PublicShopProduct,
-    qtyToAdd: number
+    qtyToAdd: number,
+    options?: {
+      selectedSize?: string;
+      selectedImageUrl?: string;
+      redirectToCart?: boolean;
+    }
   ) => {
     setAddingToCart(true);
     try {
       const existingCart: CustomerCartItem[] = Array.isArray(client.cart)
         ? [...client.cart]
         : [];
-      const idx = existingCart.findIndex(
-        (c) =>
+      const chosenSize = String(
+        options?.selectedSize ||
+          parseProductVariantOptions(product.size, product.category)[0] ||
+          product.size ||
+          ''
+      ).trim();
+      const chosenImage = String(
+        options?.selectedImageUrl ||
+          product.imageDataUrls[0] ||
+          product.imageDataUrl ||
+          ''
+      ).trim();
+
+      const idx = existingCart.findIndex((c) => {
+        const sameProduct =
           c.id === product.id ||
           (product.catalogProductId &&
-            c.productId === product.catalogProductId)
-      );
+            c.productId === product.catalogProductId);
+        if (!sameProduct) return false;
+        const itemSize = String(c.size || '').trim();
+        const itemImage = String(c.selectedImageUrl || c.imageDataUrl || '').trim();
+        return itemSize === chosenSize && itemImage === chosenImage;
+      });
+
       if (idx >= 0) {
         existingCart[idx] = {
           ...existingCart[idx],
           productNumber: product.productNumber || existingCart[idx].productNumber,
+          size: chosenSize || existingCart[idx].size,
+          imageDataUrl: chosenImage || existingCart[idx].imageDataUrl,
+          selectedImageUrl:
+            chosenImage || existingCart[idx].selectedImageUrl || existingCart[idx].imageDataUrl,
           quantity: Math.max(1, existingCart[idx].quantity + qtyToAdd),
         };
       } else {
@@ -1445,12 +1500,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           productNumber: product.productNumber,
           name: product.name,
           category: product.category,
-          size: product.size,
+          size: chosenSize,
           color: product.color,
           price: product.price,
           originalPrice: product.originalPrice,
           quantity: Math.max(1, qtyToAdd),
-          imageDataUrl: product.imageDataUrls[0] || product.imageDataUrl || '',
+          imageDataUrl: chosenImage,
+          selectedImageUrl: chosenImage || undefined,
           sellerId: product.sellerId,
           sellerName: product.sellerName,
           sourceUrl: product.sourceUrl,
@@ -1462,6 +1518,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       trackSmartEngagement(product, 'cart', qtyToAdd);
       onCustomerUpdated?.(updated);
       triggerStoreNotice(`Added "${product.name}" to your cart.`);
+      if (options?.redirectToCart) {
+        closeProductModal();
+        setAccountTab('cart');
+        setPortalView('account');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     } catch (err) {
       setOrderError(formatApiError(err, 'Could not add item to cart.'));
     } finally {
@@ -1469,16 +1531,108 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
+  const buildCustomerSavedAddressList = (client: Client | null | undefined) => {
+    if (!client) return [];
+    const list: Array<{
+      id: string;
+      label: string;
+      fullName: string;
+      phone: string;
+      whatsapp: string;
+      email: string;
+      address: string;
+      city: string;
+      state: string;
+      pinCode: string;
+    }> = [];
+    const seenKeys = new Set<string>();
+    const makeKey = (a: {
+      address?: string;
+      city?: string;
+      pinCode?: string;
+      phone?: string;
+    }) =>
+      `${String(a.address || '').trim().toLowerCase()}|${String(a.city || '')
+        .trim()
+        .toLowerCase()}|${String(a.pinCode || '').trim()}|${String(a.phone || '').trim()}`;
+
+    if (String(client.address || '').trim()) {
+      const primary = {
+        id: 'primary',
+        label: 'Primary Account Address',
+        fullName: client.name || '',
+        phone: stripPlus91Prefix(displayCustomerPhone(client.mobile)),
+        whatsapp: stripPlus91Prefix(
+          displayCustomerPhone(client.whatsapp || client.mobile)
+        ),
+        email: client.email || '',
+        address: client.address || '',
+        city: client.city || '',
+        state: client.state || '',
+        pinCode: client.pinCode || '',
+      };
+      seenKeys.add(makeKey(primary));
+      list.push(primary);
+    }
+
+    if (Array.isArray(client.savedAddresses)) {
+      for (const entry of client.savedAddresses) {
+        if (!entry || !String(entry.address || '').trim()) continue;
+        const normalized = {
+          id: entry.id,
+          label: entry.label || 'Saved Address',
+          fullName: entry.fullName || entry.name || client.name || '',
+          phone: stripPlus91Prefix(
+            displayCustomerPhone(entry.phone || client.mobile)
+          ),
+          whatsapp: stripPlus91Prefix(
+            displayCustomerPhone(entry.whatsapp || entry.phone || client.mobile)
+          ),
+          email: entry.email || client.email || '',
+          address: entry.address || '',
+          city: entry.city || '',
+          state: entry.state || '',
+          pinCode: entry.pinCode || '',
+        };
+        const k = makeKey(normalized);
+        if (!seenKeys.has(k)) {
+          seenKeys.add(k);
+          list.push(normalized);
+        }
+      }
+    }
+    return list;
+  };
+
   const prefillCheckoutFromClient = (client: Client) => {
-    const cleanMob = displayCustomerPhone(client.mobile);
-    const cleanWa = displayCustomerPhone(client.whatsapp || client.mobile);
-    setCustomerName(client.name || '');
-    setCustomerPhone(stripPlus91Prefix(cleanMob));
-    setCustomerWhatsapp(stripPlus91Prefix(cleanWa));
-    setCustomerAddress(client.address || '');
-    setCustomerCity(client.city || '');
-    setCustomerState(client.state || '');
-    setCustomerPinCode(client.pinCode || '');
+    const savedList = buildCustomerSavedAddressList(client);
+    const first = savedList[0];
+    if (first) {
+      setSelectedAddressOptionId(first.id);
+      setAddingNewAddressMode(false);
+      setCustomerName(first.fullName);
+      setCustomerPhone(first.phone);
+      setCustomerWhatsapp(first.whatsapp);
+      setCustomerEmailInput(first.email || client.email || '');
+      setCustomerAddress(first.address);
+      setCustomerCity(first.city);
+      setCustomerState(first.state);
+      setCustomerPinCode(first.pinCode);
+    } else {
+      const cleanMob = displayCustomerPhone(client.mobile);
+      const cleanWa = displayCustomerPhone(client.whatsapp || client.mobile);
+      setSelectedAddressOptionId('new');
+      setAddingNewAddressMode(true);
+      setCustomerName(client.name || '');
+      setCustomerPhone(stripPlus91Prefix(cleanMob));
+      setCustomerWhatsapp(stripPlus91Prefix(cleanWa));
+      setCustomerEmailInput(client.email || '');
+      setCustomerAddress('');
+      setCustomerCity('');
+      setCustomerState('');
+      setCustomerPinCode('');
+    }
+    setAddressStepError('');
     setOrderError('');
     setPaymentMethod('COD');
     setUpiScreenshotDataUrl('');
@@ -1528,17 +1682,35 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
 
     if (action.type === 'cart') {
-      await addItemToClientCart(client, action.product, action.qty);
+      await addItemToClientCart(client, action.product, action.qty, {
+        selectedSize: action.selectedSize,
+        selectedImageUrl: action.selectedImageUrl,
+        redirectToCart: action.redirectToCart,
+      });
       return;
     }
 
     if (action.type === 'order') {
       setSelectedProduct(action.product);
       setActiveImageIndex(0);
+      setSelectedVariantSize(
+        action.selectedSize ||
+          parseProductVariantOptions(
+            action.product.size,
+            action.product.category
+          )[0] ||
+          ''
+      );
+      setSelectedProductImageUrl(
+        action.selectedImageUrl ||
+          action.product.imageDataUrls[0] ||
+          action.product.imageDataUrl ||
+          ''
+      );
       setOrderQty(String(action.qty));
       setPlacedOrder(null);
       prefillCheckoutFromClient(client);
-      setModalStep('checkout');
+      setModalStep('address');
       return;
     }
 
@@ -1909,11 +2081,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       });
     }
     setSelectedProduct(item);
-    setSelectedVariantSize(parseProductVariantOptions(item.size)[0] || '');
+    setSelectedVariantSize(
+      parseProductVariantOptions(item.size, item.category)[0] || ''
+    );
+    setSelectedProductImageUrl(
+      item.imageDataUrls[0] || item.imageDataUrl || ''
+    );
     setActiveImageIndex(0);
     setModalStep('detail');
     setOrderQty('1');
     setOrderError('');
+    setAddressStepError('');
     setPlacedOrder(null);
     setReviewError('');
     setReviewRating(5);
@@ -1954,11 +2132,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       handledQueryProductRef.current = true;
       setPortalView('shop');
       setSelectedProduct(match);
-      setSelectedVariantSize(parseProductVariantOptions(match.size)[0] || '');
+      setSelectedVariantSize(
+        parseProductVariantOptions(match.size, match.category)[0] || ''
+      );
+      setSelectedProductImageUrl(
+        match.imageDataUrls[0] || match.imageDataUrl || ''
+      );
       setActiveImageIndex(0);
       setModalStep('detail');
       setOrderQty('1');
       setOrderError('');
+      setAddressStepError('');
       setPlacedOrder(null);
     }
   }, [shoppingItems]);
@@ -2089,28 +2273,122 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
   const handleAddToCartAction = async (
     product: PublicShopProduct,
-    qtyToAdd = 1
+    qtyToAdd = 1,
+    options?: {
+      selectedSize?: string;
+      selectedImageUrl?: string;
+      redirectToCart?: boolean;
+    }
   ) => {
     if (!loggedInCustomer) {
       openAuthForAction(
-        { type: 'cart', product, qty: qtyToAdd },
+        {
+          type: 'cart',
+          product,
+          qty: qtyToAdd,
+          selectedSize: options?.selectedSize,
+          selectedImageUrl: options?.selectedImageUrl,
+          redirectToCart: options?.redirectToCart,
+        },
         'Please sign in or create an account to add products to your cart.'
       );
       return;
     }
-    await addItemToClientCart(loggedInCustomer, product, qtyToAdd);
+    await addItemToClientCart(loggedInCustomer, product, qtyToAdd, options);
   };
 
   const openCheckoutStep = () => {
     if (!selectedProduct) return;
+    const chosenSize =
+      selectedVariantSize ||
+      parseProductVariantOptions(
+        selectedProduct.size,
+        selectedProduct.category
+      )[0] ||
+      selectedProduct.size ||
+      '';
+    const chosenImg =
+      selectedProductImageUrl ||
+      selectedProduct.imageDataUrls[0] ||
+      selectedProduct.imageDataUrl ||
+      '';
     if (!loggedInCustomer) {
       openAuthForAction(
-        { type: 'order', product: selectedProduct, qty: parsedQty },
+        {
+          type: 'order',
+          product: selectedProduct,
+          qty: parsedQty,
+          selectedSize: chosenSize,
+          selectedImageUrl: chosenImg,
+        },
         'Please sign in or create a customer account to place your order.'
       );
       return;
     }
     prefillCheckoutFromClient(loggedInCustomer);
+    setModalStep('address');
+  };
+
+  const handleContinueFromAddressStep = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!loggedInCustomer) return;
+    setAddressStepError('');
+
+    const nameCheck = validateEnglishName(customerName, 'Full Name');
+    if (!nameCheck.valid) {
+      setAddressStepError(
+        nameCheck.error || 'Please enter your full name in English.'
+      );
+      return;
+    }
+    const phoneCheck = normalizeAsianPhone(customerPhone);
+    if (!phoneCheck.valid) {
+      setAddressStepError(
+        phoneCheck.error || 'Please enter a valid mobile number.'
+      );
+      return;
+    }
+    if (!customerAddress.trim()) {
+      setAddressStepError('Please enter your delivery address.');
+      return;
+    }
+    const cleanEmail = customerEmailInput.trim().toLowerCase();
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setAddressStepError('Please enter a valid Gmail / Email address.');
+      return;
+    }
+
+    if (addingNewAddressMode && saveNewAddressToAccount) {
+      setSavingAddressContinue(true);
+      try {
+        const updatedClient = await api.saveCustomerAddressBookEntry(
+          loggedInCustomer.id,
+          {
+            fullName: nameCheck.cleaned,
+            phone: phoneCheck.formatted,
+            whatsapp: customerWhatsapp.trim() || phoneCheck.formatted,
+            email: cleanEmail || undefined,
+            address: customerAddress.trim(),
+            city: customerCity.trim(),
+            state: customerState.trim(),
+            pinCode: customerPinCode.trim(),
+            setPrimary: !loggedInCustomer.address,
+          }
+        );
+        onCustomerUpdated?.(updatedClient);
+      } catch (err) {
+        setAddressStepError(
+          formatApiError(err, 'Could not save delivery address.')
+        );
+        setSavingAddressContinue(false);
+        return;
+      } finally {
+        setSavingAddressContinue(false);
+      }
+    }
+
+    setCustomerName(nameCheck.cleaned);
+    setOrderError('');
     setModalStep('checkout');
   };
 
@@ -2203,14 +2481,35 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       return;
     }
 
+    const chosenSize = String(
+      selectedVariantSize ||
+        parseProductVariantOptions(
+          selectedProduct.size,
+          selectedProduct.category
+        )[0] ||
+        selectedProduct.size ||
+        ''
+    ).trim();
+    const chosenImageUrl = String(
+      selectedProductImageUrl ||
+        selectedProduct.imageDataUrls[0] ||
+        selectedProduct.imageDataUrl ||
+        ''
+    ).trim();
+
     setOrderSubmitting(true);
     try {
       const res = await api.createCustomerOrder({
         clientId: loggedInCustomer.id,
         clearCart: false,
+        saveAddressToAccount: addingNewAddressMode && saveNewAddressToAccount,
         customerName: nameCheck.cleaned,
         customerPhone: phoneCheck.formatted,
         customerWhatsapp: formattedWhatsapp,
+        customerEmail:
+          customerEmailInput.trim().toLowerCase() ||
+          loggedInCustomer.email ||
+          undefined,
         customerAddress: customerAddress.trim(),
         customerCity: customerCity.trim(),
         customerState: customerState.trim(),
@@ -2222,16 +2521,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             productNumber: selectedProduct.productNumber,
             productName: selectedProduct.name,
             productCategory: selectedProduct.category,
-            productSize: selectedProduct.size,
+            productSize: chosenSize,
             productColor: selectedProduct.color,
             quantity: parsedQty,
             unitPrice: selectedProduct.price,
             originalPrice: selectedProduct.originalPrice,
             lineTotal: checkoutSubtotal,
-            imageDataUrl:
-              selectedProduct.imageDataUrls[0] ||
-              selectedProduct.imageDataUrl ||
-              '',
+            imageDataUrl: chosenImageUrl,
+            selectedImageUrl: chosenImageUrl || undefined,
             sellerId: selectedProduct.sellerId,
             sellerName: selectedProduct.sellerName,
             sourceUrl: selectedProduct.sourceUrl,
@@ -2242,8 +2539,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         productNumber: selectedProduct.productNumber,
         productName: selectedProduct.name,
         productCategory: selectedProduct.category,
-        productSize: selectedProduct.size,
+        productSize: chosenSize,
         productColor: selectedProduct.color,
+        imageDataUrl: chosenImageUrl || undefined,
+        selectedImageUrl: chosenImageUrl || undefined,
         sourceUrl: selectedProduct.sourceUrl,
         sourcePlatform: selectedProduct.sourcePlatform,
         quantity: parsedQty,
@@ -2703,6 +3002,28 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             }}
             onClientUpdated={(updated) => onCustomerUpdated?.(updated)}
             onSubscriptionCreated={onSubscriptionCreated}
+            onOpenProductFromOrder={(productId, productName) => {
+              const cleanTargetId = String(productId || '')
+                .replace(/^cat-/, '')
+                .trim();
+              const lowerName = String(productName || '').trim().toLowerCase();
+              const matched =
+                shoppingItems.find(
+                  (it) =>
+                    (cleanTargetId &&
+                      (it.catalogProductId === cleanTargetId ||
+                        it.id === productId ||
+                        it.id === `cat-${cleanTargetId}`)) ||
+                    (lowerName && it.name.trim().toLowerCase() === lowerName)
+                ) || null;
+              if (matched) {
+                setPortalView('shop');
+                openProductDetail(matched);
+              } else {
+                setPortalView('shop');
+                triggerStoreNotice('Product is currently unavailable.');
+              }
+            }}
           />
         ) : portalView === 'seller-hub' ? (
           <SellerHubView
@@ -3859,9 +4180,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           aria-label={
             modalStep === 'detail'
               ? selectedProduct.name
-              : modalStep === 'checkout'
-                ? 'Complete Your Order'
-                : 'Order Placed Successfully'
+              : modalStep === 'address'
+                ? 'Select Delivery Address'
+                : modalStep === 'checkout'
+                  ? 'Complete Your Order'
+                  : 'Order Placed Successfully'
           }
         >
           {/* Full-Screen Top Header with Back Button (←) & Cart Icon */}
@@ -3875,8 +4198,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       popCustomerOverlayOrReset(
                         prevCustomerSnapRef.current.modalStep === 'checkout',
                         () => {
-                          setModalStep('detail');
+                          setModalStep('address');
                           setOrderError('');
+                        }
+                      );
+                    } else if (modalStep === 'address') {
+                      popCustomerOverlayOrReset(
+                        prevCustomerSnapRef.current.modalStep === 'address',
+                        () => {
+                          setModalStep('detail');
+                          setAddressStepError('');
                         }
                       );
                     } else {
@@ -3901,9 +4232,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                 <div className="text-sm sm:text-base font-bold text-[#1F122B] truncate">
                   {modalStep === 'detail'
                     ? 'Product Details'
-                    : modalStep === 'checkout'
-                      ? 'Complete Your Order'
-                      : 'Order Placed Successfully'}
+                    : modalStep === 'address'
+                      ? 'Select Delivery Address'
+                      : modalStep === 'checkout'
+                        ? 'Complete Your Order'
+                        : 'Order Placed Successfully'}
                 </div>
               </div>
 
@@ -3930,7 +4263,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           <div
             data-product-modal-scroll="true"
             className={`flex-1 overflow-y-auto ${
-              modalStep === 'detail' ? 'pb-24 sm:pb-24' : 'pb-10'
+              modalStep === 'detail' ||
+              modalStep === 'address' ||
+              modalStep === 'checkout'
+                ? 'pb-24 sm:pb-24'
+                : 'pb-10'
             }`}
           >
             <div className="max-w-5xl mx-auto">
@@ -3952,6 +4289,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                       ? Math.min(activeImageIndex, mediaSlides.length - 1)
                       : 0;
                   const currentSlide = mediaSlides[safeSlideIdx];
+                  const selectMediaSlideIndex = (idx: number) => {
+                    setActiveImageIndex(idx);
+                    const slide = mediaSlides[idx];
+                    if (slide?.type === 'image' && slide.url) {
+                      setSelectedProductImageUrl(slide.url);
+                    }
+                  };
 
                   return (
                     <div className="space-y-2.5 min-w-0 w-full max-w-full">
@@ -3979,11 +4323,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 <button
                                   type="button"
                                   aria-label="Previous media"
-                                  onClick={() =>
-                                    setActiveImageIndex((prev) =>
-                                      prev <= 0 ? mediaSlides.length - 1 : prev - 1
-                                    )
-                                  }
+                                  onClick={() => {
+                                    const nextIdx =
+                                      safeSlideIdx <= 0
+                                        ? mediaSlides.length - 1
+                                        : safeSlideIdx - 1;
+                                    selectMediaSlideIndex(nextIdx);
+                                  }}
                                   className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
                                 >
                                   <ChevronLeft className="w-4 h-4" />
@@ -3991,11 +4337,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                                 <button
                                   type="button"
                                   aria-label="Next media"
-                                  onClick={() =>
-                                    setActiveImageIndex(
-                                      (prev) => (prev + 1) % mediaSlides.length
-                                    )
-                                  }
+                                  onClick={() => {
+                                    const nextIdx =
+                                      (safeSlideIdx + 1) % mediaSlides.length;
+                                    selectMediaSlideIndex(nextIdx);
+                                  }}
                                   className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 border border-[#E6D9EE] p-1.5 text-[#1F122B] hover:bg-white shadow-sm cursor-pointer"
                                 >
                                   <ChevronRight className="w-4 h-4" />
@@ -4017,7 +4363,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                             <button
                               key={`${slide.type}-${idx}-${slide.url.slice(0, 20)}`}
                               type="button"
-                              onClick={() => setActiveImageIndex(idx)}
+                              onClick={() => selectMediaSlideIndex(idx)}
                               className={`aspect-square w-full max-w-full rounded-xl border overflow-hidden cursor-pointer transition-all flex items-center justify-center ${
                                 safeSlideIdx === idx
                                   ? 'border-[#DB2777] ring-2 ring-[#DB2777]/30'
@@ -4304,7 +4650,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     selectedProduct.color ||
                     selectedProduct.stockQty !== undefined) && (() => {
                     const sizeOptions = parseProductVariantOptions(
-                      selectedProduct.size
+                      selectedProduct.size,
+                      selectedProduct.category
                     );
                     return (
                       <div className="rounded-2xl border border-[#EFE2F5] bg-white p-3.5 space-y-2 text-xs text-[#4A3B59]">
@@ -4757,18 +5104,378 @@ export const StartPortal: React.FC<StartPortalProps> = ({
               </div>
             )}
 
-            {/* STEP 2: AUTHENTICATED CUSTOMER CHECKOUT & PAYMENT */}
+            {/* STEP 2A: SELECT DELIVERY ADDRESS STEP */}
+            {modalStep === 'address' && (
+              <form
+                id="buy-now-address-form"
+                onSubmit={handleContinueFromAddressStep}
+                className="p-5 sm:p-6 space-y-5"
+              >
+                {addressStepError && (
+                  <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-xs font-medium text-[#BE123C]">
+                    {addressStepError}
+                  </div>
+                )}
+
+                {(() => {
+                  const savedList = buildCustomerSavedAddressList(loggedInCustomer);
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-bold uppercase tracking-wide text-[#4A3B59]">
+                          Saved Delivery Addresses
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (addingNewAddressMode && savedList.length > 0) {
+                              const first = savedList[0];
+                              setAddingNewAddressMode(false);
+                              setSelectedAddressOptionId(first.id);
+                              setCustomerName(first.fullName);
+                              setCustomerPhone(first.phone);
+                              setCustomerWhatsapp(first.whatsapp);
+                              setCustomerEmailInput(
+                                first.email || loggedInCustomer?.email || ''
+                              );
+                              setCustomerAddress(first.address);
+                              setCustomerCity(first.city);
+                              setCustomerState(first.state);
+                              setCustomerPinCode(first.pinCode);
+                              setAddressStepError('');
+                            } else {
+                              setAddingNewAddressMode(true);
+                              setSelectedAddressOptionId('new');
+                              setCustomerName(loggedInCustomer?.name || '');
+                              setCustomerPhone(
+                                stripPlus91Prefix(
+                                  displayCustomerPhone(loggedInCustomer?.mobile)
+                                )
+                              );
+                              setCustomerWhatsapp(
+                                stripPlus91Prefix(
+                                  displayCustomerPhone(
+                                    loggedInCustomer?.whatsapp ||
+                                      loggedInCustomer?.mobile
+                                  )
+                                )
+                              );
+                              setCustomerEmailInput(loggedInCustomer?.email || '');
+                              setCustomerAddress('');
+                              setCustomerCity('');
+                              setCustomerState('');
+                              setCustomerPinCode('');
+                              setAddressStepError('');
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#D8B4FE] bg-[#FAF5FF] px-3 py-1 text-[11px] font-bold text-[#7E22CE] hover:border-[#9333EA] cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>
+                            {addingNewAddressMode && savedList.length > 0
+                              ? 'Use Saved Address'
+                              : 'Add New Address'}
+                          </span>
+                        </button>
+                      </div>
+
+                      {savedList.length > 0 && (
+                        <div className="space-y-2">
+                          {savedList.map((addr) => {
+                            const selected =
+                              !addingNewAddressMode &&
+                              selectedAddressOptionId === addr.id;
+                            return (
+                              <button
+                                key={addr.id}
+                                type="button"
+                                onClick={() => {
+                                  setAddingNewAddressMode(false);
+                                  setSelectedAddressOptionId(addr.id);
+                                  setCustomerName(addr.fullName);
+                                  setCustomerPhone(addr.phone);
+                                  setCustomerWhatsapp(addr.whatsapp);
+                                  setCustomerEmailInput(
+                                    addr.email || loggedInCustomer?.email || ''
+                                  );
+                                  setCustomerAddress(addr.address);
+                                  setCustomerCity(addr.city);
+                                  setCustomerState(addr.state);
+                                  setCustomerPinCode(addr.pinCode);
+                                  setAddressStepError('');
+                                }}
+                                className={`w-full text-left rounded-2xl border p-3.5 transition-all cursor-pointer ${
+                                  selected
+                                    ? 'border-[#7E22CE] bg-[#FAF5FF] ring-1 ring-[#7E22CE]'
+                                    : 'border-[#E6D9EE] bg-white hover:border-[#C084FC]'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="space-y-0.5 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-bold text-[#1F122B]">
+                                        {addr.fullName}
+                                      </span>
+                                      <span className="text-[10px] font-bold uppercase tracking-wide rounded-md bg-white border border-[#E6D9EE] px-1.5 py-0.5 text-[#7E22CE]">
+                                        {addr.label}
+                                      </span>
+                                    </div>
+                                    <div className="text-xs text-[#4A3B59] leading-relaxed">
+                                      {addr.address}
+                                      {addr.city ? `, ${addr.city}` : ''}
+                                      {addr.state ? `, ${addr.state}` : ''}
+                                      {addr.pinCode ? ` - ${addr.pinCode}` : ''}
+                                    </div>
+                                    <div className="text-[11px] font-mono-num text-[#6B5B7B]">
+                                      Phone: +91 {addr.phone}
+                                      {addr.email ? ` · ${addr.email}` : ''}
+                                    </div>
+                                  </div>
+                                  <div
+                                    className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                                      selected
+                                        ? 'border-[#7E22CE] bg-[#7E22CE]'
+                                        : 'border-[#D8B4FE]'
+                                    }`}
+                                  >
+                                    {selected && (
+                                      <Check className="w-3 h-3 text-white" />
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {(addingNewAddressMode || savedList.length === 0) && (
+                        <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 space-y-3">
+                          <div className="text-xs font-bold text-[#1F122B]">
+                            Enter New Delivery Address
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                                Full Name <span className="text-[#DB2777]">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                required
+                                value={customerName}
+                                onChange={(e) => setCustomerName(e.target.value)}
+                                placeholder="Your full name"
+                                className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                                Phone Number <span className="text-[#DB2777]">*</span>
+                              </label>
+                              <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
+                                <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
+                                  +91
+                                </span>
+                                <input
+                                  type="tel"
+                                  inputMode="tel"
+                                  required
+                                  value={customerPhone}
+                                  onChange={(e) =>
+                                    setCustomerPhone(e.target.value)
+                                  }
+                                  placeholder="9876543210"
+                                  className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                              Gmail / Email (for order confirmation)
+                            </label>
+                            <input
+                              type="email"
+                              value={customerEmailInput}
+                              onChange={(e) =>
+                                setCustomerEmailInput(e.target.value)
+                              }
+                              placeholder="name@gmail.com"
+                              className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                              Address (Village / Area / House No){' '}
+                              <span className="text-[#DB2777]">*</span>
+                            </label>
+                            <textarea
+                              rows={2}
+                              required
+                              value={customerAddress}
+                              onChange={(e) =>
+                                setCustomerAddress(e.target.value)
+                              }
+                              placeholder="House/Flat No, Village, Street, Area..."
+                              className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2.5">
+                            <div>
+                              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                                City
+                              </label>
+                              <input
+                                type="text"
+                                value={customerCity}
+                                onChange={(e) => setCustomerCity(e.target.value)}
+                                placeholder="City"
+                                className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                                State
+                              </label>
+                              <input
+                                type="text"
+                                value={customerState}
+                                onChange={(e) =>
+                                  setCustomerState(e.target.value)
+                                }
+                                placeholder="State"
+                                className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                                PIN Code
+                              </label>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={customerPinCode}
+                                onChange={(e) =>
+                                  setCustomerPinCode(
+                                    sanitizeNumericInput(e.target.value, {
+                                      allowDecimal: false,
+                                    })
+                                  )
+                                }
+                                placeholder="700001"
+                                className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                              />
+                            </div>
+                          </div>
+
+                          <label className="inline-flex items-center gap-2 text-xs text-[#4A3B59] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={saveNewAddressToAccount}
+                              onChange={(e) =>
+                                setSaveNewAddressToAccount(e.target.checked)
+                              }
+                              className="w-4 h-4 accent-[#7E22CE] rounded"
+                            />
+                            <span>Save this address to my account</span>
+                          </label>
+                        </div>
+                      )}
+
+                      {/* Confirmed Selected Address + Price Preview */}
+                      <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 flex items-center justify-between gap-3">
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="text-[11px] font-bold uppercase tracking-wide text-[#7E22CE]">
+                            Selected Delivery Address
+                          </div>
+                          <div className="text-xs font-semibold text-[#1F122B] truncate">
+                            {customerAddress.trim()
+                              ? `${customerName || 'Customer'} — ${[
+                                  customerAddress,
+                                  customerCity,
+                                  customerState,
+                                  customerPinCode,
+                                ]
+                                  .filter(Boolean)
+                                  .join(', ')}`
+                              : 'Enter or choose a delivery address above'}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[10px] text-[#6B5B7B]">Price</div>
+                          <div className="font-mono-num text-base font-bold text-[#7E22CE]">
+                            {formatCurrency(checkoutSubtotal, sym)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </form>
+            )}
+
+            {/* STEP 2B: AUTHENTICATED CUSTOMER CHECKOUT & PAYMENT */}
             {modalStep === 'checkout' && (
-              <form onSubmit={handlePlaceOrder} className="p-5 sm:p-6 space-y-5">
-                {/* Item & Total Summary Breakdown */}
+              <form
+                id="direct-order-checkout-form"
+                onSubmit={handlePlaceOrder}
+                className="p-5 sm:p-6 space-y-5"
+              >
+                {/* Confirmed Address Compact Card */}
+                <div className="rounded-2xl border border-[#EFE2F5] bg-white p-3.5 flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-[#7E22CE]">
+                      <MapPin className="w-3.5 h-3.5 shrink-0" />
+                      <span>Deliver To</span>
+                    </div>
+                    <div className="text-xs sm:text-sm font-bold text-[#1F122B]">
+                      {customerName} · +91 {customerPhone}
+                    </div>
+                    <div className="text-xs text-[#4A3B59] leading-relaxed">
+                      {[
+                        customerAddress,
+                        customerCity,
+                        customerState,
+                        customerPinCode,
+                      ]
+                        .filter(Boolean)
+                        .join(', ')}
+                    </div>
+                    {customerEmailInput.trim() && (
+                      <div className="text-[11px] text-[#6B5B7B]">
+                        Email: {customerEmailInput.trim()}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddressStepError('');
+                      setModalStep('address');
+                    }}
+                    className="rounded-lg border border-[#D8B4FE] bg-[#FAF5FF] px-2.5 py-1 text-[11px] font-bold text-[#7E22CE] hover:border-[#9333EA] shrink-0 cursor-pointer"
+                  >
+                    Change
+                  </button>
+                </div>
+
+                {/* Item & Delivery Charge Summary Breakdown at Top */}
                 <div className="rounded-2xl border border-[#EFE2F5] bg-[#FDF9FC] p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-12 h-12 max-w-full rounded-xl border border-[#EFE2F5] bg-white overflow-hidden shrink-0 flex items-center justify-center">
-                        {selectedProduct.imageDataUrl ? (
+                        {(selectedProductImageUrl ||
+                          selectedProduct.imageDataUrls[0] ||
+                          selectedProduct.imageDataUrl) ? (
                           <img
                             src={getOptimizedMediaUrl(
-                              selectedProduct.imageDataUrl,
+                              selectedProductImageUrl ||
+                                selectedProduct.imageDataUrls[0] ||
+                                selectedProduct.imageDataUrl ||
+                                '',
                               'image'
                             )}
                             alt={selectedProduct.name}
@@ -4786,6 +5493,18 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                         <div className="text-xs text-[#6B5B7B] font-mono-num">
                           Qty: {parsedQty} ×{' '}
                           {formatCurrency(selectedProduct.price, sym)}
+                          {(selectedVariantSize ||
+                            parseProductVariantOptions(
+                              selectedProduct.size,
+                              selectedProduct.category
+                            )[0]) &&
+                            ` · Size: ${
+                              selectedVariantSize ||
+                              parseProductVariantOptions(
+                                selectedProduct.size,
+                                selectedProduct.category
+                              )[0]
+                            }`}
                         </div>
                       </div>
                     </div>
@@ -4803,7 +5522,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     </div>
                     <div className="flex justify-between text-[#5B4B6B]">
                       <span>
-                        Delivery Fee{' '}
+                        Delivery Charge{' '}
                         {hasActiveSubscription
                           ? '(Free Delivery Pass)'
                           : paymentMethod === 'COD'
@@ -4820,6 +5539,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           : hasActiveSubscription
                             ? '₹0 - Free Delivery Subscription Applied'
                             : 'FREE'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm font-bold text-[#1F122B] pt-1 border-t border-[#EFE2F5]">
+                      <span>Total Amount</span>
+                      <span className="font-mono-num text-[#7E22CE]">
+                        {formatCurrency(checkoutTotal, sym)}
                       </span>
                     </div>
                   </div>
@@ -4873,139 +5598,93 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   </div>
                 )}
 
-                {/* Customer Info (Pre-filled from logged-in account) */}
-                <div className="space-y-3">
-                  <div className="text-xs font-bold uppercase tracking-wide text-[#4A3B59]">
-                    Customer &amp; Delivery Details
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        Full Name <span className="text-[#DB2777]">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={customerName}
-                        onChange={(e) => setCustomerName(e.target.value)}
-                        placeholder="Your full name"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        Phone Number <span className="text-[#DB2777]">*</span>
-                      </label>
-                      <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
-                        <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
-                          +91
-                        </span>
-                        <input
-                          type="tel"
-                          inputMode="tel"
-                          required
-                          value={customerPhone}
-                          onChange={(e) => setCustomerPhone(e.target.value)}
-                          placeholder="9876543210"
-                          className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
-                        />
+                {/* Size & Quantity + Optional Order Note */}
+                <div className="rounded-2xl border border-[#EFE2F5] bg-white p-4 space-y-3">
+                  {(() => {
+                    const sizeOptions = parseProductVariantOptions(
+                      selectedProduct.size,
+                      selectedProduct.category
+                    );
+                    if (sizeOptions.length === 0) return null;
+                    return (
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-semibold text-[#4A3B59]">
+                          Selected Size
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {sizeOptions.map((opt) => {
+                            const active =
+                              (selectedVariantSize || sizeOptions[0]) === opt;
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() => setSelectedVariantSize(opt)}
+                                className={`rounded-lg border px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer ${
+                                  active
+                                    ? 'border-[#DB2777] bg-[#FDF2F8] text-[#9D174D]'
+                                    : 'border-[#E6D9EE] bg-[#FDFBFE] text-[#4A3B59] hover:border-[#9333EA]'
+                                }`}
+                              >
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
 
-                  <div>
-                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                      Full Delivery Address{' '}
-                      <span className="text-[#DB2777]">*</span>
-                    </label>
-                    <textarea
-                      rows={2}
-                      required
-                      value={customerAddress}
-                      onChange={(e) => setCustomerAddress(e.target.value)}
-                      placeholder="House/Flat No, Street, Landmark, Area..."
-                      className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        City
-                      </label>
-                      <input
-                        type="text"
-                        value={customerCity}
-                        onChange={(e) => setCustomerCity(e.target.value)}
-                        placeholder="City"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        State
-                      </label>
-                      <input
-                        type="text"
-                        value={customerState}
-                        onChange={(e) => setCustomerState(e.target.value)}
-                        placeholder="State"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        PIN Code
-                      </label>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold text-[#4A3B59]">
+                      Quantity
+                    </span>
+                    <div className="inline-flex items-center rounded-xl border border-[#E6D9EE] bg-[#FDFBFE]">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOrderQty(String(Math.max(1, parsedQty - 1)))
+                        }
+                        aria-label="Decrease quantity"
+                        className="p-2 text-[#5B4B6B] hover:text-[#1F122B] cursor-pointer"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
                       <input
                         type="text"
                         inputMode="numeric"
-                        value={customerPinCode}
+                        value={orderQty}
                         onChange={(e) =>
-                          setCustomerPinCode(
+                          setOrderQty(
                             sanitizeNumericInput(e.target.value, {
                               allowDecimal: false,
                             })
                           )
                         }
-                        placeholder="700001"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                        className="w-10 text-center text-sm font-mono-num font-bold text-[#1F122B] bg-transparent focus:outline-none"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setOrderQty(String(parsedQty + 1))}
+                        aria-label="Increase quantity"
+                        className="p-2 text-[#5B4B6B] hover:text-[#1F122B] cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        WhatsApp Number (if different)
-                      </label>
-                      <div className="flex items-stretch rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden focus-within:border-[#9333EA] focus-within:bg-white">
-                        <span className="inline-flex items-center px-3 bg-[#F6EFFA] border-r border-[#E6D9EE] text-xs font-mono-num font-bold text-[#6D28D9] select-none shrink-0">
-                          +91
-                        </span>
-                        <input
-                          type="tel"
-                          inputMode="tel"
-                          value={customerWhatsapp}
-                          onChange={(e) => setCustomerWhatsapp(e.target.value)}
-                          placeholder="Optional"
-                          className="w-full bg-transparent px-3 py-2 text-sm font-mono-num text-[#1F122B] focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                        Order Note / Size Note (optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={customerNote}
-                        onChange={(e) => setCustomerNote(e.target.value)}
-                        placeholder="e.g. Size M preferred"
-                        className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
-                      />
-                    </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
+                      Order Note (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={customerNote}
+                      onChange={(e) => setCustomerNote(e.target.value)}
+                      placeholder="Any delivery instruction or note..."
+                      className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3.5 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
+                    />
                   </div>
                 </div>
 
@@ -5265,28 +5944,6 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     </div>
                   )}
                 </div>
-
-                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#F4ECF8]">
-                  <button
-                    type="button"
-                    onClick={() => setModalStep('detail')}
-                    className="rounded-xl border border-[#E6D9EE] px-4 py-2.5 text-xs font-semibold text-[#5B4B6B] cursor-pointer"
-                  >
-                    Back
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={orderSubmitting || uploadingScreenshot}
-                    className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-6 py-2.5 text-xs sm:text-sm font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
-                  >
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>
-                      {orderSubmitting
-                        ? 'Placing Order...'
-                        : `Place Order (${formatCurrency(checkoutTotal, sym)})`}
-                    </span>
-                  </button>
-                </div>
               </form>
             )}
 
@@ -5414,13 +6071,21 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                   type="button"
                   disabled={addingToCart}
                   onClick={() =>
-                    handleAddToCartAction(
-                      {
-                        ...selectedProduct,
-                        size: selectedVariantSize || selectedProduct.size,
-                      },
-                      parsedQty
-                    )
+                    handleAddToCartAction(selectedProduct, parsedQty, {
+                      selectedSize:
+                        selectedVariantSize ||
+                        parseProductVariantOptions(
+                          selectedProduct.size,
+                          selectedProduct.category
+                        )[0] ||
+                        selectedProduct.size,
+                      selectedImageUrl:
+                        selectedProductImageUrl ||
+                        selectedProduct.imageDataUrls[0] ||
+                        selectedProduct.imageDataUrl ||
+                        '',
+                      redirectToCart: true,
+                    })
                   }
                   className="w-full min-w-0 h-12 inline-flex items-center justify-center gap-1.5 sm:gap-2 rounded-xl border-2 border-[#7E22CE] bg-white px-2.5 sm:px-4 text-xs sm:text-sm font-bold text-[#6D28D9] hover:bg-[#FAF5FF] active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
                 >
@@ -5470,6 +6135,57 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                     <span className="truncate">Buy Now</span>
                   </button>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Sticky Bottom Continue Bar on Select Delivery Address Step */}
+          {modalStep === 'address' && (
+            <div className="shrink-0 sticky bottom-0 z-30 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.08)] px-3 sm:px-6 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+              <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-[#6B5B7B]">Price</div>
+                  <div className="font-mono-num text-base font-bold text-[#7E22CE]">
+                    {formatCurrency(checkoutSubtotal, sym)}
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  form="buy-now-address-form"
+                  disabled={savingAddressContinue}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-6 h-12 text-xs sm:text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
+                >
+                  <span>
+                    {savingAddressContinue ? 'Saving...' : 'Continue'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Sticky Bottom Place Order Bar on Checkout Step */}
+          {modalStep === 'checkout' && (
+            <div className="shrink-0 sticky bottom-0 z-30 bg-white/95 backdrop-blur-md border-t border-[#EFE2F5] shadow-[0_-4px_20px_rgba(31,18,43,0.08)] px-3 sm:px-6 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+              <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-[#6B5B7B]">Total</div>
+                  <div className="font-mono-num text-base font-bold text-[#7E22CE]">
+                    {formatCurrency(checkoutTotal, sym)}
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  form="direct-order-checkout-form"
+                  disabled={orderSubmitting || uploadingScreenshot}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-6 h-12 text-xs sm:text-sm font-bold text-white shadow-sm hover:opacity-95 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
+                >
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>
+                    {orderSubmitting
+                      ? 'Placing Order...'
+                      : `Place Order (${formatCurrency(checkoutTotal, sym)})`}
+                  </span>
+                </button>
               </div>
             </div>
           )}

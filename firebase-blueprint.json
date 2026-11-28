@@ -397,6 +397,38 @@
         "expiresAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "userId", "userName", "userPhone", "planPrice", "durationDays", "paymentMethod", "paymentDetails", "status", "createdAt"]
+    },
+    "OrderExchangeRequest": {
+      "title": "OrderExchangeRequest",
+      "description": "Customer 8-day Exchange requests (up to 5 Cloudinary photos) and Help requests (with customer WhatsApp number) routed to Admin or Seller.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["exchange", "help"] },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 80 },
+        "orderCreatedAt": { "type": "string", "maxLength": 60 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "customerWhatsapp": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "productSize": { "type": "string", "maxLength": 100 },
+        "selectedImageUrl": { "type": "string", "maxLength": 1000 },
+        "sellerId": { "type": "string", "maxLength": 128 },
+        "sellerName": { "type": "string", "maxLength": 160 },
+        "routeTarget": { "type": "string", "enum": ["seller", "admin"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "photoUrls": { "type": "array" },
+        "status": { "type": "string", "enum": ["pending", "in_review", "approved", "resolved", "rejected"] },
+        "resolutionNote": { "type": "string", "maxLength": 1000 },
+        "handledBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 60 },
+        "updatedAt": { "type": "string", "maxLength": 60 }
+      },
+      "required": ["id", "type", "orderId", "orderNumber", "clientId", "customerName", "customerWhatsapp", "productName", "routeTarget", "reason", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -463,6 +495,10 @@
     "/subscriptions/{subscriptionId}": {
       "schema": { "$ref": "#/entities/DeliverySubscription" },
       "description": "₹99 / 28 Days Free Delivery subscriptions with online payment screenshot proof."
+    },
+    "/order_exchanges/{requestId}": {
+      "schema": { "$ref": "#/entities/OrderExchangeRequest" },
+      "description": "Customer 8-day exchange requests (up to 5 Cloudinary images) and WhatsApp help requests routed to seller or admin."
     }
   }
 }

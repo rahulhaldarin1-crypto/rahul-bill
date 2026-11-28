@@ -946,6 +946,182 @@ async function startServer(): Promise<void> {
     }
   });
 
+  app.post('/api/orders/confirm-email', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as { orderId?: unknown; eventType?: unknown };
+      const orderId = String(body.orderId || '').trim();
+      const eventType = body.eventType === 'confirmed' ? 'confirmed' : 'placed';
+
+      if (!/^[a-zA-Z0-9_-]{4,128}$/.test(orderId)) {
+        res.status(400).json({ error: 'Valid orderId is required.' });
+        return;
+      }
+
+      const smtpHost = String(process.env.SMTP_HOST || '').trim();
+      const smtpPort = Number(process.env.SMTP_PORT || 587);
+      const smtpUser = String(process.env.SMTP_USER || '').trim();
+      const smtpPass = String(process.env.SMTP_PASS || '').trim();
+      const fromEmail = String(process.env.OTP_FROM_EMAIL || smtpUser).trim();
+
+      if (!smtpHost || !smtpUser || !smtpPass || !fromEmail || !Number.isFinite(smtpPort)) {
+        res.json({ ok: true, skipped: true, reason: 'SMTP not configured' });
+        return;
+      }
+
+      const decodeRestVal = (val: Record<string, unknown> | undefined): unknown => {
+        if (!val || typeof val !== 'object') return undefined;
+        if ('stringValue' in val) return val.stringValue;
+        if ('integerValue' in val) return Number(val.integerValue);
+        if ('doubleValue' in val) return Number(val.doubleValue);
+        if ('booleanValue' in val) return Boolean(val.booleanValue);
+        if ('arrayValue' in val) {
+          const arr = val.arrayValue as { values?: Array<Record<string, unknown>> } | undefined;
+          return (arr?.values || []).map((v) => decodeRestVal(v));
+        }
+        if ('mapValue' in val) {
+          const out: Record<string, unknown> = {};
+          const m = val.mapValue as { fields?: Record<string, Record<string, unknown>> } | undefined;
+          for (const [k, v] of Object.entries(m?.fields || {})) {
+            out[k] = decodeRestVal(v);
+          }
+          return out;
+        }
+        return undefined;
+      };
+
+      const fetchDoc = async (colName: string, docId: string) => {
+        const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/${encodeURIComponent(colName)}/${encodeURIComponent(docId)}`;
+        const docRes = await fetch(url);
+        if (!docRes.ok) return null;
+        const json = (await docRes.json()) as { fields?: Record<string, Record<string, unknown>> };
+        if (!json.fields) return null;
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(json.fields)) {
+          out[k] = decodeRestVal(v);
+        }
+        return out;
+      };
+
+      const order = await fetchDoc('orders', orderId);
+      if (!order) {
+        res.status(404).json({ error: 'Order record not found.' });
+        return;
+      }
+
+      let recipientEmail = String(order.customerEmail || '').trim().toLowerCase();
+      const clientId = String(order.clientId || '').trim();
+      if (!recipientEmail && /^[a-zA-Z0-9_-]{4,128}$/.test(clientId)) {
+        const clientDoc = await fetchDoc('clients', clientId);
+        if (clientDoc) {
+          recipientEmail = String(clientDoc.email || '').trim().toLowerCase();
+        }
+      }
+
+      if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
+        res.json({ ok: true, skipped: true, reason: 'Customer email unavailable' });
+        return;
+      }
+
+      const orderNumber = String(order.orderNumber || orderId);
+      const customerName = String(order.customerName || 'Valued Customer');
+      const orderDate = String(order.orderDate || '');
+      const estDelivery = String(order.estimatedDeliveryDate || 'Within 5 days');
+      const paymentMethod =
+        order.paymentMethod === 'UPI' ? 'Online Payment (UPI)' : 'Cash on Delivery (COD)';
+      const totalAmount = Number(order.totalAmount || 0);
+      const deliveryCharge = Number(order.deliveryCharge || 0);
+
+      const rawItems = Array.isArray(order.items)
+        ? (order.items as Array<Record<string, unknown>>)
+        : [
+            {
+              productName: order.productName,
+              productSize: order.productSize,
+              quantity: order.quantity,
+              unitPrice: order.unitPrice,
+              lineTotal: order.subtotal ?? order.totalAmount,
+              selectedImageUrl: order.selectedImageUrl || order.imageDataUrl,
+            },
+          ];
+
+      const safeImg = (raw?: unknown) => {
+        const s = String(raw || '').trim();
+        try {
+          const u = new URL(s);
+          return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : '';
+        } catch {
+          return '';
+        }
+      };
+
+      const itemsHtml = rawItems
+        .map((it) => {
+          const title = escapeHtml(String(it.productName || 'Product'));
+          const sizeText = it.productSize ? `Size: ${escapeHtml(String(it.productSize))}` : '';
+          const qty = Math.max(1, Number(it.quantity || 1));
+          const lineTotal = Number(it.lineTotal || Number(it.unitPrice || 0) * qty);
+          const imgUrl = safeImg(it.selectedImageUrl || it.imageDataUrl);
+          return `<tr>
+            <td style="padding:10px 8px;border-bottom:1px solid #F4ECF8;width:64px;">
+              ${imgUrl ? `<img src="${escapeHtml(imgUrl)}" alt="${title}" width="56" height="56" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #E6D9EE;display:block;" />` : ''}
+            </td>
+            <td style="padding:10px 8px;border-bottom:1px solid #F4ECF8;font-size:13px;color:#1F122B;">
+              <div style="font-weight:bold;">${title}</div>
+              <div style="font-size:12px;color:#6B5B7B;">${[sizeText, `Qty: ${qty}`].filter(Boolean).join(' &middot; ')}</div>
+            </td>
+            <td style="padding:10px 8px;border-bottom:1px solid #F4ECF8;text-align:right;font-size:13px;font-weight:bold;color:#7E22CE;">₹${lineTotal.toLocaleString('en-IN')}</td>
+          </tr>`;
+        })
+        .join('');
+
+      const isConfirmedEvent = eventType === 'confirmed';
+      const subject = isConfirmedEvent
+        ? `Order Confirmed: ${orderNumber} — Glamour Galleria`
+        : `Order Confirmation: ${orderNumber} Received — Glamour Galleria`;
+      const headline = isConfirmedEvent
+        ? `Great news! Your order ${orderNumber} is confirmed.`
+        : `Thank you for your order! (${orderNumber})`;
+      const addressLine = [order.customerAddress, order.customerCity, order.customerState, order.customerPinCode]
+        .filter(Boolean)
+        .map((s) => String(s))
+        .join(', ');
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: { user: smtpUser, pass: smtpPass },
+      });
+
+      await transporter.sendMail({
+        from: `"Glamour Galleria" <${fromEmail}>`,
+        to: recipientEmail,
+        subject,
+        text: `Hello ${customerName},\n\n${headline}\nOrder #: ${orderNumber}\nDate: ${orderDate}\nEst. Delivery: ${estDelivery}\nPayment: ${paymentMethod}\nTotal: ₹${totalAmount}\nAddress: ${addressLine}`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto;padding:24px;border:1px solid #EFE2F5;border-radius:16px;background:#FDF9FC;color:#1F122B;">
+          <h2 style="margin:0 0 8px;color:#6D28D9;">Glamour Galleria</h2>
+          <p style="margin:0 0 12px;font-weight:bold;color:#DB2777;">${escapeHtml(headline)}</p>
+          <p style="font-size:14px;">Hello <strong>${escapeHtml(customerName)}</strong>,</p>
+          <div style="background:#fff;border:1px solid #EFE2F5;border-radius:12px;padding:14px;margin:14px 0;">
+            <div style="font-size:12px;color:#6B5B7B;margin-bottom:8px;"><strong>Order #:</strong> ${escapeHtml(orderNumber)} &middot; <strong>Date:</strong> ${escapeHtml(orderDate)} &middot; <strong>Est. Delivery:</strong> ${escapeHtml(estDelivery)}</div>
+            <table style="width:100%;border-collapse:collapse;">${itemsHtml}</table>
+            ${deliveryCharge > 0 ? `<div style="text-align:right;font-size:12px;color:#B45309;padding-top:8px;">COD Delivery Fee: + ₹${deliveryCharge.toLocaleString('en-IN')}</div>` : ''}
+            <div style="text-align:right;font-size:15px;font-weight:bold;padding-top:10px;border-top:1px solid #F4ECF8;margin-top:8px;">Total Amount: ₹${totalAmount.toLocaleString('en-IN')}</div>
+          </div>
+          <div style="background:#fff;border:1px solid #EFE2F5;border-radius:12px;padding:12px;font-size:12px;color:#4A3B59;">
+            <div><strong>Payment:</strong> ${escapeHtml(paymentMethod)}</div>
+            <div><strong>Address:</strong> ${escapeHtml(addressLine)}</div>
+          </div>
+        </div>`,
+      });
+
+      res.json({ ok: true, sentTo: recipientEmail, orderNumber });
+    } catch (err) {
+      console.error('Order confirmation email error:', err);
+      res.json({ ok: false, skipped: true });
+    }
+  });
+
   // OPEN ADMIN PANEL WORKSPACE ROUTES (No Login Gate)
   app.get('/api/workspace', (_req: Request, res: Response) => {
     const workspace = getActiveWorkspace();

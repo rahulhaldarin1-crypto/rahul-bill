@@ -219,14 +219,35 @@ export function isBangladeshClient(
   );
 }
 
-export function parseProductVariantOptions(size?: string): string[] {
+export function parseProductVariantOptions(
+  size?: string,
+  category?: string
+): string[] {
   const raw = String(size || '').trim();
   if (!raw) return [];
   const parts = raw
     .split(/[,/|]+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  return Array.from(new Set(parts));
+  const unique = Array.from(new Set(parts));
+  const normalizedCat = String(category || '').trim().toLowerCase();
+  const canonicalOrder =
+    normalizedCat === 'shoes'
+      ? ['6', '7', '8', '9', '10', '11', '12']
+      : ['XXS', 'S', 'M', 'L', 'XL', 'XXL', 'FREE'];
+  const canonicalMap = new Map(canonicalOrder.map((v) => [v.toUpperCase(), v]));
+  const matchedSet = new Set<string>();
+  const custom: string[] = [];
+  for (const part of unique) {
+    const up = part.toUpperCase();
+    if (canonicalMap.has(up)) {
+      matchedSet.add(canonicalMap.get(up)!);
+    } else {
+      custom.push(part);
+    }
+  }
+  const ordered = canonicalOrder.filter((v) => matchedSet.has(v));
+  return [...ordered, ...custom];
 }
 
 export function openExternalLink(url: string): void {

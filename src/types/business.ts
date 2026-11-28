@@ -18,7 +18,8 @@ export type AppRoute =
   | 'smart-offers-mail'
   | 'bangladesh-control'
   | 'subscriptions'
-  | 'boost-controller';
+  | 'boost-controller'
+  | 'order-exchanges';
 
 export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Transfer';
 
@@ -49,6 +50,7 @@ export type MediaEntityType =
   | 'highlight_payment'
   | 'boost_payment'
   | 'subscription_payment'
+  | 'order_exchange'
   | 'seller_kyc'
   | 'seller_profile'
   | 'customer_avatar'
@@ -244,10 +246,27 @@ export interface CustomerCartItem {
   originalPrice?: number;
   quantity: number;
   imageDataUrl?: string;
+  selectedImageUrl?: string;
   sellerId?: string;
   sellerName?: string;
   sourceUrl?: string;
   sourcePlatform?: ProductSourcePlatform;
+}
+
+export interface SavedAddressEntry {
+  id: string;
+  label?: string;
+  name: string;
+  fullName?: string;
+  phone: string;
+  whatsapp?: string;
+  email?: string;
+  address: string;
+  city: string;
+  state: string;
+  pinCode: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CategoryInterestEntry {
@@ -291,6 +310,7 @@ export interface Client {
   categoryInterests?: Record<string, CategoryInterestEntry>;
   totalCategoryOrders?: number;
   engagementProfile?: CustomerEngagementProfile;
+  savedAddresses?: SavedAddressEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -442,6 +462,7 @@ export interface CustomerOrderItem {
   originalPrice?: number;
   lineTotal: number;
   imageDataUrl?: string;
+  selectedImageUrl?: string;
   sellerId?: string;
   sellerName?: string;
   sourceUrl?: string;
@@ -455,6 +476,7 @@ export interface CustomerOrder {
   estimatedDeliveryDate?: string;
   clientId: string;
   customerName: string;
+  customerEmail?: string;
   customerPhone: string;
   normalizedPhone: string;
   customerWhatsapp: string;
@@ -469,6 +491,8 @@ export interface CustomerOrder {
   productCategory?: string;
   productSize?: string;
   productColor?: string;
+  selectedImageUrl?: string;
+  imageDataUrl?: string;
   sourceUrl?: string;
   sourcePlatform?: ProductSourcePlatform;
   quantity: number;
@@ -488,6 +512,41 @@ export interface CustomerOrder {
   invoiceNumber?: string;
   confirmedAt?: string;
   categoryOrdersTracked?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OrderExchangeRequestType = 'exchange' | 'help';
+export type OrderExchangeRequestStatus =
+  | 'pending'
+  | 'in_review'
+  | 'approved'
+  | 'resolved'
+  | 'rejected';
+
+export interface OrderExchangeRequest {
+  id: string;
+  type: OrderExchangeRequestType;
+  orderId: string;
+  orderNumber: string;
+  orderCreatedAt?: string;
+  clientId: string;
+  customerName: string;
+  customerPhone: string;
+  customerWhatsapp: string;
+  customerEmail?: string;
+  productId?: string;
+  productName: string;
+  productSize?: string;
+  selectedImageUrl?: string;
+  sellerId?: string;
+  sellerName?: string;
+  routeTarget: 'seller' | 'admin';
+  reason: string;
+  photoUrls?: string[];
+  status: OrderExchangeRequestStatus;
+  resolutionNote?: string;
+  handledBy?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -707,6 +766,7 @@ export interface WorkspaceData {
   sellerFollows?: SellerFollowRecord[];
   productReviews?: ProductReview[];
   subscriptions?: DeliverySubscription[];
+  orderExchanges?: OrderExchangeRequest[];
 }
 
 export type SentMailRecipientType =

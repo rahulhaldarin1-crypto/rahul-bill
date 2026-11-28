@@ -322,6 +322,32 @@ service cloud.firestore {
       allow delete: if isValidId(subscriptionId);
     }
 
+    function isValidOrderExchangeRequest(data) {
+      return data.keys().hasAll(['id', 'type', 'orderId', 'orderNumber', 'clientId', 'customerName', 'customerWhatsapp', 'productName', 'routeTarget', 'reason', 'status', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.type in ['exchange', 'help']
+        && data.orderId is string && data.orderId.size() > 0 && data.orderId.size() <= 128
+        && data.orderNumber is string && data.orderNumber.size() > 0 && data.orderNumber.size() <= 80
+        && data.clientId is string && data.clientId.size() > 0 && data.clientId.size() <= 128
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160
+        && data.customerWhatsapp is string && data.customerWhatsapp.size() >= 5 && data.customerWhatsapp.size() <= 40
+        && data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 200
+        && data.routeTarget in ['seller', 'admin']
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 2000
+        && (!('photoUrls' in data) || (data.photoUrls is list && data.photoUrls.size() <= 5))
+        && (!('resolutionNote' in data) || (data.resolutionNote is string && data.resolutionNote.size() <= 1000))
+        && data.status in ['pending', 'in_review', 'approved', 'resolved', 'rejected']
+        && data.createdAt is string && data.createdAt.size() <= 60
+        && data.updatedAt is string && data.updatedAt.size() <= 60;
+    }
+
+    match /order_exchanges/{requestId} {
+      allow list: if true;
+      allow get: if isValidId(requestId);
+      allow create, update: if isValidId(requestId) && isValidOrderExchangeRequest(request.resource.data);
+      allow delete: if isValidId(requestId);
+    }
+
     match /test/connection {
       allow get: if true;
     }

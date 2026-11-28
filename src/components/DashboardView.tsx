@@ -10,6 +10,7 @@ import {
   Mail,
   Megaphone,
   Package,
+  RefreshCw,
   Rocket,
   Settings,
   ShoppingBag,
@@ -60,9 +61,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     supportChats = [],
     subscriptions = [],
     boostRequests = [],
+    orderExchanges = [],
   } = workspace;
   const sym = settings.currencySymbol || '₹';
   const pendingOrdersCount = orders.filter((o) => o.status === 'Pending').length;
+  const openOrderExchangesCount = orderExchanges.filter(
+    (r) => r.status === 'pending' || r.status === 'in_review'
+  ).length;
   const pendingSubscriptionsCount = subscriptions.filter(
     (s) => resolveSubscriptionEffectiveStatus(s) === 'pending'
   ).length;
@@ -200,6 +205,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       accentBg: 'from-[#DB2777] to-[#E11D48]',
       accentText: pendingOrdersCount > 0 ? 'text-[#BE123C]' : 'text-[#7E22CE]',
       borderHover: 'hover:border-[#FB7185]',
+    },
+    {
+      route: 'order-exchanges',
+      title: 'Order Exchange & Help',
+      subtitle: 'Review 8-day exchange photos, customer WhatsApp numbers & help tickets',
+      metric:
+        openOrderExchangesCount > 0
+          ? `${openOrderExchangesCount} Open`
+          : `${orderExchanges.length} Requests`,
+      icon: RefreshCw,
+      accentBg: 'from-[#9333EA] to-[#DB2777]',
+      accentText:
+        openOrderExchangesCount > 0 ? 'text-[#BE123C]' : 'text-[#7E22CE]',
+      borderHover: 'hover:border-[#F472B6]',
     },
     {
       route: 'products',

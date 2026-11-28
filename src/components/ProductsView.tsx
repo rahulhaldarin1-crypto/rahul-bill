@@ -29,11 +29,14 @@ import {
 import {
   DEFAULT_PRODUCT_CATEGORY,
   downloadImageAsset,
+  formatCanonicalSizeString,
   formatCurrency,
   generateProductNumber,
+  getOrderedSizeOptionsForCategory,
   isProductHighlightActive,
   PRODUCT_CATEGORIES,
 } from '../utils/calculations';
+import { parseProductVariantOptions } from '../utils/region';
 import {
   getOptimizedMediaUrl,
   uploadMediaToCloudinary,
@@ -207,6 +210,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [stockQty, setStockQty] = useState('');
   const [lowStockAlert, setLowStockAlert] = useState(String(defaultLowStock || 5));
   const [size, setSize] = useState('');
+  const [sizeDropdownOpen, setSizeDropdownOpen] = useState(false);
   const [color, setColor] = useState('');
   const [description, setDescription] = useState('');
   const [isCustomCategory, setIsCustomCategory] = useState(false);
@@ -361,6 +365,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setStockQty('');
     setLowStockAlert(String(defaultLowStock || 5));
     setSize('');
+    setSizeDropdownOpen(false);
     setColor('');
     setDescription('');
     setIsCustomCategory(false);
@@ -415,6 +420,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setStockQty(formatNumericFieldValue(prod.stockQty));
     setLowStockAlert(formatNumericFieldValue(prod.lowStockAlert || defaultLowStock || 5));
     setSize(prod.size || '');
+    setSizeDropdownOpen(false);
     setColor(prod.color || '');
     setDescription(prod.description || '');
     setImportUrl(prod.sourceUrl || '');
@@ -763,7 +769,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
           highlightPlanTitle: editing?.highlightPlanTitle,
           stockQty: Math.max(0, Math.floor(Number(stockQty) || 0)),
           lowStockAlert: Math.max(1, Math.floor(Number(lowStockAlert) || 5)),
-          size: size.trim(),
+          size: (() => {
+            const parsed = parseProductVariantOptions(size, finalCategory);
+            return parsed.length > 0
+              ? formatCanonicalSizeString(finalCategory, parsed)
+              : size.trim();
+          })(),
           color: color.trim(),
           description: description.trim(),
           ...(finalSourceUrl ? { sourceUrl: finalSourceUrl } : {}),
@@ -1145,6 +1156,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 value={isCustomCategory ? CUSTOM_CATEGORY_VALUE : category}
                 onChange={(e) => {
                   const val = e.target.value;
+                  const nextCat = val === CUSTOM_CATEGORY_VALUE ? '' : val;
                   if (val === CUSTOM_CATEGORY_VALUE) {
                     setIsCustomCategory(true);
                     setCategory('');
@@ -1152,6 +1164,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                     setIsCustomCategory(false);
                     setCategory(val);
                   }
+                  const nextAllowed = getOrderedSizeOptionsForCategory(nextCat);
+                  const allowedSet = new Set<string>(nextAllowed);
+                  const kept = parseProductVariantOptions(size, category).filter((s) =>
+                    allowedSet.has(s.toUpperCase())
+                  );
+                  setSize(
+                    kept.length > 0 ? formatCanonicalSizeString(nextCat, kept) : ''
+                  );
                 }}
                 className={inputClass}
               >
@@ -1169,7 +1189,18 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                   type="text"
                   required
                   value={category}
-                  onChange={(e) => setCategory(e.target.value)}
+                  onChange={(e) => {
+                    const nextCat = e.target.value;
+                    setCategory(nextCat);
+                    const nextAllowed = getOrderedSizeOptionsForCategory(nextCat);
+                    const allowedSet = new Set<string>(nextAllowed);
+                    const kept = parseProductVariantOptions(size, category).filter((s) =>
+                      allowedSet.has(s.toUpperCase())
+                    );
+                    if (kept.length > 0) {
+                      setSize(formatCanonicalSizeString(nextCat, kept));
+                    }
+                  }}
                   placeholder="Type custom category name..."
                   className={`${inputClass} mt-2`}
                 />
@@ -1264,16 +1295,132 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                Size
-              </label>
-              <input
-                type="text"
-                value={size}
-                onChange={(e) => setSize(e.target.value)}
-                placeholder="M, L, XL or Free Size"
-                className={inputClass}
-              />
+              {(() => {
+                const orderedSizeOptions =
+                  getOrderedSizeOptionsForCategory(category);
+                const selectedSizesList = parseProductVariantOptions(
+                  size,
+                  category
+                );
+                const selectedUpperSet = new Set(
+                  selectedSizesList.map((s) => s.toUpperCase())
+                );
+                const allSelected =
+                  orderedSizeOptions.length > 0 &&
+                  orderedSizeOptions.every((opt) =>
+                    selectedUpperSet.has(opt.toUpperCase())
+                  );
+
+                const toggleSizeOption = (opt: string) => {
+                  const exists = selectedUpperSet.has(opt.toUpperCase());
+                  const next = exists
+                    ? selectedSizesList.filter(
+                        (s) => s.toUpperCase() !== opt.toUpperCase()
+                      )
+                    : [...selectedSizesList, opt];
+                  setSize(formatCanonicalSizeString(category, next));
+                };
+
+                const toggleSelectAllSizes = () => {
+                  if (allSelected) {
+                    setSize('');
+                  } else {
+                    setSize(
+                      formatCanonicalSizeString(category, [...orderedSizeOptions])
+                    );
+                  }
+                };
+
+                return (
+                  <div className="relative">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="block text-xs font-semibold text-[#4A3B59]">
+                        Sizes{' '}
+                        <span className="text-[10px] font-medium text-[#7E22CE]">
+                          (
+                          {category.trim().toLowerCase() === 'shoes'
+                            ? 'Shoes: 6–12'
+                            : 'XXS–FREE'}
+                          )
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={toggleSelectAllSizes}
+                        className="text-[11px] font-bold text-[#7E22CE] hover:text-[#5B21B6] cursor-pointer"
+                      >
+                        {allSelected ? 'Clear All' : 'Select All'}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSizeDropdownOpen((prev) => !prev)}
+                      className={`${inputClass} flex items-center justify-between gap-2 text-left cursor-pointer`}
+                    >
+                      <span
+                        className={`truncate ${
+                          selectedSizesList.length > 0
+                            ? 'text-[#1F122B] font-semibold'
+                            : 'text-[#9B8AA9]'
+                        }`}
+                      >
+                        {selectedSizesList.length > 0
+                          ? selectedSizesList.join(', ')
+                          : category.trim().toLowerCase() === 'shoes'
+                            ? 'Select Shoe Sizes (6, 7, 8...)'
+                            : 'Select Sizes (XXS, S, M, L...)'}
+                      </span>
+                      {sizeDropdownOpen ? (
+                        <ChevronUp className="w-4 h-4 text-[#7E22CE] shrink-0" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-[#7E22CE] shrink-0" />
+                      )}
+                    </button>
+                    {sizeDropdownOpen && (
+                      <div className="mt-1.5 rounded-xl border border-[#DFC7EE] bg-white p-2.5 shadow-sm space-y-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {orderedSizeOptions.map((opt) => {
+                            const active = selectedUpperSet.has(
+                              opt.toUpperCase()
+                            );
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() => toggleSizeOption(opt)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+                                  active
+                                    ? 'bg-[#7E22CE] text-white border-[#7E22CE] shadow-xs'
+                                    : 'bg-[#FAF5FF] text-[#4A3B59] border-[#E6D9EE] hover:border-[#9333EA]'
+                                }`}
+                              >
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-center justify-between pt-1.5 border-t border-[#F4ECF8] text-[11px] text-[#6B5B7B]">
+                          <span>
+                            Saved order:{' '}
+                            <strong className="text-[#1F122B]">
+                              {selectedSizesList.length > 0
+                                ? selectedSizesList.join(', ')
+                                : 'None'}
+                            </strong>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setSizeDropdownOpen(false)}
+                            className="font-bold text-[#7E22CE] hover:underline cursor-pointer"
+                          >
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div>

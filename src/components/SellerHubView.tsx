@@ -19,13 +19,16 @@ import {
   LogIn,
   LogOut,
   Mail,
+  MessageCircle,
   MessageSquare,
   Package,
   Phone,
   QrCode,
+  RefreshCw,
   Rocket,
   Save,
   ShieldAlert,
+  ShoppingBag,
   Sparkles,
   Star,
   Store,
@@ -34,13 +37,17 @@ import {
   UserCheck,
   Users,
   X,
+  XCircle,
 } from 'lucide-react';
 import {
   AdminPaymentSettings,
   BoostRequest,
   BusinessSettings,
   Client,
+  CustomerOrder,
   HighlightRequest,
+  OrderExchangeRequest,
+  OrderExchangeRequestStatus,
   Product,
   ProductReview,
   SellerApplication,
@@ -249,6 +256,27 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
+  // Seller Orders & Exchange / Help Requests
+  const [sellerOrders, setSellerOrders] = useState<CustomerOrder[]>([]);
+  const [sellerOrderExchanges, setSellerOrderExchanges] = useState<
+    OrderExchangeRequest[]
+  >([]);
+  const [exchangeNoteDrafts, setExchangeNoteDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [updatingExchangeId, setUpdatingExchangeId] = useState<string | null>(
+    null
+  );
+  const [exchangeNotice, setExchangeNotice] = useState('');
+  const [exchangeError, setExchangeError] = useState('');
+  const [copiedExchangeWaId, setCopiedExchangeWaId] = useState<string | null>(
+    null
+  );
+  const [exchangePreviewPhoto, setExchangePreviewPhoto] = useState<{
+    title: string;
+    url: string;
+  } | null>(null);
+
   type SellerLayer =
     | 'base'
     | 'apply'
@@ -401,11 +429,13 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
     return () => unsub();
   }, [sellerSessionId]);
 
-  // Subscribe to ONLY this authenticated approved seller's highlight & boost requests
+  // Subscribe to ONLY this authenticated approved seller's highlight, boost, orders & exchange/help requests
   useEffect(() => {
     if (!loggedInSeller || loggedInSeller.status !== 'approved') {
       setHighlightRequests([]);
       setBoostRequests([]);
+      setSellerOrders([]);
+      setSellerOrderExchanges([]);
       return;
     }
     const unsubHighlight = api.subscribeSellerHighlightRequests(
@@ -418,9 +448,21 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
       (list) => setBoostRequests(list),
       () => undefined
     );
+    const unsubOrders = api.subscribeSellerOrders(
+      loggedInSeller.id,
+      (list) => setSellerOrders(list),
+      () => undefined
+    );
+    const unsubExchanges = api.subscribeSellerOrderExchanges(
+      loggedInSeller.id,
+      (list) => setSellerOrderExchanges(list),
+      () => undefined
+    );
     return () => {
       unsubHighlight();
       unsubBoost();
+      unsubOrders();
+      unsubExchanges();
     };
   }, [loggedInSeller?.id, loggedInSeller?.status]);
 
@@ -2261,6 +2303,437 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
           </section>
         )}
 
+        {/* Seller Product Orders (with Customer Selected Image First & Exact Size) */}
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B]">
+              <ShoppingBag className="w-4 h-4 text-[#DB2777]" />
+              <span>Customer Orders ({sellerOrders.length})</span>
+            </div>
+            <span className="text-[11px] font-mono-num text-[#6B5B7B]">
+              Shows customer&apos;s selected variant photo first &amp; exact ordered size
+            </span>
+          </div>
+
+          {sellerOrders.length === 0 ? (
+            <p className="text-xs text-[#6B5B7B]">
+              No customer orders have been placed for your products yet.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {sellerOrders.slice(0, 30).map((ord) => {
+                const sellerItems =
+                  Array.isArray(ord.items) && ord.items.length > 0
+                    ? ord.items.filter(
+                        (it) =>
+                          it.sellerId === loggedInSeller.id ||
+                          (!it.sellerId && ord.sellerId === loggedInSeller.id)
+                      )
+                    : [
+                        {
+                          id: ord.id,
+                          productId: ord.productId,
+                          productName: ord.productName,
+                          productSize: ord.productSize,
+                          quantity: ord.quantity,
+                          unitPrice: ord.unitPrice,
+                          lineTotal: ord.subtotal ?? ord.totalAmount,
+                          imageDataUrl: ord.imageDataUrl,
+                          selectedImageUrl: ord.selectedImageUrl,
+                        },
+                      ];
+
+                return (
+                  <div
+                    key={ord.id}
+                    className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 space-y-3 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono-num font-bold text-[#6D28D9]">
+                          {ord.orderNumber}
+                        </span>
+                        <span className="text-[11px] text-[#8E7C9E] font-mono-num">
+                          {ord.orderDate || (ord.createdAt ? ord.createdAt.slice(0, 10) : '')}
+                        </span>
+                      </div>
+                      <span
+                        className={`rounded-lg border px-2 py-0.5 text-[11px] font-bold ${
+                          ord.status === 'Confirmed'
+                            ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                            : ord.status === 'Cancelled'
+                              ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
+                              : 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                        }`}
+                      >
+                        {ord.status}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {sellerItems.map((it) => {
+                        const matchedProd = sellerProducts.find(
+                          (p) =>
+                            (it.productId && p.id === it.productId) ||
+                            p.name.trim().toLowerCase() ===
+                              it.productName.trim().toLowerCase()
+                        );
+                        const thumb =
+                          it.selectedImageUrl ||
+                          it.imageDataUrl ||
+                          (ord.items && ord.items.length === 1
+                            ? ord.selectedImageUrl || ord.imageDataUrl
+                            : '') ||
+                          matchedProd?.imageDataUrls?.[0] ||
+                          matchedProd?.imageDataUrl ||
+                          '';
+                        const exactSize =
+                          it.productSize ||
+                          (!ord.items || ord.items.length <= 1 ? ord.productSize : '');
+
+                        return (
+                          <div
+                            key={it.id}
+                            className="flex items-start gap-2.5 rounded-xl border border-[#F4ECF8] bg-white p-2.5"
+                          >
+                            <div className="w-14 h-14 rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden shrink-0 flex items-center justify-center">
+                              {thumb ? (
+                                <img
+                                  src={getOptimizedMediaUrl(thumb, 'image')}
+                                  alt={it.productName}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <Package className="w-5 h-5 text-[#C084FC]" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0 space-y-1">
+                              <div className="font-bold text-[#1F122B] leading-snug">
+                                {it.productName}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#5B4B6B]">
+                                {exactSize && (
+                                  <span className="rounded border border-[#D8B4FE] bg-[#FAF5FF] px-1.5 py-0.5 font-mono-num font-bold text-[#6D28D9]">
+                                    Size: {exactSize}
+                                  </span>
+                                )}
+                                <span className="font-mono-num">
+                                  Qty: <strong>{it.quantity}</strong> ×{' '}
+                                  {formatCurrency(it.unitPrice, currencySymbol)} ={' '}
+                                  <strong className="text-[#7E22CE]">
+                                    {formatCurrency(it.lineTotal, currencySymbol)}
+                                  </strong>
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#5B4B6B] pt-1 border-t border-[#F4ECF8]">
+                      <span>
+                        Customer: <strong className="text-[#1F122B]">{ord.customerName}</strong>
+                      </span>
+                      <span className="font-mono-num">
+                        {[ord.customerCity, ord.customerState, ord.customerPinCode]
+                          .filter(Boolean)
+                          .join(', ')}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Seller Exchange & Help Requests (8-Day Exchanges & WhatsApp Help) */}
+        <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#1F122B]">
+              <RefreshCw className="w-4 h-4 text-[#7E22CE]" />
+              <span>
+                Exchange &amp; Customer Help Requests ({sellerOrderExchanges.length})
+              </span>
+            </div>
+            <span className="text-[11px] text-[#6B5B7B]">
+              Routed directly for your products · Includes Customer WhatsApp &amp; up to 5 photos
+            </span>
+          </div>
+
+          {exchangeNotice && (
+            <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-3.5 py-2 text-xs font-semibold text-[#15803D]">
+              {exchangeNotice}
+            </div>
+          )}
+          {exchangeError && (
+            <div className="rounded-xl border border-[#FECDD3] bg-[#FFF1F2] px-3.5 py-2 text-xs font-medium text-[#BE123C]">
+              {exchangeError}
+            </div>
+          )}
+
+          {sellerOrderExchanges.length === 0 ? (
+            <p className="text-xs text-[#6B5B7B]">
+              No exchange or help requests submitted for your products yet.
+            </p>
+          ) : (
+            <div className="space-y-3.5">
+              {sellerOrderExchanges.map((req) => {
+                const rawWa = String(req.customerWhatsapp || '').replace(/[^0-9]/g, '');
+                const waDigits = rawWa.length === 10 ? `91${rawWa}` : rawWa;
+                const waHref = waDigits
+                  ? `https://wa.me/${waDigits}?text=${encodeURIComponent(
+                      `Hello ${req.customerName}, regarding your order ${req.orderNumber} (${req.productName}): `
+                    )}`
+                  : null;
+                const noteDraft =
+                  exchangeNoteDrafts[req.id] !== undefined
+                    ? exchangeNoteDrafts[req.id]
+                    : req.resolutionNote || '';
+                const isUpdating = updatingExchangeId === req.id;
+
+                const updateSellerReqStatus = async (
+                  status: OrderExchangeRequestStatus
+                ) => {
+                  setExchangeError('');
+                  setExchangeNotice('');
+                  setUpdatingExchangeId(req.id);
+                  try {
+                    await api.updateOrderExchangeRequestStatus(
+                      req.id,
+                      status,
+                      noteDraft,
+                      loggedInSeller.name
+                    );
+                    setExchangeNotice(
+                      `Request for ${req.orderNumber} marked as ${status.replace('_', ' ')}.`
+                    );
+                  } catch (err) {
+                    setExchangeError(
+                      formatApiError(err, 'Could not update request status.')
+                    );
+                  } finally {
+                    setUpdatingExchangeId(null);
+                  }
+                };
+
+                return (
+                  <div
+                    key={req.id}
+                    className="rounded-2xl border border-[#EFE2F5] bg-[#FDFBFE] p-4 space-y-3 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase ${
+                            req.type === 'exchange'
+                              ? 'border-[#FBCFE8] bg-[#FDF2F8] text-[#9D174D]'
+                              : 'border-[#DDD6FE] bg-[#FAF5FF] text-[#6D28D9]'
+                          }`}
+                        >
+                          {req.type === 'exchange' ? 'Exchange' : 'Help Request'}
+                        </span>
+                        <span className="font-mono-num font-bold text-[#6D28D9]">
+                          {req.orderNumber}
+                        </span>
+                        <span className="text-[11px] text-[#8E7C9E] font-mono-num">
+                          {req.createdAt.slice(0, 10)}
+                        </span>
+                      </div>
+
+                      <span
+                        className={`rounded-lg border px-2 py-0.5 text-[11px] font-bold capitalize ${
+                          req.status === 'approved' || req.status === 'resolved'
+                            ? 'border-[#BBF7D0] bg-[#F0FDF4] text-[#15803D]'
+                            : req.status === 'rejected'
+                              ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]'
+                              : req.status === 'in_review'
+                                ? 'border-[#DDD6FE] bg-[#FAF5FF] text-[#6D28D9]'
+                                : 'border-[#FDE68A] bg-[#FFFBEB] text-[#B45309]'
+                        }`}
+                      >
+                        {req.status.replace('_', ' ')}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="flex items-start gap-2.5 rounded-xl border border-[#F4ECF8] bg-white p-2.5">
+                        <div className="w-12 h-12 rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden shrink-0 flex items-center justify-center">
+                          {req.selectedImageUrl ? (
+                            <img
+                              src={getOptimizedMediaUrl(req.selectedImageUrl, 'image')}
+                              alt={req.productName}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <Package className="w-4 h-4 text-[#C084FC]" />
+                          )}
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <div className="font-bold text-[#1F122B]">
+                            {req.productName}
+                          </div>
+                          {req.productSize && (
+                            <span className="inline-block rounded border border-[#D8B4FE] bg-[#FAF5FF] px-1.5 py-0.5 text-[10px] font-mono-num font-bold text-[#6D28D9]">
+                              Size: {req.productSize}
+                            </span>
+                          )}
+                          <p className="text-[#4A3B59] leading-relaxed">
+                            {req.reason}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-[#F4ECF8] bg-white p-2.5 space-y-2">
+                        <div className="font-bold text-[#1F122B]">
+                          Customer: {req.customerName}
+                        </div>
+                        <div className="rounded-lg border border-[#BBF7D0] bg-[#F0FDF4] p-2 flex flex-wrap items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 font-mono-num font-bold text-[#15803D]">
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>{req.customerWhatsapp}</span>
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  if (navigator.clipboard?.writeText) {
+                                    await navigator.clipboard.writeText(
+                                      req.customerWhatsapp
+                                    );
+                                  }
+                                  setCopiedExchangeWaId(req.id);
+                                  window.setTimeout(
+                                    () =>
+                                      setCopiedExchangeWaId((p) =>
+                                        p === req.id ? null : p
+                                      ),
+                                    1800
+                                  );
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 rounded-md border border-[#BBF7D0] bg-white px-2 py-0.5 text-[10px] font-semibold text-[#15803D] cursor-pointer"
+                            >
+                              {copiedExchangeWaId === req.id ? (
+                                <>
+                                  <Check className="w-3 h-3" />
+                                  <span>Copied!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>Copy</span>
+                                </>
+                              )}
+                            </button>
+                            {waHref && (
+                              <a
+                                href={waHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded-md bg-[#16A34A] px-2 py-0.5 text-[10px] font-bold text-white"
+                              >
+                                <MessageCircle className="w-3 h-3" />
+                                <span>WhatsApp</span>
+                              </a>
+                            )}
+                          </div>
+                        </div>
+
+                        {Array.isArray(req.photoUrls) && req.photoUrls.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {req.photoUrls.map((pUrl, pIdx) => (
+                              <button
+                                key={`${req.id}-simg-${pIdx}`}
+                                type="button"
+                                onClick={() =>
+                                  setExchangePreviewPhoto({
+                                    title: `${req.orderNumber} · Photo ${pIdx + 1}`,
+                                    url: pUrl,
+                                  })
+                                }
+                                className="w-11 h-11 rounded-lg border border-[#D8B4FE] overflow-hidden cursor-pointer"
+                              >
+                                <img
+                                  src={getOptimizedMediaUrl(pUrl, 'image')}
+                                  alt={`Proof ${pIdx + 1}`}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover"
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
+                      <input
+                        type="text"
+                        value={noteDraft}
+                        onChange={(e) =>
+                          setExchangeNoteDrafts((prev) => ({
+                            ...prev,
+                            [req.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="Reply note to customer..."
+                        className="flex-1 rounded-xl border border-[#E6D9EE] bg-white px-3 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                      />
+                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          disabled={isUpdating}
+                          onClick={() => void updateSellerReqStatus('in_review')}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#DDD6FE] bg-[#FAF5FF] px-2.5 py-1.5 text-[11px] font-semibold text-[#6D28D9] cursor-pointer disabled:opacity-55"
+                        >
+                          <Clock className="w-3 h-3" />
+                          <span>Review</span>
+                        </button>
+                        {req.type === 'exchange' && (
+                          <button
+                            type="button"
+                            disabled={isUpdating}
+                            onClick={() => void updateSellerReqStatus('approved')}
+                            className="inline-flex items-center gap-1 rounded-lg border border-[#BBF7D0] bg-[#F0FDF4] px-2.5 py-1.5 text-[11px] font-semibold text-[#15803D] cursor-pointer disabled:opacity-55"
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Approve</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isUpdating}
+                          onClick={() => void updateSellerReqStatus('resolved')}
+                          className="inline-flex items-center gap-1 rounded-lg bg-[#16A34A] px-2.5 py-1.5 text-[11px] font-semibold text-white cursor-pointer disabled:opacity-55"
+                        >
+                          <Check className="w-3 h-3" />
+                          <span>Resolve</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isUpdating}
+                          onClick={() => void updateSellerReqStatus('rejected')}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#FECDD3] bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#BE123C] cursor-pointer disabled:opacity-55"
+                        >
+                          <XCircle className="w-3 h-3" />
+                          <span>Reject</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
         {/* Customer Ratings & Reviews on Seller's Products */}
         <section className="rounded-3xl border border-[#EFE2F5] bg-white/95 backdrop-blur-md p-5 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F4ECF8] pb-3">
@@ -2988,6 +3461,38 @@ export const SellerHubView: React.FC<SellerHubViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        )}
+
+        {/* Exchange Photo Preview Modal */}
+        {exchangePreviewPhoto && (
+          <div
+            className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="w-full max-w-lg rounded-2xl border border-[#EFE2F5] bg-white p-4 space-y-3 shadow-2xl">
+              <div className="flex items-center justify-between gap-2 border-b border-[#F4ECF8] pb-2.5">
+                <div className="text-sm font-bold text-[#1F122B]">
+                  {exchangePreviewPhoto.title}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExchangePreviewPhoto(null)}
+                  className="p-1.5 rounded-lg text-[#6B5B7B] hover:bg-[#FAF5FC] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="max-h-[75vh] overflow-auto rounded-xl border border-[#EFE2F5] bg-[#FDFBFE] flex items-center justify-center p-2">
+                <img
+                  src={getOptimizedMediaUrl(exchangePreviewPhoto.url, 'image')}
+                  alt={exchangePreviewPhoto.title}
+                  referrerPolicy="no-referrer"
+                  className="max-w-full max-h-[68vh] object-contain rounded-lg"
+                />
+              </div>
+            </div>
           </div>
         )}
       </div>

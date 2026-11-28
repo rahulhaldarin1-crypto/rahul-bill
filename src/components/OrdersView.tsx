@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  Check,
   CheckCircle2,
+  Copy,
   CreditCard,
   Download,
   ExternalLink,
@@ -9,6 +11,7 @@ import {
   Image as ImageIcon,
   MapPin,
   Phone,
+  RefreshCw,
   Search,
   ShoppingBag,
   Trash2,
@@ -34,6 +37,8 @@ interface OrdersViewProps {
   invoices: Invoice[];
   products?: Product[];
   currencySymbol: string;
+  pendingExchangeHelpCount?: number;
+  onOpenExchangeHelp?: () => void;
   onBack: () => void;
   onConfirmOrder: (orderId: string) => Promise<void>;
   onCancelOrder: (orderId: string) => Promise<void>;
@@ -46,6 +51,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   invoices,
   products = [],
   currencySymbol,
+  pendingExchangeHelpCount = 0,
+  onOpenExchangeHelp,
   onBack,
   onConfirmOrder,
   onCancelOrder,
@@ -58,12 +65,38 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomerOrder | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [copiedFieldKey, setCopiedFieldKey] = useState<string | null>(null);
   const [previewScreenshot, setPreviewScreenshot] = useState<{
     orderNumber: string;
     customerName: string;
     dataUrl: string;
   } | null>(null);
   const [error, setError] = useState('');
+
+  const handleCopyField = async (key: string, value: string) => {
+    const clean = String(value || '').trim();
+    if (!clean) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(clean);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = clean;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopiedFieldKey(key);
+      window.setTimeout(() => {
+        setCopiedFieldKey((prev) => (prev === key ? null : prev));
+      }, 1800);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
 
   const counts = useMemo(() => {
     const pending = orders.filter((o) => o.status === 'Pending').length;
@@ -222,7 +255,22 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-3 text-xs font-semibold">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs font-semibold">
+          {onOpenExchangeHelp && (
+            <button
+              type="button"
+              onClick={onOpenExchangeHelp}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8B4FE] bg-[#FAF5FF] px-3 py-1.5 text-xs font-semibold text-[#6D28D9] hover:border-[#9333EA] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-[#DB2777]" />
+              <span>Order Exchange &amp; Help</span>
+              {pendingExchangeHelpCount > 0 && (
+                <span className="rounded-md bg-[#DB2777] px-1.5 py-0.5 text-[10px] font-bold text-white font-mono-num leading-none">
+                  {pendingExchangeHelpCount}
+                </span>
+              )}
+            </button>
+          )}
           <span className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-3 py-1.5 text-[#B45309] font-mono-num">
             {counts.pending} Pending
           </span>
@@ -368,10 +416,85 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       <Phone className="w-3.5 h-3.5 text-[#7E22CE] shrink-0" />
                       <span>{order.customerPhone}</span>
                     </div>
-                    <div className="flex items-start gap-1.5 text-[#5B4B6B]">
-                      <MapPin className="w-3.5 h-3.5 text-[#DB2777] shrink-0 mt-0.5" />
-                      <span className="leading-relaxed">{addressLine}</span>
-                    </div>
+                    {isPending ? (
+                      <div className="space-y-1.5 pt-1 border-t border-[#F4ECF8]">
+                        <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#6D28D9]">
+                          <MapPin className="w-3 h-3 text-[#DB2777]" />
+                          <span>Delivery Address Parts</span>
+                        </div>
+                        {(
+                          [
+                            {
+                              key: 'village',
+                              label: 'Village / Area',
+                              value: order.customerAddress || '',
+                            },
+                            {
+                              key: 'city',
+                              label: 'City',
+                              value: order.customerCity || '',
+                            },
+                            {
+                              key: 'state',
+                              label: 'State',
+                              value: order.customerState || '',
+                            },
+                            {
+                              key: 'pin',
+                              label: 'PIN Code',
+                              value: order.customerPinCode || '',
+                            },
+                          ] as const
+                        )
+                          .filter((part) => Boolean(part.value.trim()))
+                          .map((part) => {
+                            const fieldKey = `${order.id}-${part.key}`;
+                            const copied = copiedFieldKey === fieldKey;
+                            return (
+                              <div
+                                key={fieldKey}
+                                className="flex items-start justify-between gap-2 rounded-lg border border-[#EFE2F5] bg-white px-2.5 py-1.5"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[10px] font-semibold text-[#8E7C9E] uppercase">
+                                    {part.label}
+                                  </div>
+                                  <div
+                                    className={`text-[11px] font-semibold text-[#1F122B] break-words ${
+                                      part.key === 'pin' ? 'font-mono-num' : ''
+                                    }`}
+                                  >
+                                    {part.value}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleCopyField(fieldKey, part.value)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-[#E6D9EE] bg-[#FDFBFE] px-2 py-1 text-[10px] font-semibold text-[#6D28D9] hover:border-[#9333EA] shrink-0 cursor-pointer"
+                                  title={`Copy ${part.label}`}
+                                >
+                                  {copied ? (
+                                    <>
+                                      <Check className="w-3 h-3 text-[#15803D]" />
+                                      <span className="text-[#15803D]">Copied!</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3 h-3" />
+                                      <span>Copy</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-1.5 text-[#5B4B6B]">
+                        <MapPin className="w-3.5 h-3.5 text-[#DB2777] shrink-0 mt-0.5" />
+                        <span className="leading-relaxed">{addressLine}</span>
+                      </div>
+                    )}
                     {order.customerNote && (
                       <div className="text-[#6B5B7B] pt-1 border-t border-[#F4ECF8]">
                         Note: {order.customerNote}
@@ -392,8 +515,17 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           const thumb = resolveItemThumbnail(
                             it.productId,
                             it.productName,
-                            it.imageDataUrl
+                            it.selectedImageUrl ||
+                              it.imageDataUrl ||
+                              (order.items && order.items.length === 1
+                                ? order.selectedImageUrl || order.imageDataUrl
+                                : undefined)
                           );
+                          const exactSize =
+                            it.productSize ||
+                            (order.items && order.items.length === 1
+                              ? order.productSize
+                              : '');
                           return (
                             <div
                               key={it.id}
@@ -431,18 +563,21 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                                 )}
                               </div>
 
-                              <div className="flex-1 min-w-0 space-y-0.5">
+                              <div className="flex-1 min-w-0 space-y-1">
                                 <div className="font-bold text-[#1F122B] leading-snug">
                                   {it.productName}
                                 </div>
-                                <div className="text-[11px] text-[#6B5B7B]">
-                                  {[
-                                    it.productCategory,
-                                    it.productSize ? `Size: ${it.productSize}` : '',
-                                    it.productColor ? `Color: ${it.productColor}` : '',
-                                  ]
-                                    .filter(Boolean)
-                                    .join(' · ') || 'Standard'}
+                                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#6B5B7B]">
+                                  {it.productCategory && <span>{it.productCategory}</span>}
+                                  {exactSize && (
+                                    <span className="rounded border border-[#D8B4FE] bg-[#FAF5FF] px-1.5 py-0.5 font-mono-num font-bold text-[#6D28D9]">
+                                      Size: {exactSize}
+                                    </span>
+                                  )}
+                                  {it.productColor && <span>Color: {it.productColor}</span>}
+                                  {!it.productCategory && !exactSize && !it.productColor && (
+                                    <span>Standard</span>
+                                  )}
                                 </div>
                                 <div className="font-mono-num text-[11px] font-semibold text-[#1F122B]">
                                   {it.quantity} × {formatCurrency(it.unitPrice, currencySymbol)} ={' '}
@@ -459,7 +594,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       (() => {
                         const thumb = resolveItemThumbnail(
                           order.productId,
-                          order.productName
+                          order.productName,
+                          order.selectedImageUrl || order.imageDataUrl
                         );
                         return (
                           <div className="flex items-start gap-2.5">
@@ -498,14 +634,17 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               <div className="text-sm font-bold text-[#1F122B]">
                                 {order.productName}
                               </div>
-                              <div className="text-[#6B5B7B]">
-                                {[
-                                  order.productCategory,
-                                  order.productSize ? `Size: ${order.productSize}` : '',
-                                  order.productColor ? `Color: ${order.productColor}` : '',
-                                ]
-                                  .filter(Boolean)
-                                  .join(' · ') || 'Standard Variant'}
+                              <div className="flex flex-wrap items-center gap-1.5 text-[#6B5B7B]">
+                                {order.productCategory && <span>{order.productCategory}</span>}
+                                {order.productSize && (
+                                  <span className="rounded border border-[#D8B4FE] bg-[#FAF5FF] px-1.5 py-0.5 font-mono-num font-bold text-[#6D28D9]">
+                                    Size: {order.productSize}
+                                  </span>
+                                )}
+                                {order.productColor && <span>Color: {order.productColor}</span>}
+                                {!order.productCategory && !order.productSize && !order.productColor && (
+                                  <span>Standard Variant</span>
+                                )}
                               </div>
                               <div className="font-mono-num text-[#1F122B] pt-0.5">
                                 Qty: <strong>{order.quantity}</strong> ×{' '}

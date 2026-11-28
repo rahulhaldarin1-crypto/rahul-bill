@@ -13,12 +13,14 @@ import {
   Image as ImageIcon,
   LogOut,
   MapPin,
+  MessageCircle,
   Minus,
   Package,
   Phone,
   Plus,
   Printer,
   QrCode,
+  RefreshCw,
   ShieldCheck,
   ShoppingBag,
   ShoppingCart,
@@ -38,6 +40,8 @@ import {
   CustomerOrderPaymentMethod,
   DeliverySubscription,
   Invoice,
+  OrderExchangeRequest,
+  OrderExchangeRequestType,
   Product,
   SellerPublicPaymentProfile,
 } from '../types/business';
@@ -52,6 +56,7 @@ import {
   formatCurrency,
   getSubscriptionRemainingDays,
   hasActiveDeliverySubscription,
+  isOrderWithinExchangeWindow,
   normalizeAsianPhone,
   pickPrimaryCustomerSubscription,
   resolveEffectivePaymentDetails,
@@ -112,6 +117,7 @@ interface CustomerDashboardViewProps {
   onLogout: () => void;
   onClientUpdated: (client: Client) => void;
   onSubscriptionCreated?: (subscription: DeliverySubscription) => void;
+  onOpenProductFromOrder?: (productId?: string, productName?: string) => void;
 }
 
 export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
@@ -130,6 +136,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   onLogout,
   onClientUpdated,
   onSubscriptionCreated,
+  onOpenProductFromOrder,
 }) => {
   const { isBangladesh: geoBangladesh } = useBangladeshDetection();
   const bdConfig = resolveBangladeshConfig(settings);
@@ -189,6 +196,35 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
   const [subModalOpen, setSubModalOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const sheetRef = useRef<HTMLDivElement | null>(null);
+
+  // Order Exchange (8-day window, up to 5 Cloudinary photos) & Help Request
+  const [orderExchanges, setOrderExchanges] = useState<OrderExchangeRequest[]>([]);
+  const [activeRequestForm, setActiveRequestForm] = useState<{
+    orderId: string;
+    type: OrderExchangeRequestType;
+  } | null>(null);
+  const [reqWhatsapp, setReqWhatsapp] = useState(() =>
+    stripPlus91Prefix(displayCustomerPhone(client.whatsapp || client.mobile))
+  );
+  const [reqReason, setReqReason] = useState('');
+  const [reqPhotoUrls, setReqPhotoUrls] = useState<string[]>([]);
+  const [uploadingReqPhoto, setUploadingReqPhoto] = useState(false);
+  const [reqPhotoProgress, setReqPhotoProgress] = useState<number | null>(null);
+  const [submittingRequest, setSubmittingRequest] = useState(false);
+  const [reqError, setReqError] = useState('');
+  const [reqSuccess, setReqSuccess] = useState('');
+
+  useEffect(() => {
+    if (!client?.id) return;
+    const unsub = api.subscribeCustomerOrderExchanges(
+      client.id,
+      (list) => setOrderExchanges(list),
+      () => {
+        // non-blocking fallback
+      }
+    );
+    return () => unsub();
+  }, [client?.id]);
 
   useEffect(() => {
     const refresh = () => setNowMs(Date.now());
@@ -735,6 +771,13 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
             (p) =>
               p.name.trim().toLowerCase() === item.name.trim().toLowerCase()
           );
+      const chosenImg = String(
+        item.selectedImageUrl ||
+          item.imageDataUrl ||
+          matchedProduct?.imageDataUrls?.[0] ||
+          matchedProduct?.imageDataUrl ||
+          ''
+      ).trim();
       return {
         id: item.id,
         productId: item.productId,
@@ -750,7 +793,8 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
             ? Math.max(0, Number(item.originalPrice) || 0)
             : undefined,
         lineTotal: Number((qty * unitPrice).toFixed(2)),
-        imageDataUrl: item.imageDataUrl,
+        imageDataUrl: chosenImg,
+        selectedImageUrl: chosenImg || undefined,
         sellerId: matchedProduct?.sellerId || item.sellerId,
         sellerName: matchedProduct?.sellerName || item.sellerName,
         sourceUrl: matchedProduct?.sourceUrl || item.sourceUrl,
@@ -787,6 +831,7 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         customerName: nameCheck.cleaned,
         customerPhone: phoneCheck.formatted,
         customerWhatsapp: formattedWhatsapp,
+        customerEmail: client.email || undefined,
         customerAddress: checkoutAddress.trim(),
         customerCity: checkoutCity.trim(),
         customerState: checkoutState.trim(),
@@ -803,6 +848,9 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
         productCategory: first?.productCategory,
         productSize: first?.productSize,
         productColor: first?.productColor,
+        imageDataUrl: first?.selectedImageUrl || first?.imageDataUrl || undefined,
+        selectedImageUrl:
+          first?.selectedImageUrl || first?.imageDataUrl || undefined,
         sourceUrl: firstWithSource?.sourceUrl,
         sourcePlatform: firstWithSource?.sourcePlatform,
         quantity: totalUnits,
@@ -2119,6 +2167,12 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
             </h2>
           </div>
 
+          {reqSuccess && (
+            <div className="rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] px-4 py-2.5 text-xs font-semibold text-[#15803D]">
+              {reqSuccess}
+            </div>
+          )}
+
           {orders.length === 0 ? (
             <div className="py-12 text-center space-y-2">
               <Package className="w-9 h-9 text-[#C4B5D9] mx-auto" />
@@ -2145,6 +2199,11 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                   productId?: string;
                   productNumber?: string;
                   productName: string;
+                  productSize?: string;
+                  imageDataUrl?: string;
+                  selectedImageUrl?: string;
+                  sellerId?: string;
+                  sellerName?: string;
                   quantity: number;
                   unitPrice: number;
                   lineTotal: number;
@@ -2157,11 +2216,165 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                           productId: ord.productId,
                           productNumber: ord.productNumber,
                           productName: ord.productName,
+                          productSize: ord.productSize,
+                          imageDataUrl: ord.imageDataUrl,
+                          selectedImageUrl: ord.selectedImageUrl,
+                          sellerId: ord.sellerId,
                           quantity: ord.quantity,
                           unitPrice: ord.unitPrice,
                           lineTotal: ord.totalAmount,
                         },
                       ];
+
+                const canExchange = isOrderWithinExchangeWindow(
+                  ord.createdAt,
+                  ord.orderDate,
+                  ord.status
+                );
+                const ordRequests = orderExchanges.filter(
+                  (r) => r.orderId === ord.id
+                );
+                const isFormOpen = activeRequestForm?.orderId === ord.id;
+                const firstOrderedItem = itemsList[0];
+                const firstCatalogProd = products.find(
+                  (p) =>
+                    (firstOrderedItem?.productId &&
+                      p.id === firstOrderedItem.productId) ||
+                    p.name.trim().toLowerCase() ===
+                      String(firstOrderedItem?.productName || '')
+                        .trim()
+                        .toLowerCase()
+                );
+                const resolvedOrderSellerId = String(
+                  ord.sellerId ||
+                    firstOrderedItem?.sellerId ||
+                    firstCatalogProd?.sellerId ||
+                    ''
+                ).trim();
+                const resolvedOrderSellerName = String(
+                  firstOrderedItem?.sellerName ||
+                    firstCatalogProd?.sellerName ||
+                    ''
+                ).trim();
+
+                const openOrderActionForm = (type: OrderExchangeRequestType) => {
+                  setReqError('');
+                  setReqSuccess('');
+                  setReqReason('');
+                  setReqPhotoUrls([]);
+                  setReqWhatsapp(
+                    stripPlus91Prefix(
+                      displayCustomerPhone(
+                        ord.customerWhatsapp || client.whatsapp || client.mobile
+                      )
+                    )
+                  );
+                  setActiveRequestForm({ orderId: ord.id, type });
+                };
+
+                const handleUploadExchangePhotos = async (
+                  e: React.ChangeEvent<HTMLInputElement>
+                ) => {
+                  const files = Array.from(e.target.files || []);
+                  e.target.value = '';
+                  if (files.length === 0) return;
+                  const remaining = 5 - reqPhotoUrls.length;
+                  if (remaining <= 0) {
+                    setReqError('Maximum 5 exchange photos allowed.');
+                    return;
+                  }
+                  const toUpload = files.slice(0, remaining);
+                  setReqError('');
+                  setUploadingReqPhoto(true);
+                  setReqPhotoProgress(1);
+                  try {
+                    const urls: string[] = [];
+                    for (let i = 0; i < toUpload.length; i += 1) {
+                      const record = await uploadMediaToCloudinary(toUpload[i], {
+                        role: 'customer',
+                        appSource: 'glamour-galleria',
+                        folder: 'glamour-galleria/customer/order-exchanges',
+                        relatedEntityType: 'order_exchange',
+                        relatedEntityId: ord.id,
+                        uploadedByUid: client.id,
+                        allowedTypes: ['image'],
+                        onProgress: (pct) => {
+                          setReqPhotoProgress(
+                            Math.round(((i + pct / 100) / toUpload.length) * 100)
+                          );
+                        },
+                      });
+                      urls.push(record.secureUrl);
+                    }
+                    setReqPhotoUrls((prev) => [...prev, ...urls].slice(0, 5));
+                  } catch (err) {
+                    setReqError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Could not upload photo. Please choose JPG, PNG, or WEBP.'
+                    );
+                  } finally {
+                    setUploadingReqPhoto(false);
+                    setReqPhotoProgress(null);
+                  }
+                };
+
+                const handleSubmitOrderAction = async (e: React.FormEvent) => {
+                  e.preventDefault();
+                  if (!activeRequestForm || activeRequestForm.orderId !== ord.id)
+                    return;
+                  setReqError('');
+                  setReqSuccess('');
+                  setSubmittingRequest(true);
+                  try {
+                    const primaryThumb =
+                      firstOrderedItem?.selectedImageUrl ||
+                      firstOrderedItem?.imageDataUrl ||
+                      ord.selectedImageUrl ||
+                      ord.imageDataUrl ||
+                      firstCatalogProd?.imageDataUrls?.[0] ||
+                      firstCatalogProd?.imageDataUrl ||
+                      '';
+                    await api.createOrderExchangeRequest({
+                      type: activeRequestForm.type,
+                      orderId: ord.id,
+                      orderNumber: ord.orderNumber,
+                      clientId: client.id,
+                      customerName: ord.customerName || client.name,
+                      customerPhone: ord.customerPhone || client.mobile,
+                      customerWhatsapp: reqWhatsapp,
+                      customerEmail: ord.customerEmail || client.email,
+                      productId:
+                        firstOrderedItem?.productId || ord.productId,
+                      productName:
+                        firstOrderedItem?.productName || ord.productName,
+                      productSize:
+                        firstOrderedItem?.productSize || ord.productSize,
+                      selectedImageUrl: primaryThumb || undefined,
+                      sellerId: resolvedOrderSellerId || undefined,
+                      sellerName: resolvedOrderSellerName || undefined,
+                      reason: reqReason,
+                      photoUrls:
+                        activeRequestForm.type === 'exchange'
+                          ? reqPhotoUrls
+                          : [],
+                    });
+                    setActiveRequestForm(null);
+                    setReqReason('');
+                    setReqPhotoUrls([]);
+                    setReqSuccess(
+                      activeRequestForm.type === 'exchange'
+                        ? `Exchange request submitted for ${ord.orderNumber}.`
+                        : `Help request sent for ${ord.orderNumber}.`
+                    );
+                  } catch (err) {
+                    setReqError(
+                      formatApiError(err, 'Could not submit request. Please try again.')
+                    );
+                  } finally {
+                    setSubmittingRequest(false);
+                  }
+                };
 
                 return (
                   <div
@@ -2194,6 +2407,128 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         </span>
                       </div>
 
+                      {/* Clickable Product Image + Name above Order Details */}
+                      <div className="space-y-1.5 text-xs">
+                        {itemsList.map((it) => {
+                          const matchedCatalogProd = products.find(
+                            (p) =>
+                              (it.productId && p.id === it.productId) ||
+                              p.name.trim().toLowerCase() ===
+                                it.productName.trim().toLowerCase()
+                          );
+                          const itemThumb =
+                            it.selectedImageUrl ||
+                            it.imageDataUrl ||
+                            (itemsList.length === 1
+                              ? ord.selectedImageUrl || ord.imageDataUrl
+                              : '') ||
+                            matchedCatalogProd?.imageDataUrls?.[0] ||
+                            matchedCatalogProd?.imageDataUrl ||
+                            '';
+                          const resolvedProductNumber =
+                            it.productNumber ||
+                            (itemsList.length === 1 ? ord.productNumber : undefined) ||
+                            matchedCatalogProd?.productNumber;
+                          const copyKey = `${ord.id}-${it.id}`;
+                          const isCopied = copiedProductNumberKey === copyKey;
+                          const resolvedSize =
+                            it.productSize ||
+                            (itemsList.length === 1 ? ord.productSize : '');
+
+                          return (
+                            <div
+                              key={it.id}
+                              className="rounded-xl bg-white border border-[#F4ECF8] p-2.5 space-y-1.5"
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onOpenProductFromOrder?.(
+                                      it.productId || matchedCatalogProd?.id,
+                                      it.productName
+                                    )
+                                  }
+                                  className="w-12 h-12 rounded-lg border border-[#EFE2F5] bg-[#FDF9FC] overflow-hidden shrink-0 flex items-center justify-center cursor-pointer hover:border-[#9333EA]"
+                                  title="View product details"
+                                >
+                                  {itemThumb ? (
+                                    <img
+                                      src={getOptimizedMediaUrl(
+                                        itemThumb,
+                                        'image'
+                                      )}
+                                      alt={it.productName}
+                                      referrerPolicy="no-referrer"
+                                      className="w-full h-full object-cover block"
+                                    />
+                                  ) : (
+                                    <ShoppingBag className="w-5 h-5 text-[#C084FC]" />
+                                  )}
+                                </button>
+                                <div className="min-w-0 flex-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onOpenProductFromOrder?.(
+                                        it.productId || matchedCatalogProd?.id,
+                                        it.productName
+                                      )
+                                    }
+                                    className="text-left font-bold text-[#1F122B] hover:text-[#7E22CE] line-clamp-2 cursor-pointer"
+                                  >
+                                    {it.productName}
+                                  </button>
+                                  <div className="text-[11px] text-[#5B4B6B] font-mono-num mt-0.5 flex flex-wrap items-center gap-x-2">
+                                    <span>Qty: {it.quantity}</span>
+                                    {resolvedSize && (
+                                      <span className="font-semibold text-[#7E22CE]">
+                                        · Size: {resolvedSize}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <span className="font-mono-num font-bold text-[#1F122B] shrink-0">
+                                  {formatCurrency(it.lineTotal, sym)}
+                                </span>
+                              </div>
+                              {resolvedProductNumber && (
+                                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#5B4B6B]">
+                                  <span className="font-mono-num font-semibold text-[#6D28D9]">
+                                    Product No: {resolvedProductNumber}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void handleCopyProductNumber(
+                                        copyKey,
+                                        resolvedProductNumber
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-1 rounded-md border border-[#E6D9EE] bg-[#FDFBFE] px-1.5 py-0.5 text-[10px] font-semibold text-[#5B4B6B] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
+                                    title="Copy Product Number"
+                                  >
+                                    {isCopied ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-[#15803D]" />
+                                        <span className="text-[#15803D]">
+                                          Copied!
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>Copy</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div className="rounded-xl bg-white border border-[#F4ECF8] px-3 py-2">
                           <div className="text-[10px] text-[#6B5B7B] flex items-center gap-1">
@@ -2217,74 +2552,254 @@ export const CustomerDashboardView: React.FC<CustomerDashboardViewProps> = ({
                         </div>
                       </div>
 
-                      <div className="space-y-1.5 text-xs">
-                        {itemsList.map((it) => {
-                          const matchedCatalogProd = products.find(
-                            (p) =>
-                              (it.productId && p.id === it.productId) ||
-                              p.name.trim().toLowerCase() ===
-                                it.productName.trim().toLowerCase()
-                          );
-                          const resolvedProductNumber =
-                            it.productNumber ||
-                            (itemsList.length === 1 ? ord.productNumber : undefined) ||
-                            matchedCatalogProd?.productNumber;
-                          const copyKey = `${ord.id}-${it.id}`;
-                          const isCopied = copiedProductNumberKey === copyKey;
-                          return (
-                            <div key={it.id} className="space-y-0.5">
-                              <div className="flex items-center justify-between gap-2 text-[#1F122B]">
-                                <span className="truncate font-medium">
-                                  {it.productName} × {it.quantity}
+                      {(ord.deliveryCharge || 0) > 0 && (
+                        <div className="flex items-center justify-between gap-2 text-xs text-[#B45309] font-medium pt-0.5">
+                          <span>COD Delivery Charge</span>
+                          <span className="font-mono-num shrink-0">
+                            + {formatCurrency(ord.deliveryCharge || 0, sym)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Submitted Exchange & Help Requests for this Order */}
+                      {ordRequests.length > 0 && (
+                        <div className="space-y-1.5 pt-1">
+                          {ordRequests.map((reqItem) => (
+                            <div
+                              key={reqItem.id}
+                              className="rounded-xl border border-[#E6D9EE] bg-white p-2.5 text-[11px] space-y-1"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-[#6D28D9] uppercase">
+                                  {reqItem.type === 'exchange'
+                                    ? 'Exchange Request'
+                                    : 'Help Request'}
                                 </span>
-                                <span className="font-mono-num text-[#5B4B6B] shrink-0">
-                                  {formatCurrency(it.lineTotal, sym)}
+                                <span className="rounded-md border border-[#E6D9EE] bg-[#FAF5FF] px-1.5 py-0.5 text-[10px] font-bold capitalize text-[#4A3B59]">
+                                  {reqItem.status.replace('_', ' ')}
                                 </span>
                               </div>
-                              {resolvedProductNumber && (
-                                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#5B4B6B]">
-                                  <span className="font-mono-num font-semibold text-[#6D28D9]">
-                                    Product No: {resolvedProductNumber}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      void handleCopyProductNumber(
-                                        copyKey,
-                                        resolvedProductNumber
-                                      )
-                                    }
-                                    className="inline-flex items-center gap-1 rounded-md border border-[#E6D9EE] bg-white px-1.5 py-0.5 text-[10px] font-semibold text-[#5B4B6B] hover:border-[#9333EA] hover:text-[#7E22CE] cursor-pointer"
-                                    title="Copy Product Number"
-                                  >
-                                    {isCopied ? (
-                                      <>
-                                        <Check className="w-3 h-3 text-[#15803D]" />
-                                        <span className="text-[#15803D]">
-                                          Copied!
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="w-3 h-3" />
-                                        <span>Copy</span>
-                                      </>
-                                    )}
-                                  </button>
+                              <div className="text-[#4A3B59]">{reqItem.reason}</div>
+                              <div className="text-[10px] text-[#6B5B7B] font-mono-num">
+                                WhatsApp: {reqItem.customerWhatsapp}
+                              </div>
+                              {Array.isArray(reqItem.photoUrls) &&
+                                reqItem.photoUrls.length > 0 && (
+                                  <div className="flex flex-wrap gap-1 pt-0.5">
+                                    {reqItem.photoUrls.map((pUrl, pIdx) => (
+                                      <img
+                                        key={`${reqItem.id}-img-${pIdx}`}
+                                        src={getOptimizedMediaUrl(pUrl, 'image')}
+                                        alt={`Proof ${pIdx + 1}`}
+                                        referrerPolicy="no-referrer"
+                                        className="w-10 h-10 rounded-md object-cover border border-[#E6D9EE]"
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                              {reqItem.resolutionNote && (
+                                <div className="text-[10px] font-semibold text-[#15803D]">
+                                  Reply: {reqItem.resolutionNote}
                                 </div>
                               )}
                             </div>
-                          );
-                        })}
-                        {(ord.deliveryCharge || 0) > 0 && (
-                          <div className="flex items-center justify-between gap-2 text-[#B45309] font-medium pt-0.5">
-                            <span>COD Delivery Charge</span>
-                            <span className="font-mono-num shrink-0">
-                              + {formatCurrency(ord.deliveryCharge || 0, sym)}
-                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Exchange & Help Request Buttons + Inline Form */}
+                      {ord.status !== 'Cancelled' && (
+                        <div className="space-y-2 pt-1">
+                          <div className="flex flex-col gap-1.5">
+                            {canExchange ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  isFormOpen &&
+                                  activeRequestForm?.type === 'exchange'
+                                    ? setActiveRequestForm(null)
+                                    : openOrderActionForm('exchange')
+                                }
+                                className={`w-full inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
+                                  isFormOpen &&
+                                  activeRequestForm?.type === 'exchange'
+                                    ? 'border-[#DB2777] bg-[#FDF2F8] text-[#9D174D]'
+                                    : 'border-[#E6D9EE] bg-white text-[#6D28D9] hover:border-[#9333EA]'
+                                }`}
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                <span>Exchange (Within 8 Days)</span>
+                              </button>
+                            ) : (
+                              <div className="text-[11px] text-[#8E7C9E] font-medium px-1">
+                                8-day exchange window ended
+                              </div>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                isFormOpen && activeRequestForm?.type === 'help'
+                                  ? setActiveRequestForm(null)
+                                  : openOrderActionForm('help')
+                              }
+                              className={`w-full inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
+                                isFormOpen && activeRequestForm?.type === 'help'
+                                  ? 'border-[#7E22CE] bg-[#FAF5FF] text-[#6D28D9]'
+                                  : 'border-[#E6D9EE] bg-white text-[#4A3B59] hover:border-[#9333EA]'
+                              }`}
+                            >
+                              <MessageCircle className="w-3.5 h-3.5 text-[#DB2777]" />
+                              <span>Help Request</span>
+                            </button>
                           </div>
-                        )}
-                      </div>
+
+                          {isFormOpen && activeRequestForm && (
+                            <form
+                              onSubmit={handleSubmitOrderAction}
+                              className="rounded-xl border border-[#DFC7EE] bg-white p-3 space-y-2.5 text-xs"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-[#1F122B]">
+                                  {activeRequestForm.type === 'exchange'
+                                    ? 'Request Product Exchange'
+                                    : 'Send Order Help Request'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveRequestForm(null)}
+                                  className="text-[#6B5B7B] hover:text-[#1F122B] cursor-pointer"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+
+                              {reqError && (
+                                <div className="rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-2.5 py-1.5 text-[11px] text-[#BE123C]">
+                                  {reqError}
+                                </div>
+                              )}
+
+                              <div>
+                                <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
+                                  Your WhatsApp Number{' '}
+                                  <span className="text-[#DB2777]">*</span>
+                                </label>
+                                <div className="flex items-stretch rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] overflow-hidden">
+                                  <span className="inline-flex items-center px-2.5 bg-[#F6EFFA] border-r border-[#E6D9EE] text-[11px] font-mono-num font-bold text-[#6D28D9]">
+                                    +91
+                                  </span>
+                                  <input
+                                    type="tel"
+                                    required
+                                    value={reqWhatsapp}
+                                    onChange={(e) =>
+                                      setReqWhatsapp(e.target.value)
+                                    }
+                                    placeholder="WhatsApp number"
+                                    className="w-full bg-transparent px-2.5 py-1.5 text-xs font-mono-num text-[#1F122B] focus:outline-none"
+                                  />
+                                </div>
+                              </div>
+
+                              <div>
+                                <label className="block text-[11px] font-semibold text-[#4A3B59] mb-1">
+                                  {activeRequestForm.type === 'exchange'
+                                    ? 'Exchange Reason / Issue'
+                                    : 'Describe Your Help Issue'}{' '}
+                                  <span className="text-[#DB2777]">*</span>
+                                </label>
+                                <textarea
+                                  rows={2}
+                                  required
+                                  value={reqReason}
+                                  onChange={(e) => setReqReason(e.target.value)}
+                                  placeholder={
+                                    activeRequestForm.type === 'exchange'
+                                      ? 'Size mismatch, damaged item, wrong color...'
+                                      : 'Describe your question or issue with this order...'
+                                  }
+                                  className="w-full rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] px-2.5 py-1.5 text-xs text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
+                                />
+                              </div>
+
+                              {activeRequestForm.type === 'exchange' && (
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-[11px]">
+                                    <span className="font-semibold text-[#4A3B59]">
+                                      Upload Photos (Up to 5)
+                                    </span>
+                                    <span className="font-mono-num text-[#6B5B7B]">
+                                      {reqPhotoUrls.length} / 5
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {reqPhotoUrls.map((url, pIdx) => (
+                                      <div
+                                        key={`${url}-${pIdx}`}
+                                        className="relative w-12 h-12 rounded-lg border border-[#E6D9EE] overflow-hidden"
+                                      >
+                                        <img
+                                          src={getOptimizedMediaUrl(
+                                            url,
+                                            'image'
+                                          )}
+                                          alt={`Exchange photo ${pIdx + 1}`}
+                                          referrerPolicy="no-referrer"
+                                          className="w-full h-full object-cover"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setReqPhotoUrls((prev) =>
+                                              prev.filter((_, i) => i !== pIdx)
+                                            )
+                                          }
+                                          className="absolute top-0 right-0 bg-black/70 text-white p-0.5 rounded-bl-md cursor-pointer"
+                                        >
+                                          <X className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                    {reqPhotoUrls.length < 5 && (
+                                      <label className="inline-flex items-center gap-1 rounded-lg border border-dashed border-[#C084FC] bg-[#FAF5FF] px-2.5 py-2 text-[11px] font-semibold text-[#6D28D9] cursor-pointer hover:border-[#9333EA]">
+                                        <Camera className="w-3.5 h-3.5" />
+                                        <span>
+                                          {uploadingReqPhoto
+                                            ? `Uploading${reqPhotoProgress !== null ? ` ${reqPhotoProgress}%` : ''}...`
+                                            : 'Add Photo'}
+                                        </span>
+                                        <input
+                                          type="file"
+                                          accept="image/*"
+                                          multiple
+                                          disabled={uploadingReqPhoto}
+                                          onChange={handleUploadExchangePhotos}
+                                          className="sr-only"
+                                        />
+                                      </label>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              <button
+                                type="submit"
+                                disabled={
+                                  submittingRequest || uploadingReqPhoto
+                                }
+                                className="w-full rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] py-2 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-60"
+                              >
+                                {submittingRequest
+                                  ? 'Submitting...'
+                                  : activeRequestForm.type === 'exchange'
+                                    ? 'Submit Exchange Request'
+                                    : 'Submit Help Request'}
+                              </button>
+                            </form>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#F4ECF8] text-xs">

@@ -29,6 +29,7 @@ import { DashboardView } from './components/DashboardView';
 import { DeliveryTrackingView } from './components/DeliveryTrackingView';
 import { HelpChatAdminView } from './components/HelpChatAdminView';
 import { NewClientView } from './components/NewClientView';
+import { OrderExchangesAdminView } from './components/OrderExchangesAdminView';
 import { OrdersView } from './components/OrdersView';
 import { PaymentHistoryView } from './components/PaymentHistoryView';
 import { ProductsView } from './components/ProductsView';
@@ -54,6 +55,7 @@ import {
   HighlightConfig,
   HighlightRequestStatus,
   Invoice,
+  OrderExchangeRequestStatus,
   PaymentMethod,
   Product,
   ProductReview,
@@ -1023,6 +1025,39 @@ export default function App() {
     showToast('Order deleted.');
   };
 
+  const handleUpdateOrderExchangeStatus = async (
+    requestId: string,
+    status: OrderExchangeRequestStatus,
+    resolutionNote?: string
+  ) => {
+    const updated = await api.updateOrderExchangeRequestStatus(
+      requestId,
+      status,
+      resolutionNote,
+      auth.currentUser?.email || 'Admin'
+    );
+    setWorkspace((prev) => ({
+      ...prev,
+      orderExchanges: (prev.orderExchanges || []).map((r) =>
+        r.id === updated.id ? updated : r
+      ),
+    }));
+    showToast(
+      `${updated.type === 'exchange' ? 'Exchange' : 'Help'} request for ${updated.orderNumber} marked as ${status.replace('_', ' ')}.`
+    );
+  };
+
+  const handleDeleteOrderExchange = async (requestId: string) => {
+    await api.deleteOrderExchangeRequest(requestId);
+    setWorkspace((prev) => ({
+      ...prev,
+      orderExchanges: (prev.orderExchanges || []).filter(
+        (r) => r.id !== requestId
+      ),
+    }));
+    showToast('Request deleted.');
+  };
+
   const handleUpdateSellerStatus = async (
     applicationId: string,
     status: SellerAccountStatus,
@@ -1304,6 +1339,9 @@ export default function App() {
     (sum, t) => sum + Math.max(0, Number(t.unreadForAdmin) || 0),
     0
   );
+  const openOrderExchangesCount = (workspace.orderExchanges || []).filter(
+    (r) => r.status === 'pending' || r.status === 'in_review'
+  ).length;
 
   return (
     <div className="relative min-h-screen w-full max-w-full overflow-x-clip flex flex-col text-[#1F122B]">
@@ -1581,11 +1619,24 @@ export default function App() {
             invoices={workspace.invoices}
             products={workspace.products}
             currencySymbol={currencySymbol}
+            pendingExchangeHelpCount={openOrderExchangesCount}
+            onOpenExchangeHelp={() => navigateTo('order-exchanges')}
             onBack={goBack}
             onConfirmOrder={handleConfirmCustomerOrder}
             onCancelOrder={handleCancelCustomerOrder}
             onDeleteOrder={handleDeleteCustomerOrder}
             onOpenInvoice={(inv) => navigateTo('client-bill', { editInvoice: inv })}
+          />
+        )}
+
+        {route === 'order-exchanges' && (
+          <OrderExchangesAdminView
+            requests={workspace.orderExchanges || []}
+            orders={workspace.orders || []}
+            currencySymbol={currencySymbol}
+            onBack={goBack}
+            onUpdateStatus={handleUpdateOrderExchangeStatus}
+            onDelete={handleDeleteOrderExchange}
           />
         )}
 

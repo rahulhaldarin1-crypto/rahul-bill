@@ -37,11 +37,15 @@ import {
   Invoice,
   InvoiceLineItem,
   MediaResourceType,
+  OrderExchangeRequest,
+  OrderExchangeRequestStatus,
+  OrderExchangeRequestType,
   PaymentMethod,
   PaymentRecord,
   Product,
   ProductReview,
   PublicCustomerLookupResult,
+  SavedAddressEntry,
   SellerAccountStatus,
   SellerApplication,
   SellerApprovalStatus,
@@ -79,6 +83,7 @@ import {
   getCustomerReferralCode,
   hasActiveDeliverySubscription,
   HIGHLIGHT_UPI_ID,
+  isOrderWithinExchangeWindow,
   isProductHighlightActive,
   mergeAdminPaymentSettings,
   mergeBusinessSettings,
@@ -128,8 +133,25 @@ const SUPPORT_CHATS_COL = 'support_chats';
 const EMAIL_OTPS_COL = 'email_otps';
 const MEDIA_RECORDS_COL = 'media_records';
 const SUBSCRIPTIONS_COL = 'subscriptions';
+const ORDER_EXCHANGES_COL = 'order_exchanges';
 const SENT_MAIL_BOX_DOC = 'sent_mail_box';
 const SENT_MAIL_LOCAL_KEY = 'gg_admin_sent_mail_box_v1';
+
+async function triggerOrderConfirmationEmail(
+  orderId: string,
+  event: 'placed' | 'confirmed'
+): Promise<void> {
+  if (!orderId || typeof fetch !== 'function') return;
+  try {
+    await fetch(resolveApiUrl('/api/orders/confirm-email'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId, event }),
+    });
+  } catch {
+    // Non-blocking confirmation email dispatch
+  }
+}
 
 function readLocalSentMails(): SentMailRecord[] {
   if (typeof window === 'undefined') return [];
@@ -726,6 +748,7 @@ export const firestoreService = {
       sellerFollows,
       productReviews,
       subscriptions,
+      orderExchanges,
     ] = await Promise.all([
       fetchCol<Client>(CLIENTS_COL),
       fetchCol<Product>(PRODUCTS_COL),
@@ -740,6 +763,7 @@ export const firestoreService = {
       fetchColSafe<SellerFollowRecord>(SELLER_FOLLOWS_COL),
       fetchColSafe<ProductReview>(PRODUCT_REVIEWS_COL),
       fetchColSafe<DeliverySubscription>(SUBSCRIPTIONS_COL),
+      fetchColSafe<OrderExchangeRequest>(ORDER_EXCHANGES_COL),
     ]);
 
     return {
@@ -758,6 +782,7 @@ export const firestoreService = {
       sellerFollows,
       productReviews,
       subscriptions,
+      orderExchanges,
     };
   },
 
@@ -979,6 +1004,21 @@ export const firestoreService = {
       }
     );
 
+    const unsubOrderExchanges = onSnapshot(
+      collection(db, ORDER_EXCHANGES_COL),
+      (snap) => {
+        const orderExchanges = sortDescByCreated(
+          snap.docs.map((d) => d.data() as OrderExchangeRequest)
+        );
+        onUpdate((prev) => ({ ...prev, orderExchanges }));
+      },
+      (err) => {
+        if (!isPermissionDeniedError(err)) {
+          reportError(OperationType.LIST, ORDER_EXCHANGES_COL, err);
+        }
+      }
+    );
+
     return () => {
       unsubSettings();
       unsubPaymentSettings();
@@ -995,6 +1035,7 @@ export const firestoreService = {
       unsubSellerFollows();
       unsubProductReviews();
       unsubSubscriptions();
+      unsubOrderExchanges();
     };
   },
 
@@ -2745,6 +2786,113 @@ export const firestoreService = {
     }
   },
 
+  async saveCustomerAddressBookEntry(
+    clientId: string,
+    payload: {
+      label?: string;
+      fullName: string;
+      phone: string;
+      whatsapp?: string;
+      email?: string;
+      address: string;
+      city?: string;
+      state?: string;
+      pinCode?: string;
+      setPrimary?: boolean;
+    }
+  ): Promise<Client> {
+    const cleanAddress = String(payload.address || '').trim();
+    if (!cleanAddress) {
+      throw new Error('Please enter your delivery address.');
+    }
+    const nameCheck = validateEnglishName(payload.fullName || '', 'Full Name');
+    if (!nameCheck.valid) throw new Error(nameCheck.error);
+    const phoneCheck = normalizeAsianPhone(payload.phone || '');
+    if (!phoneCheck.valid) {
+      throw new Error(phoneCheck.error || 'Please enter a valid mobile number.');
+    }
+    const rawEmail = String(payload.email || '').trim().toLowerCase();
+    let cleanEmail: string | undefined;
+    if (rawEmail) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+        throw new Error('Please enter a valid Gmail/Email address.');
+      }
+      cleanEmail = rawEmail;
+    }
+    let cleanWhatsapp = phoneCheck.formatted;
+    const rawWa = String(payload.whatsapp || '').trim();
+    if (rawWa) {
+      const waCheck = normalizeAsianPhone(rawWa);
+      if (waCheck.valid) cleanWhatsapp = waCheck.formatted;
+    }
+
+    const ref = doc(db, CLIENTS_COL, clientId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Customer account not found.');
+      const existing = snap.data() as Client;
+      const now = new Date().toISOString();
+      const cleanCity = String(payload.city || '').trim();
+      const cleanState = String(payload.state || '').trim();
+      const cleanPin = String(payload.pinCode || '').trim();
+
+      const newEntry: SavedAddressEntry = stripUndefinedDeep({
+        id: `addr-${crypto.randomUUID()}`,
+        label: String(payload.label || '').trim() || undefined,
+        name: nameCheck.cleaned,
+        fullName: nameCheck.cleaned,
+        phone: phoneCheck.formatted,
+        whatsapp: cleanWhatsapp,
+        email: cleanEmail || existing.email,
+        address: cleanAddress,
+        city: cleanCity,
+        state: cleanState,
+        pinCode: cleanPin,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const dedupeKey = (a: {
+        address?: string;
+        city?: string;
+        pinCode?: string;
+        phone?: string;
+      }) =>
+        `${String(a.address || '').trim().toLowerCase()}|${String(a.city || '')
+          .trim()
+          .toLowerCase()}|${String(a.pinCode || '').trim()}|${String(a.phone || '').trim()}`;
+
+      const existingBook = Array.isArray(existing.savedAddresses)
+        ? existing.savedAddresses
+        : [];
+      const mergedBook = [
+        newEntry,
+        ...existingBook.filter((item) => dedupeKey(item) !== dedupeKey(newEntry)),
+      ].slice(0, 10);
+
+      const updated: Client = stripUndefinedDeep({
+        ...existing,
+        email: existing.email || cleanEmail,
+        address: payload.setPrimary || !existing.address ? cleanAddress : existing.address,
+        city: payload.setPrimary || !existing.city ? cleanCity : existing.city,
+        state: payload.setPrimary || !existing.state ? cleanState : existing.state,
+        pinCode: payload.setPrimary || !existing.pinCode ? cleanPin : existing.pinCode,
+        whatsapp:
+          payload.setPrimary || !existing.whatsapp ? cleanWhatsapp : existing.whatsapp,
+        savedAddresses: mergedBook,
+        updatedAt: now,
+      });
+
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Customer account not found.') {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.UPDATE, `${CLIENTS_COL}/${clientId}`);
+    }
+  },
+
   async trackCustomerCategoryActivity(
     clientId: string,
     payload: {
@@ -2783,9 +2931,11 @@ export const firestoreService = {
   async createCustomerOrder(payload: {
     clientId?: string;
     clearCart?: boolean;
+    saveAddressToAccount?: boolean;
     customerName: string;
     customerPhone: string;
     customerWhatsapp?: string;
+    customerEmail?: string;
     customerAddress: string;
     customerCity?: string;
     customerState?: string;
@@ -2797,6 +2947,8 @@ export const firestoreService = {
     productCategory?: string;
     productSize?: string;
     productColor?: string;
+    imageDataUrl?: string;
+    selectedImageUrl?: string;
     sourceUrl?: string;
     sourcePlatform?: Product['sourcePlatform'];
     quantity: number;
@@ -2849,6 +3001,9 @@ export const firestoreService = {
               it.originalPrice !== undefined && it.originalPrice > unitPrice
                 ? Math.max(0, Number(safeNum(it.originalPrice, 0).toFixed(2)))
                 : undefined;
+            const chosenImage = String(
+              it.selectedImageUrl || it.imageDataUrl || ''
+            ).trim();
             return stripUndefinedDeep({
               id: String(it.id || `ord-item-${Date.now()}-${idx}`),
               productId: it.productId ? String(it.productId) : '',
@@ -2863,7 +3018,8 @@ export const firestoreService = {
               unitPrice,
               originalPrice,
               lineTotal: Number((qty * unitPrice).toFixed(2)),
-              imageDataUrl: it.imageDataUrl ? String(it.imageDataUrl) : '',
+              imageDataUrl: chosenImage,
+              selectedImageUrl: chosenImage || undefined,
               sellerId: it.sellerId ? String(it.sellerId) : '',
               sellerName: it.sellerName ? String(it.sellerName).trim() : '',
               sourceUrl: it.sourceUrl ? String(it.sourceUrl).trim() : undefined,
@@ -2871,31 +3027,38 @@ export const firestoreService = {
             });
           })
         : [
-            stripUndefinedDeep({
-              id: `ord-item-${Date.now()}`,
-              productId: payload.productId ? String(payload.productId) : '',
-              productNumber: payload.productNumber
-                ? String(payload.productNumber).trim()
-                : undefined,
-              productName: String(payload.productName || '').trim(),
-              productCategory: String(payload.productCategory || '').trim(),
-              productSize: String(payload.productSize || '').trim(),
-              productColor: String(payload.productColor || '').trim(),
-              quantity: Math.max(1, Math.floor(safeNum(payload.quantity, 1))),
-              unitPrice: Math.max(
-                0,
-                Number(safeNum(payload.unitPrice, 0).toFixed(2))
-              ),
-              lineTotal: Number(
-                (
-                  Math.max(1, Math.floor(safeNum(payload.quantity, 1))) *
-                  Math.max(0, safeNum(payload.unitPrice, 0))
-                ).toFixed(2)
-              ),
-              sellerId: payload.sellerId ? String(payload.sellerId) : '',
-              sourceUrl: payload.sourceUrl ? String(payload.sourceUrl).trim() : undefined,
-              sourcePlatform: payload.sourcePlatform,
-            }),
+            (() => {
+              const singleImage = String(
+                payload.selectedImageUrl || payload.imageDataUrl || ''
+              ).trim();
+              return stripUndefinedDeep({
+                id: `ord-item-${Date.now()}`,
+                productId: payload.productId ? String(payload.productId) : '',
+                productNumber: payload.productNumber
+                  ? String(payload.productNumber).trim()
+                  : undefined,
+                productName: String(payload.productName || '').trim(),
+                productCategory: String(payload.productCategory || '').trim(),
+                productSize: String(payload.productSize || '').trim(),
+                productColor: String(payload.productColor || '').trim(),
+                quantity: Math.max(1, Math.floor(safeNum(payload.quantity, 1))),
+                unitPrice: Math.max(
+                  0,
+                  Number(safeNum(payload.unitPrice, 0).toFixed(2))
+                ),
+                lineTotal: Number(
+                  (
+                    Math.max(1, Math.floor(safeNum(payload.quantity, 1))) *
+                    Math.max(0, safeNum(payload.unitPrice, 0))
+                  ).toFixed(2)
+                ),
+                imageDataUrl: singleImage,
+                selectedImageUrl: singleImage || undefined,
+                sellerId: payload.sellerId ? String(payload.sellerId) : '',
+                sourceUrl: payload.sourceUrl ? String(payload.sourceUrl).trim() : undefined,
+                sourcePlatform: payload.sourcePlatform,
+              });
+            })(),
           ];
 
     if (normalizedItems.length === 0 || !normalizedItems[0].productName) {
@@ -3010,6 +3173,11 @@ export const firestoreService = {
     const cleanCity = String(payload.customerCity || '').trim();
     const cleanState = String(payload.customerState || '').trim();
     const cleanPin = String(payload.customerPinCode || '').trim();
+    const cleanCustomerEmail = String(
+      payload.customerEmail || matchedClient?.email || ''
+    )
+      .trim()
+      .toLowerCase();
 
     let nextCategoryInterests: Record<string, CategoryInterestEntry> = {
       ...(matchedClient?.categoryInterests || {}),
@@ -3036,10 +3204,47 @@ export const firestoreService = {
       }
     }
 
+    const existingSavedAddresses = Array.isArray(matchedClient?.savedAddresses)
+      ? matchedClient.savedAddresses
+      : [];
+    const buildAddrKey = (a: {
+      address?: string;
+      city?: string;
+      pinCode?: string;
+      phone?: string;
+    }) =>
+      `${String(a.address || '').trim().toLowerCase()}|${String(a.city || '')
+        .trim()
+        .toLowerCase()}|${String(a.pinCode || '').trim()}|${String(a.phone || '').trim()}`;
+
+    const orderAddrEntry: SavedAddressEntry = stripUndefinedDeep({
+      id: `addr-${crypto.randomUUID()}`,
+      name: cleanName,
+      fullName: cleanName,
+      phone: cleanPhone,
+      whatsapp: cleanWhatsapp,
+      email: cleanCustomerEmail || undefined,
+      address: cleanAddress,
+      city: cleanCity,
+      state: cleanState,
+      pinCode: cleanPin,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const nextSavedAddresses = payload.saveAddressToAccount
+      ? [
+          orderAddrEntry,
+          ...existingSavedAddresses.filter(
+            (e) => buildAddrKey(e) !== buildAddrKey(orderAddrEntry)
+          ),
+        ].slice(0, 10)
+      : existingSavedAddresses;
+
     const client: Client = matchedClient
       ? stripUndefinedDeep({
           ...matchedClient,
           name: matchedClient.name || cleanName,
+          email: matchedClient.email || cleanCustomerEmail || undefined,
           mobile: matchedClient.mobile
             ? formatPhoneWithPlus91(matchedClient.mobile)
             : cleanPhone,
@@ -3050,6 +3255,8 @@ export const firestoreService = {
           city: cleanCity || matchedClient.city,
           state: cleanState || matchedClient.state,
           pinCode: cleanPin || matchedClient.pinCode,
+          savedAddresses:
+            nextSavedAddresses.length > 0 ? nextSavedAddresses : undefined,
           cart: payload.clearCart
             ? []
             : Array.isArray(matchedClient.cart)
@@ -3062,12 +3269,14 @@ export const firestoreService = {
       : stripUndefinedDeep({
           id: `cli-${crypto.randomUUID()}`,
           name: cleanName,
+          email: cleanCustomerEmail || undefined,
           mobile: cleanPhone,
           whatsapp: cleanWhatsapp,
           address: cleanAddress,
           city: cleanCity,
           state: cleanState,
           pinCode: cleanPin,
+          savedAddresses: [orderAddrEntry],
           cart: [],
           categoryInterests: nextCategoryInterests,
           totalCategoryOrders: nextTotalCategoryOrders,
@@ -3084,6 +3293,13 @@ export const firestoreService = {
       }
     }
     const orderNumber = `ORD-${String(maxOrdNum + 1).padStart(3, '0')}`;
+    const primaryOrderImage = String(
+      payload.selectedImageUrl ||
+        normalizedItems[0].selectedImageUrl ||
+        normalizedItems[0].imageDataUrl ||
+        payload.imageDataUrl ||
+        ''
+    ).trim();
 
     const order: CustomerOrder = stripUndefinedDeep({
       id: `ord-${crypto.randomUUID()}`,
@@ -3095,6 +3311,7 @@ export const firestoreService = {
       customerPhone: cleanPhone,
       normalizedPhone,
       customerWhatsapp: cleanWhatsapp,
+      customerEmail: cleanCustomerEmail || undefined,
       customerAddress: cleanAddress,
       customerCity: cleanCity,
       customerState: cleanState,
@@ -3109,6 +3326,8 @@ export const firestoreService = {
       productCategory: normalizedItems[0].productCategory || '',
       productSize: normalizedItems[0].productSize || '',
       productColor: normalizedItems[0].productColor || '',
+      imageDataUrl: primaryOrderImage || undefined,
+      selectedImageUrl: primaryOrderImage || undefined,
       sourceUrl:
         (payload.sourceUrl ? String(payload.sourceUrl).trim() : '') ||
         normalizedItems.find((i) => i.sourceUrl)?.sourceUrl ||
@@ -3125,7 +3344,11 @@ export const firestoreService = {
       paymentMethod,
       upiIdUsed:
         paymentMethod === 'UPI' ? resolvedAdminUpi || DEFAULT_ADMIN_UPI_ID : '',
-      sellerId: String(payload.sellerId || normalizedItems[0].sellerId || ''),
+      sellerId: String(
+        payload.sellerId ||
+          normalizedItems.find((i) => i.sellerId)?.sellerId ||
+          ''
+      ),
       paymentRecipientType: payload.paymentRecipientType,
       paymentRecipientName: String(payload.paymentRecipientName || '').trim(),
       paymentScreenshotDataUrl:
@@ -3170,6 +3393,7 @@ export const firestoreService = {
         );
       }
       syncRecordsToGoogleSheetsBackground({ client, order });
+      void triggerOrderConfirmationEmail(order.id, 'placed');
       return { order, client };
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${ORDERS_COL}/${order.id}`);
@@ -3463,6 +3687,7 @@ export const firestoreService = {
         order: updatedOrder,
         invoice,
       });
+      void triggerOrderConfirmationEmail(updatedOrder.id, 'confirmed');
       return {
         order: updatedOrder,
         invoice,
@@ -6154,5 +6379,259 @@ export const firestoreService = {
     } catch {
       // Non-blocking engagement sync
     }
+  },
+
+  async createOrderExchangeRequest(payload: {
+    type: OrderExchangeRequestType;
+    orderId: string;
+    orderNumber: string;
+    clientId: string;
+    customerName: string;
+    customerPhone: string;
+    customerWhatsapp: string;
+    customerEmail?: string;
+    productId?: string;
+    productName?: string;
+    productSize?: string;
+    selectedImageUrl?: string;
+    sellerId?: string;
+    sellerName?: string;
+    reason: string;
+    photoUrls?: string[];
+  }): Promise<OrderExchangeRequest> {
+    const cleanReason = String(payload.reason || '').trim();
+    if (!cleanReason) {
+      throw new Error(
+        payload.type === 'exchange'
+          ? 'Please describe the reason for exchange.'
+          : 'Please describe the help or issue you need.'
+      );
+    }
+
+    const waCheck = normalizeAsianPhone(
+      payload.customerWhatsapp || payload.customerPhone || ''
+    );
+    if (!waCheck.valid) {
+      throw new Error('Please enter a valid WhatsApp number.');
+    }
+
+    const orderRef = doc(db, ORDERS_COL, payload.orderId);
+    const orderSnap = await getDoc(orderRef);
+    if (!orderSnap.exists()) {
+      throw new Error('Order not found.');
+    }
+    const orderData = orderSnap.data() as CustomerOrder;
+    if (
+      payload.type === 'exchange' &&
+      !isOrderWithinExchangeWindow(
+        orderData.createdAt,
+        orderData.orderDate,
+        orderData.status
+      )
+    ) {
+      throw new Error('The 8-day exchange window for this order has expired.');
+    }
+
+    const cleanPhotos = Array.isArray(payload.photoUrls)
+      ? payload.photoUrls
+          .map((u) => String(u || '').trim())
+          .filter(Boolean)
+          .slice(0, 5)
+      : [];
+
+    const derivedSellerId = String(
+      payload.sellerId ||
+        orderData.sellerId ||
+        orderData.items?.find((it) => it.sellerId && it.sellerId !== 'admin')
+          ?.sellerId ||
+        ''
+    ).trim();
+    const isSellerRouted = Boolean(derivedSellerId && derivedSellerId !== 'admin');
+    const now = new Date().toISOString();
+
+    const record: OrderExchangeRequest = stripUndefinedDeep({
+      id: `oex-${crypto.randomUUID()}`,
+      type: payload.type,
+      orderId: payload.orderId,
+      orderNumber: payload.orderNumber || orderData.orderNumber || '',
+      orderCreatedAt: orderData.createdAt || orderData.orderDate || undefined,
+      clientId: payload.clientId || orderData.clientId || '',
+      customerName: String(payload.customerName || orderData.customerName || '').trim(),
+      customerPhone: String(payload.customerPhone || orderData.customerPhone || '').trim(),
+      customerWhatsapp: waCheck.formatted,
+      customerEmail:
+        String(payload.customerEmail || orderData.customerEmail || '')
+          .trim()
+          .toLowerCase() || undefined,
+      productId: String(payload.productId || orderData.productId || '').trim() || undefined,
+      productName:
+        String(payload.productName || orderData.productName || '').trim() ||
+        'Order Item',
+      productSize:
+        String(payload.productSize || orderData.productSize || '').trim() || undefined,
+      selectedImageUrl:
+        String(
+          payload.selectedImageUrl ||
+            orderData.selectedImageUrl ||
+            orderData.imageDataUrl ||
+            ''
+        ).trim() || undefined,
+      sellerId: isSellerRouted ? derivedSellerId : undefined,
+      sellerName:
+        String(
+          payload.sellerName ||
+            orderData.items?.find((it) => it.sellerId === derivedSellerId)?.sellerName ||
+            ''
+        ).trim() || undefined,
+      routeTarget: isSellerRouted ? 'seller' : 'admin',
+      reason: cleanReason,
+      photoUrls: cleanPhotos,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      await setDoc(doc(db, ORDER_EXCHANGES_COL, record.id), record);
+      return record;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.CREATE,
+        `${ORDER_EXCHANGES_COL}/${record.id}`
+      );
+    }
+  },
+
+  async updateOrderExchangeRequestStatus(
+    requestId: string,
+    status: OrderExchangeRequestStatus,
+    resolutionNote?: string,
+    handledBy?: string
+  ): Promise<OrderExchangeRequest> {
+    const ref = doc(db, ORDER_EXCHANGES_COL, requestId);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Request not found.');
+      const existing = snap.data() as OrderExchangeRequest;
+      const now = new Date().toISOString();
+      const updated: OrderExchangeRequest = stripUndefinedDeep({
+        ...existing,
+        status,
+        resolutionNote:
+          resolutionNote !== undefined
+            ? String(resolutionNote).trim()
+            : existing.resolutionNote,
+        handledBy: handledBy || existing.handledBy,
+        updatedAt: now,
+      });
+      await setDoc(ref, updated);
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Request not found.') throw error;
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `${ORDER_EXCHANGES_COL}/${requestId}`
+      );
+    }
+  },
+
+  async deleteOrderExchangeRequest(requestId: string): Promise<{ ok: boolean }> {
+    try {
+      await deleteDoc(doc(db, ORDER_EXCHANGES_COL, requestId));
+      return { ok: true };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.DELETE,
+        `${ORDER_EXCHANGES_COL}/${requestId}`
+      );
+    }
+  },
+
+  subscribeCustomerOrderExchanges(
+    clientId: string,
+    onList: (requests: OrderExchangeRequest[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      query(collection(db, ORDER_EXCHANGES_COL), where('clientId', '==', clientId)),
+      (snap) => {
+        onList(
+          sortDescByCreated(snap.docs.map((d) => d.data() as OrderExchangeRequest))
+        );
+      },
+      (err) => {
+        if (isPermissionDeniedError(err)) {
+          onList([]);
+          return;
+        }
+        try {
+          handleFirestoreError(err, OperationType.LIST, ORDER_EXCHANGES_COL);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
+  subscribeSellerOrderExchanges(
+    sellerId: string,
+    onList: (requests: OrderExchangeRequest[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      query(collection(db, ORDER_EXCHANGES_COL), where('sellerId', '==', sellerId)),
+      (snap) => {
+        onList(
+          sortDescByCreated(snap.docs.map((d) => d.data() as OrderExchangeRequest))
+        );
+      },
+      (err) => {
+        if (isPermissionDeniedError(err)) {
+          onList([]);
+          return;
+        }
+        try {
+          handleFirestoreError(err, OperationType.LIST, ORDER_EXCHANGES_COL);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
+  subscribeSellerOrders(
+    sellerId: string,
+    onList: (orders: CustomerOrder[]) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    return onSnapshot(
+      collection(db, ORDERS_COL),
+      (snap) => {
+        const all = sortDescByCreated(
+          snap.docs.map((d) => d.data() as CustomerOrder)
+        );
+        const filtered = all.filter(
+          (ord) =>
+            ord.sellerId === sellerId ||
+            (Array.isArray(ord.items) &&
+              ord.items.some((it) => it.sellerId === sellerId))
+        );
+        onList(filtered);
+      },
+      (err) => {
+        if (isPermissionDeniedError(err)) {
+          onList([]);
+          return;
+        }
+        try {
+          handleFirestoreError(err, OperationType.LIST, ORDERS_COL);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
   },
 };

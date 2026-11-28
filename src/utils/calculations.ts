@@ -81,6 +81,11 @@ export function isAdminOtpWindowValid(lastVerifiedAt?: string): boolean {
 
 export const PRODUCT_CATEGORIES = [
   "Women's Clothing",
+  'Saree',
+  'Shoes',
+  'Cosmetics',
+  'Top',
+  'Kurti',
   'Winter Collection',
   "Women's Jewellery",
   'Cosmetics & Beauty Products',
@@ -90,6 +95,98 @@ export const PRODUCT_CATEGORIES = [
 ] as const;
 
 export const DEFAULT_PRODUCT_CATEGORY = PRODUCT_CATEGORIES[0];
+
+export const SHOE_SIZE_OPTIONS = ['6', '7', '8', '9', '10', '11', '12'] as const;
+export const STANDARD_SIZE_OPTIONS = [
+  'XXS',
+  'S',
+  'M',
+  'L',
+  'XL',
+  'XXL',
+  'FREE',
+] as const;
+
+export function getOrderedSizeOptionsForCategory(
+  category?: string
+): readonly string[] {
+  const normalized = String(category || '').trim().toLowerCase();
+  return normalized === 'shoes' ? SHOE_SIZE_OPTIONS : STANDARD_SIZE_OPTIONS;
+}
+
+export function sortSizesForCategory(
+  category: string | undefined,
+  rawSizes: string[] | string
+): string[] {
+  const tokens = Array.isArray(rawSizes)
+    ? rawSizes.map((s) => String(s || '').trim()).filter(Boolean)
+    : String(rawSizes || '')
+        .split(/[,/|]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+  const canonical = getOrderedSizeOptionsForCategory(category);
+  const canonicalUpperMap = new Map<string, string>();
+  canonical.forEach((opt) => canonicalUpperMap.set(opt.toUpperCase(), opt));
+
+  const seenUpper = new Set<string>();
+  const matchedCanonicalSet = new Set<string>();
+  const extraTokens: string[] = [];
+
+  for (const tok of tokens) {
+    const up = tok.toUpperCase();
+    if (seenUpper.has(up)) continue;
+    seenUpper.add(up);
+    if (canonicalUpperMap.has(up)) {
+      matchedCanonicalSet.add(canonicalUpperMap.get(up)!);
+    } else {
+      extraTokens.push(tok);
+    }
+  }
+
+  const ordered = canonical.filter((opt) => matchedCanonicalSet.has(opt));
+  return [...ordered, ...extraTokens];
+}
+
+export function formatCanonicalSizeString(
+  category: string | undefined,
+  sizes: string[]
+): string {
+  return sortSizesForCategory(category, sizes).join(', ');
+}
+
+export const ORDER_EXCHANGE_WINDOW_DAYS = 8;
+
+export function isOrderWithinExchangeWindow(
+  createdAt?: string,
+  orderDate?: string,
+  status?: string,
+  nowMs = Date.now()
+): { eligible: boolean; daysRemaining: number } {
+  if (status === 'Cancelled') {
+    return { eligible: false, daysRemaining: 0 };
+  }
+  const rawTimestamp = String(createdAt || '').trim();
+  const parsedCreatedMs = rawTimestamp ? Date.parse(rawTimestamp) : NaN;
+  const fallbackDateMs = orderDate ? Date.parse(`${orderDate}T00:00:00`) : NaN;
+  const startMs = Number.isFinite(parsedCreatedMs)
+    ? parsedCreatedMs
+    : Number.isFinite(fallbackDateMs)
+      ? fallbackDateMs
+      : NaN;
+  if (!Number.isFinite(startMs)) {
+    return { eligible: false, daysRemaining: 0 };
+  }
+  const deadlineMs = startMs + ORDER_EXCHANGE_WINDOW_DAYS * 86_400_000;
+  const remainingMs = deadlineMs - nowMs;
+  if (remainingMs <= 0) {
+    return { eligible: false, daysRemaining: 0 };
+  }
+  return {
+    eligible: true,
+    daysRemaining: Math.max(1, Math.ceil(remainingMs / 86_400_000)),
+  };
+}
 
 export const MAX_COMPRESSED_IMAGE_BYTES = 100 * 1024; // Strictly under 100KB (102,400 bytes)
 export const TARGET_COMPRESSED_IMAGE_BYTES = 95 * 1024; // ~80KB-95KB target binary size

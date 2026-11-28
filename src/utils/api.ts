@@ -18,6 +18,9 @@ import {
   HighlightRequestStatus,
   Invoice,
   MediaResourceType,
+  OrderExchangeRequest,
+  OrderExchangeRequestStatus,
+  OrderExchangeRequestType,
   PaymentMethod,
   Product,
   ProductReview,
@@ -170,6 +173,24 @@ export const api = {
     return firestoreService.updateCustomerDeliveryAddress(clientId, payload);
   },
 
+  saveCustomerAddressBookEntry(
+    clientId: string,
+    payload: {
+      label?: string;
+      fullName: string;
+      phone: string;
+      whatsapp?: string;
+      email?: string;
+      address: string;
+      city?: string;
+      state?: string;
+      pinCode?: string;
+      setPrimary?: boolean;
+    }
+  ) {
+    return firestoreService.saveCustomerAddressBookEntry(clientId, payload);
+  },
+
   trackCustomerCategoryActivity(
     clientId: string,
     payload: {
@@ -249,9 +270,11 @@ export const api = {
   createCustomerOrder(payload: {
     clientId?: string;
     clearCart?: boolean;
+    saveAddressToAccount?: boolean;
     customerName: string;
     customerPhone: string;
     customerWhatsapp?: string;
+    customerEmail?: string;
     customerAddress: string;
     customerCity?: string;
     customerState?: string;
@@ -263,6 +286,8 @@ export const api = {
     productCategory?: string;
     productSize?: string;
     productColor?: string;
+    imageDataUrl?: string;
+    selectedImageUrl?: string;
     sourceUrl?: string;
     sourcePlatform?: Product['sourcePlatform'];
     quantity: number;
@@ -852,5 +877,76 @@ export const api = {
     profile: CustomerEngagementProfile
   ) {
     return firestoreService.syncCustomerEngagementProfile(clientId, profile);
+  },
+
+  createOrderExchangeRequest(payload: {
+    type: OrderExchangeRequestType;
+    orderId: string;
+    orderNumber: string;
+    clientId: string;
+    customerName: string;
+    customerPhone: string;
+    customerWhatsapp: string;
+    customerEmail?: string;
+    productId?: string;
+    productName?: string;
+    productSize?: string;
+    selectedImageUrl?: string;
+    sellerId?: string;
+    sellerName?: string;
+    reason: string;
+    photoUrls?: string[];
+  }) {
+    return firestoreService.createOrderExchangeRequest(payload);
+  },
+
+  updateOrderExchangeRequestStatus(
+    requestId: string,
+    status: OrderExchangeRequestStatus,
+    resolutionNote?: string,
+    handledBy?: string
+  ) {
+    return firestoreService.updateOrderExchangeRequestStatus(
+      requestId,
+      status,
+      resolutionNote,
+      handledBy
+    );
+  },
+
+  deleteOrderExchangeRequest(requestId: string) {
+    return firestoreService.deleteOrderExchangeRequest(requestId);
+  },
+
+  subscribeCustomerOrderExchanges(
+    clientId: string,
+    onList: (requests: OrderExchangeRequest[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeCustomerOrderExchanges(
+      clientId,
+      onList,
+      onError
+    );
+  },
+
+  subscribeSellerOrderExchanges(
+    sellerId: string,
+    onList: (requests: OrderExchangeRequest[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeSellerOrderExchanges(
+      sellerId,
+      onList,
+      onError
+    );
+  },
+
+  subscribeSellerOrders(
+    sellerId: string,
+    onList: (orders: CustomerOrder[]) => void,
+    onError: (err: Error) => void
+  ) {
+    return firestoreService.subscribeSellerOrders(sellerId, onList, onError);
   },
 };

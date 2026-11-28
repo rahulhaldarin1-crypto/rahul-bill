@@ -46,9 +46,12 @@ import {
   HIGHLIGHT_UPI_ID,
   PRODUCT_CATEGORIES,
   downloadImageAsset,
+  formatCanonicalSizeString,
   formatCurrency,
+  getOrderedSizeOptionsForCategory,
   validateAdultDateOfBirth,
 } from '../utils/calculations';
+import { parseProductVariantOptions } from '../utils/region';
 import { getOptimizedMediaUrl } from '../utils/cloudinary';
 import { decryptRunningPassword } from '../utils/adminAuth';
 import { formatNumericFieldValue, sanitizeNumericInput } from '../utils/numberInput';
@@ -506,7 +509,13 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
           highlightPlanTitle: editingProduct.highlightPlanTitle,
           stockQty: Math.max(0, Math.floor(Number(editStockQty) || 0)),
           lowStockAlert: editingProduct.lowStockAlert || defaultLowStock || 5,
-          size: editSize.trim(),
+          size: (() => {
+            const nextCat = editCategory.trim() || DEFAULT_PRODUCT_CATEGORY;
+            const parsed = parseProductVariantOptions(editSize, nextCat);
+            return parsed.length > 0
+              ? formatCanonicalSizeString(nextCat, parsed)
+              : editSize.trim();
+          })(),
           color: editColor.trim(),
           description: editDescription.trim(),
           ...(editingProduct.sourceUrl ? { sourceUrl: editingProduct.sourceUrl } : {}),
@@ -2057,7 +2066,22 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
                 </label>
                 <select
                   value={editCategory}
-                  onChange={(e) => setEditCategory(e.target.value)}
+                  onChange={(e) => {
+                    const nextCat = e.target.value;
+                    const allowed = new Set<string>(
+                      getOrderedSizeOptionsForCategory(nextCat)
+                    );
+                    const kept = parseProductVariantOptions(
+                      editSize,
+                      editCategory
+                    ).filter((s) => allowed.has(s.toUpperCase()));
+                    setEditCategory(nextCat);
+                    setEditSize(
+                      kept.length > 0
+                        ? formatCanonicalSizeString(nextCat, kept)
+                        : ''
+                    );
+                  }}
                   className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:bg-white focus:outline-none"
                 >
                   {editCategory && !ALLOWED_CATEGORIES_SET.has(editCategory) && (
@@ -2154,15 +2178,75 @@ export const SellerHubManageView: React.FC<SellerHubManageViewProps> = ({
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
-                  Size
-                </label>
-                <input
-                  type="text"
-                  value={editSize}
-                  onChange={(e) => setEditSize(e.target.value)}
-                  className="w-full rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] px-3 py-2 text-sm text-[#1F122B] focus:border-[#9333EA] focus:outline-none"
-                />
+                {(() => {
+                  const orderedOptions =
+                    getOrderedSizeOptionsForCategory(editCategory);
+                  const selectedList = parseProductVariantOptions(
+                    editSize,
+                    editCategory
+                  );
+                  const selectedUpperSet = new Set(
+                    selectedList.map((s) => s.toUpperCase())
+                  );
+                  const allSelected =
+                    orderedOptions.length > 0 &&
+                    orderedOptions.every((opt) =>
+                      selectedUpperSet.has(opt.toUpperCase())
+                    );
+                  const toggleOpt = (opt: string) => {
+                    const exists = selectedUpperSet.has(opt.toUpperCase());
+                    const next = exists
+                      ? selectedList.filter(
+                          (s) => s.toUpperCase() !== opt.toUpperCase()
+                        )
+                      : [...selectedList, opt];
+                    setEditSize(formatCanonicalSizeString(editCategory, next));
+                  };
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label className="block text-xs font-semibold text-[#4A3B59]">
+                          Sizes
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditSize(
+                              allSelected
+                                ? ''
+                                : formatCanonicalSizeString(
+                                    editCategory,
+                                    [...orderedOptions]
+                                  )
+                            )
+                          }
+                          className="text-[11px] font-bold text-[#7E22CE] hover:underline cursor-pointer"
+                        >
+                          {allSelected ? 'Clear All' : 'Select All'}
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 rounded-xl border border-[#E6D9EE] bg-[#FDFBFE] p-2">
+                        {orderedOptions.map((opt) => {
+                          const active = selectedUpperSet.has(opt.toUpperCase());
+                          return (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => toggleOpt(opt)}
+                              className={`px-2 py-0.5 rounded-md text-xs font-bold border transition-colors cursor-pointer ${
+                                active
+                                  ? 'bg-[#7E22CE] text-white border-[#7E22CE]'
+                                  : 'bg-white text-[#4A3B59] border-[#E6D9EE] hover:border-[#9333EA]'
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-[#4A3B59] mb-1">
