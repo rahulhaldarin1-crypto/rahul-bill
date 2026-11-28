@@ -1267,11 +1267,26 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         prev.modalStep !== currentCustomerSnapshot.modalStep ||
         prev.selectedProductId !== currentCustomerSnapshot.selectedProductId);
 
+    const targetUrlObj = new URL(window.location.href);
+    if (/^\/product\//i.test(targetUrlObj.pathname)) {
+      targetUrlObj.pathname = '/';
+    }
+    if (currentCustomerSnapshot.selectedProductId) {
+      targetUrlObj.searchParams.set(
+        'product',
+        currentCustomerSnapshot.selectedProductId
+      );
+    } else if (prev.selectedProductId !== null || handledQueryProductRef.current) {
+      targetUrlObj.searchParams.delete('product');
+    }
+    const targetUrl =
+      targetUrlObj.pathname + targetUrlObj.search + targetUrlObj.hash;
+
     try {
       if (replacingSheet || replacingOrderSuccess || replacingAuthTransition) {
-        window.history.replaceState(currentCustomerSnapshot, '', currUrl);
+        window.history.replaceState(currentCustomerSnapshot, '', targetUrl);
       } else {
-        window.history.pushState(currentCustomerSnapshot, '', currUrl);
+        window.history.pushState(currentCustomerSnapshot, '', targetUrl);
         customerDepthRef.current += 1;
       }
     } catch {
@@ -2310,10 +2325,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     e?: React.MouseEvent
   ) => {
     e?.stopPropagation();
-    const basePath = /^\/product\//i.test(window.location.pathname)
-      ? '/'
-      : window.location.pathname || '/';
-    const shareUrl = `${window.location.origin}${basePath}?product=${encodeURIComponent(item.id)}`;
+    const shareOrigin =
+      /^http:\/\/(localhost|127\.0\.0\.1)/i.test(window.location.origin)
+        ? window.location.origin
+        : window.location.origin.replace(/^http:\/\//i, 'https://');
+    const shareUrl = `${shareOrigin}/?product=${encodeURIComponent(item.id)}`;
     const symPrice = formatCurrency(item.price, sym);
     try {
       if (navigator.share) {

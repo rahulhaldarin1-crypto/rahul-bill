@@ -338,6 +338,10 @@ export default async function handler(
             'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800'
           );
           res.setHeader('X-Content-Type-Options', 'nosniff');
+          if (String(req.method || 'GET').toUpperCase() === 'HEAD') {
+            res.status(200).end();
+            return;
+          }
           res.status(200).send(buf);
           return;
         }
