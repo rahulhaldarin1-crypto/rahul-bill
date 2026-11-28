@@ -19,6 +19,13 @@ const VIDEO_URL_REGEX = /\.(mp4|webm|mov|m4v|ogg|ogv|avi|mkv)(\?.*)?$/i;
 let cachedHtmlTemplate: { html: string; origin: string; fetchedAt: number } | null =
   null;
 
+interface ResolvedProductImage {
+  url: string;
+  type?: string;
+  width?: number;
+  height?: number;
+}
+
 interface ResolvedProductMeta {
   id: string;
   name: string;
@@ -28,6 +35,7 @@ interface ResolvedProductMeta {
   imageType?: string;
   imageWidth?: number;
   imageHeight?: number;
+  images: ResolvedProductImage[];
 }
 
 function escapeHtmlAttr(value: string): string {
@@ -165,7 +173,7 @@ function formatSocialOgImageUrl(url: string): string {
 
   const prefix = url.slice(0, idx + marker.length);
   const rest = url.slice(idx + marker.length);
-  const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
+  const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_pad,b_white';
 
   const firstSlash = rest.indexOf('/');
   if (firstSlash === -1) {
@@ -204,6 +212,12 @@ function detectImageDimensions(url: string): { width?: number; height?: number }
   const lower = url.toLowerCase();
   if (
     lower.includes('res.cloudinary.com/') &&
+    lower.includes('w_1200,h_1200,c_pad')
+  ) {
+    return { width: 1200, height: 1200 };
+  }
+  if (
+    lower.includes('res.cloudinary.com/') &&
     lower.includes('w_800,h_800,c_pad')
   ) {
     return { width: 800, height: 800 };
@@ -237,29 +251,55 @@ function collectProductImageCandidates(record: Record<string, unknown>): unknown
   return rawCandidates;
 }
 
-function pickHttpImageUrl(
+function pickAllProductImages(
   record: Record<string, unknown>,
   fallbackOrigin: string,
   fallbackStoreImage: string,
   resolvedId?: string
-): { imageUrl: string; imageType?: string } {
+): ResolvedProductImage[] {
   const rawCandidates = collectProductImageCandidates(record);
+  const dedupedRaw: string[] = [];
+  const seenRaw = new Set<string>();
 
   for (const candidate of rawCandidates) {
-    const normalized = normalizeImageCandidateUrl(candidate, fallbackOrigin);
-    if (normalized) {
-      return {
-        imageUrl: normalized,
-        imageType: detectImageMimeType(normalized),
-      };
-    }
+    const raw = extractRawUrlFromCandidate(candidate);
+    if (!raw || seenRaw.has(raw)) continue;
+    if (isVideoMediaUrl(raw) || raw.startsWith('blob:')) continue;
+    const isHttpLike =
+      raw.startsWith('//') ||
+      raw.startsWith('/') ||
+      /^https?:\/\//i.test(raw) ||
+      /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/|$)/.test(raw);
+    const isBase64Img =
+      /^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,[A-Za-z0-9+/=]+$/i.test(raw);
+    if (!isHttpLike && !isBase64Img) continue;
+    seenRaw.add(raw);
+    dedupedRaw.push(raw);
   }
 
-  // Fallback for legacy base64-only products: serve decoded image over HTTPS via /api/product-image
   const productId = String(resolvedId || record.id || '').trim();
-  if (productId) {
-    for (const candidate of rawCandidates) {
-      const raw = extractRawUrlFromCandidate(candidate);
+  const httpsOrigin = ensureHttpsOrigin(fallbackOrigin);
+  const resolvedImages: ResolvedProductImage[] = [];
+  const seenResolved = new Set<string>();
+
+  for (let idx = 0; idx < dedupedRaw.length && resolvedImages.length < 8; idx += 1) {
+    const raw = dedupedRaw[idx];
+    const normalized = normalizeImageCandidateUrl(raw, fallbackOrigin);
+    if (normalized) {
+      if (!seenResolved.has(normalized)) {
+        seenResolved.add(normalized);
+        const dims = detectImageDimensions(normalized);
+        resolvedImages.push({
+          url: normalized,
+          type: detectImageMimeType(normalized),
+          width: dims.width,
+          height: dims.height,
+        });
+      }
+      continue;
+    }
+
+    if (productId) {
       const dataMatch = /^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,[A-Za-z0-9+/=]+$/i.exec(
         raw
       );
@@ -268,19 +308,33 @@ function pickHttpImageUrl(
           dataMatch[1].toLowerCase() === 'image/jpg'
             ? 'image/jpeg'
             : dataMatch[1].toLowerCase();
-        const httpsOrigin = ensureHttpsOrigin(fallbackOrigin);
-        return {
-          imageUrl: `${httpsOrigin}/api/product-image?id=${encodeURIComponent(productId)}`,
-          imageType: mime,
-        };
+        const proxyUrl = `${httpsOrigin}/api/product-image?id=${encodeURIComponent(productId)}${
+          idx > 0 ? `&idx=${idx}` : ''
+        }`;
+        if (!seenResolved.has(proxyUrl)) {
+          seenResolved.add(proxyUrl);
+          resolvedImages.push({
+            url: proxyUrl,
+            type: mime,
+          });
+        }
       }
     }
   }
 
-  return {
-    imageUrl: fallbackStoreImage,
-    imageType: detectImageMimeType(fallbackStoreImage),
-  };
+  if (resolvedImages.length > 0) {
+    return resolvedImages;
+  }
+
+  const fallbackDims = detectImageDimensions(fallbackStoreImage);
+  return [
+    {
+      url: fallbackStoreImage,
+      type: detectImageMimeType(fallbackStoreImage),
+      width: fallbackDims.width,
+      height: fallbackDims.height,
+    },
+  ];
 }
 
 function buildProductDescription(
@@ -341,23 +395,24 @@ function toResolvedProductMeta(
   const priceRaw = record.sellingPrice ?? record.price;
   const priceNum = Number(priceRaw);
   const resolvedId = overrideId || String(record.id || '').trim();
-  const { imageUrl, imageType } = pickHttpImageUrl(
+  const images = pickAllProductImages(
     record,
     fallbackOrigin,
     fallbackStoreImage,
     resolvedId
   );
-  const dims = detectImageDimensions(imageUrl);
+  const primary = images[0];
 
   return {
     id: resolvedId,
     name,
     description: buildProductDescription(name, record.description, priceNum),
     price: Number.isFinite(priceNum) && priceNum > 0 ? priceNum : undefined,
-    imageUrl,
-    imageType,
-    imageWidth: dims.width,
-    imageHeight: dims.height,
+    imageUrl: primary.url,
+    imageType: primary.type,
+    imageWidth: primary.width,
+    imageHeight: primary.height,
+    images,
   };
 }
 
@@ -636,11 +691,17 @@ function injectMetaTags(
   const pageTitle = meta ? `${meta.name} | Glamour Galleria` : DEFAULT_TITLE;
   const ogTitle = meta ? meta.name : DEFAULT_TITLE;
   const description = meta ? meta.description : DEFAULT_DESCRIPTION;
-  const imageUrl = meta ? meta.imageUrl : fallbackLogoUrl;
-  const imageType = meta ? meta.imageType : detectImageMimeType(fallbackLogoUrl);
   const fallbackDims = detectImageDimensions(fallbackLogoUrl);
-  const imageWidth = meta ? meta.imageWidth : fallbackDims.width;
-  const imageHeight = meta ? meta.imageHeight : fallbackDims.height;
+  const fallbackImgObj: ResolvedProductImage = {
+    url: fallbackLogoUrl,
+    type: detectImageMimeType(fallbackLogoUrl),
+    width: fallbackDims.width,
+    height: fallbackDims.height,
+  };
+  const resolvedImageList =
+    meta && meta.images.length > 0 ? meta.images : [fallbackImgObj];
+  const primaryImage = resolvedImageList[0];
+  const extraImages = resolvedImageList.slice(1);
   const ogType = meta ? 'product' : 'website';
 
   const priceMetaLines =
@@ -658,7 +719,7 @@ function injectMetaTags(
         '@context': 'https://schema.org',
         '@type': 'Product',
         name: meta.name,
-        image: [imageUrl],
+        image: resolvedImageList.map((img) => img.url),
         description,
         ...(meta.price !== undefined
           ? {
@@ -677,6 +738,23 @@ function injectMetaTags(
     }
   }
 
+  const buildOgImageTags = (img: ResolvedProductImage, includeAlt: boolean): string[] => [
+    `    <meta property="og:image" content="${escapeHtmlAttr(img.url)}" />`,
+    `    <meta property="og:image:secure_url" content="${escapeHtmlAttr(img.url)}" />`,
+    ...(img.type
+      ? [`    <meta property="og:image:type" content="${escapeHtmlAttr(img.type)}" />`]
+      : []),
+    ...(img.width && img.height
+      ? [
+          `    <meta property="og:image:width" content="${img.width}" />`,
+          `    <meta property="og:image:height" content="${img.height}" />`,
+        ]
+      : []),
+    ...(includeAlt
+      ? [`    <meta property="og:image:alt" content="${escapeHtmlAttr(ogTitle)}" />`]
+      : []),
+  ];
+
   const tags = [
     `    <title>${escapeHtmlAttr(pageTitle)}</title>`,
     `    <meta name="description" content="${escapeHtmlAttr(description)}" />`,
@@ -686,23 +764,13 @@ function injectMetaTags(
     `    <meta property="og:description" content="${escapeHtmlAttr(description)}" />`,
     `    <meta property="og:type" content="${ogType}" />`,
     `    <meta property="og:url" content="${escapeHtmlAttr(canonicalUrl)}" />`,
-    `    <meta property="og:image" content="${escapeHtmlAttr(imageUrl)}" />`,
-    `    <meta property="og:image:secure_url" content="${escapeHtmlAttr(imageUrl)}" />`,
-    ...(imageType
-      ? [`    <meta property="og:image:type" content="${escapeHtmlAttr(imageType)}" />`]
-      : []),
-    ...(imageWidth && imageHeight
-      ? [
-          `    <meta property="og:image:width" content="${imageWidth}" />`,
-          `    <meta property="og:image:height" content="${imageHeight}" />`,
-        ]
-      : []),
-    `    <meta property="og:image:alt" content="${escapeHtmlAttr(ogTitle)}" />`,
+    ...buildOgImageTags(primaryImage, true),
+    ...extraImages.flatMap((img) => buildOgImageTags(img, false)),
     `    <meta name="twitter:card" content="summary_large_image" />`,
     `    <meta name="twitter:url" content="${escapeHtmlAttr(canonicalUrl)}" />`,
     `    <meta name="twitter:title" content="${escapeHtmlAttr(ogTitle)}" />`,
     `    <meta name="twitter:description" content="${escapeHtmlAttr(description)}" />`,
-    `    <meta name="twitter:image" content="${escapeHtmlAttr(imageUrl)}" />`,
+    `    <meta name="twitter:image" content="${escapeHtmlAttr(primaryImage.url)}" />`,
     `    <meta name="twitter:image:alt" content="${escapeHtmlAttr(ogTitle)}" />`,
   ];
 

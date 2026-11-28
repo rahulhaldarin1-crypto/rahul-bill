@@ -372,6 +372,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         setSortSheetOpen(false);
         setGenderSheetOpen(false);
         setFiltersSheetOpen(false);
+        setShareImagesModal(null);
       }
     };
     document.addEventListener('keydown', handleEsc);
@@ -434,6 +435,12 @@ export const StartPortal: React.FC<StartPortalProps> = ({
   const [inStockOnlyFilter, setInStockOnlyFilter] = useState<boolean>(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [failedAdImage, setFailedAdImage] = useState(false);
+  const [shareImagesBusyId, setShareImagesBusyId] = useState<string | null>(null);
+  const [shareImagesModal, setShareImagesModal] = useState<{
+    productName: string;
+    shareUrl: string;
+    imageUrls: string[];
+  } | null>(null);
 
   // Product Detail & Direct Order Modal
   const [selectedProduct, setSelectedProduct] =
@@ -2202,7 +2209,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       const idx = url.indexOf(marker);
       const prefix = url.slice(0, idx + marker.length);
       const rest = url.slice(idx + marker.length);
-      const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
+      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_pad,b_white';
       const firstSlash = rest.indexOf('/');
       if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
       const firstSeg = rest.slice(0, firstSlash);
@@ -2215,6 +2222,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       }
       return `${prefix}${socialTransform}/${rest}`;
     };
+
+    document.head
+      .querySelectorAll('meta[data-gg-extra-og-image="1"]')
+      .forEach((node) => node.remove());
 
     const origin = window.location.origin;
     const httpsOrigin = /^http:\/\/(localhost|127\.0\.0\.1)/i.test(origin)
@@ -2241,21 +2252,47 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         rawProductDesc.length > 180
           ? `${rawProductDesc.slice(0, 177).trim()}...`
           : rawProductDesc;
-      const productImages =
-        Array.isArray(selectedProduct.imageDataUrls) &&
-        selectedProduct.imageDataUrls.length > 0
+      const rawCandidates = [
+        ...(Array.isArray(selectedProduct.imageDataUrls)
           ? selectedProduct.imageDataUrls
-          : selectedProduct.imageDataUrl
-            ? [selectedProduct.imageDataUrl]
-            : [];
-      const hasBase64Img = productImages.some((u) =>
-        /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(String(u || '').trim())
-      );
-      const primaryHttpImage =
-        productImages.map((u) => toSocialOgImage(u)).find(Boolean) ||
-        (hasBase64Img
-          ? `${httpsOrigin}/api/product-image?id=${encodeURIComponent(selectedProduct.id)}`
-          : defaultImage);
+          : []),
+        ...(selectedProduct.imageDataUrl ? [selectedProduct.imageDataUrl] : []),
+      ];
+      const dedupedRaw: string[] = [];
+      const seenRaw = new Set<string>();
+      for (const raw of rawCandidates) {
+        const trimmed = String(raw || '').trim();
+        if (!trimmed || seenRaw.has(trimmed)) continue;
+        if (isVideoUrl(trimmed) || trimmed.startsWith('blob:')) continue;
+        seenRaw.add(trimmed);
+        dedupedRaw.push(trimmed);
+      }
+
+      const resolvedImages: string[] = [];
+      const seenOut = new Set<string>();
+      for (let idx = 0; idx < dedupedRaw.length && resolvedImages.length < 8; idx += 1) {
+        const raw = dedupedRaw[idx];
+        const social = toSocialOgImage(raw);
+        if (social) {
+          if (!seenOut.has(social)) {
+            seenOut.add(social);
+            resolvedImages.push(social);
+          }
+          continue;
+        }
+        if (/^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(raw)) {
+          const proxy = `${httpsOrigin}/api/product-image?id=${encodeURIComponent(selectedProduct.id)}${
+            idx > 0 ? `&idx=${idx}` : ''
+          }`;
+          if (!seenOut.has(proxy)) {
+            seenOut.add(proxy);
+            resolvedImages.push(proxy);
+          }
+        }
+      }
+
+      const primaryHttpImage = resolvedImages[0] || defaultImage;
+      const extraHttpImages = resolvedImages.slice(1);
       const shareUrl = `${httpsOrigin}/?product=${encodeURIComponent(selectedProduct.id)}`;
 
       document.title = `${selectedProduct.name} | Glamour Galleria`;
@@ -2266,7 +2303,29 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       upsertMeta('property', 'og:url', shareUrl);
       upsertMeta('property', 'og:image', primaryHttpImage);
       upsertMeta('property', 'og:image:secure_url', primaryHttpImage);
+      if (primaryHttpImage.includes('w_1200,h_1200,c_pad')) {
+        upsertMeta('property', 'og:image:width', '1200');
+        upsertMeta('property', 'og:image:height', '1200');
+      } else {
+        removeMeta('property', 'og:image:width');
+        removeMeta('property', 'og:image:height');
+      }
       upsertMeta('property', 'og:image:alt', selectedProduct.name);
+
+      for (const extraUrl of extraHttpImages) {
+        const extraTag = document.createElement('meta');
+        extraTag.setAttribute('data-gg-extra-og-image', '1');
+        extraTag.setAttribute('property', 'og:image');
+        extraTag.setAttribute('content', extraUrl);
+        document.head.appendChild(extraTag);
+
+        const extraSecureTag = document.createElement('meta');
+        extraSecureTag.setAttribute('data-gg-extra-og-image', '1');
+        extraSecureTag.setAttribute('property', 'og:image:secure_url');
+        extraSecureTag.setAttribute('content', extraUrl);
+        document.head.appendChild(extraSecureTag);
+      }
+
       upsertMeta('name', 'twitter:card', 'summary_large_image');
       upsertMeta('name', 'twitter:url', shareUrl);
       upsertMeta('name', 'twitter:title', selectedProduct.name);
@@ -2290,6 +2349,8 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       upsertMeta('property', 'og:url', `${origin}/`);
       upsertMeta('property', 'og:image', defaultImage);
       upsertMeta('property', 'og:image:secure_url', defaultImage);
+      upsertMeta('property', 'og:image:width', '512');
+      upsertMeta('property', 'og:image:height', '512');
       upsertMeta('property', 'og:image:alt', defaultTitle);
       upsertMeta('name', 'twitter:card', 'summary_large_image');
       upsertMeta('name', 'twitter:url', `${origin}/`);
@@ -2320,16 +2381,92 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     }
   };
 
-  const handleShareProduct = async (
-    item: PublicShopProduct,
-    e?: React.MouseEvent
-  ) => {
-    e?.stopPropagation();
+  const getProductShareImageSources = (item: PublicShopProduct) => {
     const shareOrigin =
       /^http:\/\/(localhost|127\.0\.0\.1)/i.test(window.location.origin)
         ? window.location.origin
         : window.location.origin.replace(/^http:\/\//i, 'https://');
     const shareUrl = `${shareOrigin}/?product=${encodeURIComponent(item.id)}`;
+
+    const rawCandidates = [
+      ...(Array.isArray(item.imageDataUrls) ? item.imageDataUrls : []),
+      ...(item.imageDataUrl ? [item.imageDataUrl] : []),
+    ];
+    const dedupedRaw: string[] = [];
+    const seenRaw = new Set<string>();
+    for (const raw of rawCandidates) {
+      const trimmed = String(raw || '').trim();
+      if (!trimmed || seenRaw.has(trimmed)) continue;
+      if (isVideoUrl(trimmed) || trimmed.startsWith('blob:')) continue;
+      seenRaw.add(trimmed);
+      dedupedRaw.push(trimmed);
+    }
+
+    const toShareHttpImage = (rawUrl: string): string => {
+      let url = rawUrl.trim();
+      if (url.startsWith('//')) url = `https:${url}`;
+      else if (url.startsWith('/')) url = `${shareOrigin}${url}`;
+      if (!/^https?:\/\//i.test(url)) return '';
+      if (url.toLowerCase().startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)/i.test(url)) {
+        url = `https://${url.slice('http://'.length)}`;
+      }
+      const marker = '/image/upload/';
+      if (!url.includes('res.cloudinary.com/') || !url.includes(marker)) {
+        return url;
+      }
+      const idx = url.indexOf(marker);
+      const prefix = url.slice(0, idx + marker.length);
+      const rest = url.slice(idx + marker.length);
+      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_pad,b_white';
+      const firstSlash = rest.indexOf('/');
+      if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
+      const firstSeg = rest.slice(0, firstSlash);
+      const afterFirst = rest.slice(firstSlash + 1);
+      if (
+        !/^v\d+$/.test(firstSeg) &&
+        /(^|,)(?:f_|q_|w_|h_|c_|b_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
+      ) {
+        return `${prefix}${socialTransform}/${afterFirst}`;
+      }
+      return `${prefix}${socialTransform}/${rest}`;
+    };
+
+    const fetchTargets: string[] = [];
+    const httpImageUrls: string[] = [];
+    const seenHttp = new Set<string>();
+
+    for (let idx = 0; idx < dedupedRaw.length && httpImageUrls.length < 10; idx += 1) {
+      const raw = dedupedRaw[idx];
+      const httpUrl = toShareHttpImage(raw);
+      if (httpUrl) {
+        if (!seenHttp.has(httpUrl)) {
+          seenHttp.add(httpUrl);
+          httpImageUrls.push(httpUrl);
+          fetchTargets.push(httpUrl);
+        }
+        continue;
+      }
+      if (/^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(raw)) {
+        const proxyUrl = `${shareOrigin}/api/product-image?id=${encodeURIComponent(item.id)}${
+          idx > 0 ? `&idx=${idx}` : ''
+        }`;
+        if (!seenHttp.has(proxyUrl)) {
+          seenHttp.add(proxyUrl);
+          httpImageUrls.push(proxyUrl);
+          fetchTargets.push(raw);
+        }
+      }
+    }
+
+    return { shareUrl, fetchTargets, httpImageUrls };
+  };
+
+  const handleShareProduct = async (
+    item: PublicShopProduct,
+    e?: React.MouseEvent
+  ) => {
+    e?.stopPropagation();
+    const { shareUrl } = getProductShareImageSources(item);
     const symPrice = formatCurrency(item.price, sym);
     try {
       if (navigator.share) {
@@ -2349,6 +2486,120 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     } catch {
       triggerStoreNotice('Share link ready: ' + shareUrl);
     }
+  };
+
+  const handleShareAllProductImages = async (
+    item: PublicShopProduct,
+    e?: React.MouseEvent
+  ) => {
+    e?.stopPropagation();
+    const { shareUrl, fetchTargets, httpImageUrls } = getProductShareImageSources(item);
+    if (httpImageUrls.length === 0) {
+      await handleShareProduct(item, e);
+      return;
+    }
+
+    const symPrice = formatCurrency(item.price, sym);
+    const shortCaption = `${item.name} (${symPrice}) - ${settings?.businessName || 'Glamour Galleria'}`;
+    const captionWithUrl = `${shortCaption}\n${shareUrl}`;
+    const safeFileBase =
+      String(item.name || '')
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40) || 'product';
+
+    setShareImagesBusyId(item.id);
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        const fetchedResults = await Promise.allSettled(
+          fetchTargets.map(async (src, idx) => {
+            const resp = await fetch(
+              src,
+              src.startsWith('data:') ? undefined : { mode: 'cors' }
+            );
+            if (!resp.ok) throw new Error('Image fetch failed');
+            const blob = await resp.blob();
+            if (!blob.size) throw new Error('Empty image blob');
+            const mime =
+              blob.type && blob.type.startsWith('image/') ? blob.type : 'image/jpeg';
+            const ext = mime.includes('png')
+              ? 'png'
+              : mime.includes('webp')
+                ? 'webp'
+                : mime.includes('gif')
+                  ? 'gif'
+                  : 'jpg';
+            return new File([blob], `${safeFileBase}-${idx + 1}.${ext}`, {
+              type: mime,
+            });
+          })
+        );
+
+        const files = fetchedResults
+          .filter((r): r is PromiseFulfilledResult<File> => r.status === 'fulfilled')
+          .map((r) => r.value);
+
+        if (files.length > 0) {
+          const canCheck = typeof navigator.canShare === 'function';
+          const payloadWithUrl: ShareData = {
+            title: item.name,
+            text: shortCaption,
+            url: shareUrl,
+            files,
+          };
+          const payloadWithTextUrl: ShareData = {
+            title: item.name,
+            text: captionWithUrl,
+            files,
+          };
+
+          if (canCheck && navigator.canShare(payloadWithUrl)) {
+            await navigator.share(payloadWithUrl);
+            return;
+          }
+          if (!canCheck || navigator.canShare({ files })) {
+            await navigator.share(payloadWithTextUrl);
+            return;
+          }
+        }
+
+        const textFallbackPayload: ShareData = {
+          title: item.name,
+          text: `${shortCaption}\n\nImages (${httpImageUrls.length}):\n${httpImageUrls.join('\n')}`,
+          url: shareUrl,
+        };
+        await navigator.share(textFallbackPayload);
+        return;
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setShareImagesBusyId(null);
+        return;
+      }
+    } finally {
+      setShareImagesBusyId(null);
+    }
+
+    const fullCopyPayload = [
+      shortCaption,
+      `Product Link: ${shareUrl}`,
+      '',
+      `Product Images (${httpImageUrls.length}):`,
+      ...httpImageUrls.map((u, idx) => `${idx + 1}. ${u}`),
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(fullCopyPayload);
+      triggerStoreNotice('Product link & all image URLs copied!');
+    } catch {
+      // fallback dialog handles manual copying cleanly
+    }
+    setShareImagesModal({
+      productName: item.name,
+      shareUrl,
+      imageUrls: httpImageUrls,
+    });
   };
 
   const parsedQty = Math.max(1, Math.floor(Number(orderQty) || 1));
@@ -4528,6 +4779,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
                           className="inline-flex items-center justify-center w-10 h-10 rounded-full border border-[#E6D9EE] bg-[#FDFBFE] text-[#6D28D9] hover:border-[#9333EA] hover:bg-[#FAF5FF] transition-colors cursor-pointer"
                         >
                           <Share2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={shareImagesBusyId === selectedProduct.id}
+                          onClick={(e) => void handleShareAllProductImages(selectedProduct, e)}
+                          aria-label="Share product link and all images"
+                          title="Share All Images"
+                          className="inline-flex items-center justify-center w-10 h-10 rounded-full border border-[#E6D9EE] bg-[#FDFBFE] text-[#DB2777] hover:border-[#DB2777] hover:bg-[#FDF2F8] transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          <ImageIcon className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
@@ -6915,6 +7176,112 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           );
         }}
       />
+
+      {/* Share Product Link & All Image URLs Fallback Modal */}
+      {shareImagesModal && (
+        <div
+          className="no-print fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setShareImagesModal(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-[#E6D9EE] bg-white p-4 shadow-xl space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="font-display-serif text-base font-bold text-[#1F122B] truncate">
+                  Share Product & Images
+                </h3>
+                <p className="text-xs text-[#6B5B7B] truncate">
+                  {shareImagesModal.productName} ({shareImagesModal.imageUrls.length}{' '}
+                  {shareImagesModal.imageUrls.length === 1 ? 'image' : 'images'})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareImagesModal(null)}
+                aria-label="Close share images dialog"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-full border border-[#E6D9EE] text-[#4A3B59] hover:bg-[#FAF5FF] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-[#EFE2F5] bg-[#FDFBFE] p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-[#6D28D9]">
+                  Product Link
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard
+                      ?.writeText(shareImagesModal.shareUrl)
+                      .then(() => triggerStoreNotice('Product link copied!'));
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-[#E6D9EE] bg-white px-2 py-1 text-[11px] font-semibold text-[#6D28D9] hover:bg-[#FAF5FF] cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  Copy Link
+                </button>
+              </div>
+              <div className="text-[11px] text-[#4A3B59] break-all select-all">
+                {shareImagesModal.shareUrl}
+              </div>
+            </div>
+
+            <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+              {shareImagesModal.imageUrls.map((imgUrl, idx) => (
+                <div
+                  key={`${imgUrl}-${idx}`}
+                  className="flex items-center gap-2.5 rounded-xl border border-[#EFE2F5] bg-white p-2"
+                >
+                  <img
+                    src={imgUrl}
+                    alt={`${shareImagesModal.productName} image ${idx + 1}`}
+                    referrerPolicy="no-referrer"
+                    className="w-12 h-12 rounded-lg object-cover border border-[#EFE2F5] shrink-0"
+                  />
+                  <div className="min-w-0 flex-1 text-[11px] text-[#4A3B59] truncate select-all">
+                    {imgUrl}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        ?.writeText(imgUrl)
+                        .then(() => triggerStoreNotice(`Image ${idx + 1} URL copied!`));
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-[#E6D9EE] bg-[#FDFBFE] px-2 py-1 text-[11px] font-semibold text-[#DB2777] hover:bg-[#FDF2F8] shrink-0 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" />
+                    Copy
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                const allPayload = [
+                  shareImagesModal.productName,
+                  `Product Link: ${shareImagesModal.shareUrl}`,
+                  '',
+                  ...shareImagesModal.imageUrls.map((u, i) => `${i + 1}. ${u}`),
+                ].join('\n');
+                void navigator.clipboard
+                  ?.writeText(allPayload)
+                  .then(() => triggerStoreNotice('Link & all image URLs copied!'));
+              }}
+              className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#DB2777] to-[#7E22CE] px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:opacity-95 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              Copy Link & All {shareImagesModal.imageUrls.length} Image URLs
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Offline Status Indicator & Storefront Notification Toast */}
       <OfflineIndicator />

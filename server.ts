@@ -1654,7 +1654,7 @@ async function startServer(): Promise<void> {
       const idx = url.indexOf(marker);
       const prefix = url.slice(0, idx + marker.length);
       const rest = url.slice(idx + marker.length);
-      const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
+      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_pad,b_white';
       const firstSlash = rest.indexOf('/');
       if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
       const firstSeg = rest.slice(0, firstSlash);
@@ -1668,17 +1668,26 @@ async function startServer(): Promise<void> {
       return `${prefix}${socialTransform}/${rest}`;
     };
 
-    const pickFirstHttpImg = (record: Record<string, unknown>, idFallback?: string): string => {
+    const pickAllHttpImgs = (record: Record<string, unknown>, idFallback?: string): string[] => {
       const candidates: string[] = [];
+      const seenRaw = new Set<string>();
+      const pushStr = (s: string) => {
+        const t = s.trim();
+        if (!t || seenRaw.has(t)) return;
+        if (t.toLowerCase().includes('/video/upload/') || videoRegex.test(t) || t.startsWith('data:video/') || t.startsWith('blob:')) return;
+        seenRaw.add(t);
+        candidates.push(t);
+      };
       const pushEntry = (entry: unknown) => {
-        if (typeof entry === 'string' && entry.trim()) {
-          candidates.push(entry.trim());
+        if (typeof entry === 'string') {
+          pushStr(entry);
         } else if (entry && typeof entry === 'object') {
           const obj = entry as Record<string, unknown>;
           if (String(obj.resourceType || obj.type || '').toLowerCase() === 'video') return;
           for (const k of ['secureUrl', 'secure_url', 'url', 'src', 'imageUrl', 'image']) {
             if (typeof obj[k] === 'string' && String(obj[k]).trim()) {
-              candidates.push(String(obj[k]).trim());
+              pushStr(String(obj[k]));
+              break;
             }
           }
         }
@@ -1691,15 +1700,29 @@ async function startServer(): Promise<void> {
       for (const singleKey of ['imageDataUrl', 'imageUrl', 'image', 'thumbnail', 'coverImage', 'photo']) {
         if (record[singleKey]) pushEntry(record[singleKey]);
       }
-      for (const c of candidates) {
-        const formatted = formatSocialCloudinaryUrl(c);
-        if (formatted) return formatted;
-      }
+
       const pid = String(idFallback || record.id || '').trim();
-      if (pid && candidates.some((c) => /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(c))) {
-        return `${httpsOrigin}/api/product-image?id=${encodeURIComponent(pid)}`;
+      const out: string[] = [];
+      const seenOut = new Set<string>();
+      for (let idx = 0; idx < candidates.length && out.length < 8; idx += 1) {
+        const c = candidates[idx];
+        const formatted = formatSocialCloudinaryUrl(c);
+        if (formatted) {
+          if (!seenOut.has(formatted)) {
+            seenOut.add(formatted);
+            out.push(formatted);
+          }
+          continue;
+        }
+        if (pid && /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(c)) {
+          const proxy = `${httpsOrigin}/api/product-image?id=${encodeURIComponent(pid)}${idx > 0 ? `&idx=${idx}` : ''}`;
+          if (!seenOut.has(proxy)) {
+            seenOut.add(proxy);
+            out.push(proxy);
+          }
+        }
       }
-      return '';
+      return out;
     };
 
     const slugifyName = (val: string) =>
@@ -1718,7 +1741,7 @@ async function startServer(): Promise<void> {
     let matchedName = '';
     let matchedDesc = '';
     let matchedPrice = 0;
-    let matchedImg = '';
+    let matchedImgs: string[] = [];
 
     const localProd = workspace.products.find((p) => {
       const pid = String(p.id || '').toLowerCase();
@@ -1735,7 +1758,7 @@ async function startServer(): Promise<void> {
       matchedName = String(localProd.name || '');
       matchedDesc = String(localProd.description || '');
       matchedPrice = Number(localProd.sellingPrice ?? localProd.price ?? 0);
-      matchedImg = pickFirstHttpImg(localProd);
+      matchedImgs = pickAllHttpImgs(localProd, productKey);
     } else {
       const settingsRecord = (workspace.settings || {}) as Record<string, unknown>;
       const viewPanel =
@@ -1762,7 +1785,7 @@ async function startServer(): Promise<void> {
         matchedName = String(customMatch.name || '');
         matchedDesc = String(customMatch.description || '');
         matchedPrice = Number(customMatch.sellingPrice ?? customMatch.price ?? 0);
-        matchedImg = pickFirstHttpImg(customMatch);
+        matchedImgs = pickAllHttpImgs(customMatch, productKey);
       }
     }
 
@@ -1805,19 +1828,31 @@ async function startServer(): Promise<void> {
               String(fields.image?.stringValue || ''),
               String(fields.thumbnail?.stringValue || ''),
             ];
-            const allRaw = [...arrUrls, ...singleCandidates].filter(Boolean);
-            for (const candidate of allRaw) {
+            const seenRaw = new Set<string>();
+            const allRaw: string[] = [];
+            for (const c of [...arrUrls, ...singleCandidates]) {
+              const t = c.trim();
+              if (!t || seenRaw.has(t)) continue;
+              if (t.toLowerCase().includes('/video/upload/') || videoRegex.test(t) || t.startsWith('data:video/') || t.startsWith('blob:')) continue;
+              seenRaw.add(t);
+              allRaw.push(t);
+            }
+            const seenOut = new Set<string>();
+            for (let idx = 0; idx < allRaw.length && matchedImgs.length < 8; idx += 1) {
+              const candidate = allRaw[idx];
               const formatted = formatSocialCloudinaryUrl(candidate);
               if (formatted) {
-                matchedImg = formatted;
-                break;
+                if (!seenOut.has(formatted)) {
+                  seenOut.add(formatted);
+                  matchedImgs.push(formatted);
+                }
+              } else if (/^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(candidate)) {
+                const proxy = `${httpsOrigin}/api/product-image?id=${encodeURIComponent(cleanKey)}${idx > 0 ? `&idx=${idx}` : ''}`;
+                if (!seenOut.has(proxy)) {
+                  seenOut.add(proxy);
+                  matchedImgs.push(proxy);
+                }
               }
-            }
-            if (
-              !matchedImg &&
-              allRaw.some((c) => /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(c))
-            ) {
-              matchedImg = `${httpsOrigin}/api/product-image?id=${encodeURIComponent(cleanKey)}`;
             }
           }
         }
@@ -1855,16 +1890,39 @@ async function startServer(): Promise<void> {
     const storeLogoFallback =
       formatSocialCloudinaryUrl(String(workspace.settings?.logoDataUrl || '')) ||
       `${origin}/pwa-512x512.png`;
-    const finalImg = matchedImg || storeLogoFallback;
-    const imgLower = finalImg.toLowerCase();
-    const imgType =
-      imgLower.includes('/f_jpg') ||
-      imgLower.includes(',f_jpg') ||
-      /\.jpe?g(\?|$)/i.test(imgLower)
+    const finalImgList = matchedImgs.length > 0 ? matchedImgs : [storeLogoFallback];
+    const finalImg = finalImgList[0];
+    const detectMime = (u: string) => {
+      const l = u.toLowerCase();
+      return l.includes('/f_jpg') || l.includes(',f_jpg') || /\.jpe?g(\?|$)/i.test(l)
         ? 'image/jpeg'
-        : /\.png(\?|$)/i.test(imgLower)
+        : /\.png(\?|$)/i.test(l)
           ? 'image/png'
           : '';
+    };
+    const buildImgMeta = (u: string, includeAlt: boolean): string[] => {
+      const l = u.toLowerCase();
+      const mime = detectMime(u);
+      const is1200 = l.includes('w_1200,h_1200,c_pad');
+      const is800 = l.includes('w_800,h_800,c_pad');
+      return [
+        `<meta property="og:image" content="${esc(u)}" />`,
+        `<meta property="og:image:secure_url" content="${esc(u)}" />`,
+        ...(mime ? [`<meta property="og:image:type" content="${esc(mime)}" />`] : []),
+        ...(is1200
+          ? [
+              `<meta property="og:image:width" content="1200" />`,
+              `<meta property="og:image:height" content="1200" />`,
+            ]
+          : is800
+            ? [
+                `<meta property="og:image:width" content="800" />`,
+                `<meta property="og:image:height" content="800" />`,
+              ]
+            : []),
+        ...(includeAlt ? [`<meta property="og:image:alt" content="${esc(matchedName)}" />`] : []),
+      ];
+    };
     const canonical = pathSlug
       ? `${origin}/product/${encodeURIComponent(productKey)}`
       : `${origin}/?product=${encodeURIComponent(productKey)}`;
@@ -1885,16 +1943,8 @@ async function startServer(): Promise<void> {
       `<meta property="og:description" content="${esc(finalDesc)}" />`,
       `<meta property="og:type" content="product" />`,
       `<meta property="og:url" content="${esc(canonical)}" />`,
-      `<meta property="og:image" content="${esc(finalImg)}" />`,
-      `<meta property="og:image:secure_url" content="${esc(finalImg)}" />`,
-      ...(imgType ? [`<meta property="og:image:type" content="${esc(imgType)}" />`] : []),
-      ...(imgLower.includes('w_800,h_800,c_pad')
-        ? [
-            `<meta property="og:image:width" content="800" />`,
-            `<meta property="og:image:height" content="800" />`,
-          ]
-        : []),
-      `<meta property="og:image:alt" content="${esc(matchedName)}" />`,
+      ...buildImgMeta(finalImg, true),
+      ...finalImgList.slice(1).flatMap((u) => buildImgMeta(u, false)),
       `<meta name="twitter:card" content="summary_large_image" />`,
       `<meta name="twitter:url" content="${esc(canonical)}" />`,
       `<meta name="twitter:title" content="${esc(matchedName)}" />`,

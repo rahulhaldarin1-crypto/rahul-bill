@@ -104,7 +104,7 @@ function formatSocialCloudinaryUrl(url: string): string {
 
   const prefix = url.slice(0, idx + marker.length);
   const rest = url.slice(idx + marker.length);
-  const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
+  const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_pad,b_white';
 
   const firstSlash = rest.indexOf('/');
   if (firstSlash === -1) {
@@ -124,11 +124,24 @@ function formatSocialCloudinaryUrl(url: string): string {
 }
 
 function extractCandidateStrings(record: Record<string, unknown>): string[] {
+  const seen = new Set<string>();
   const out: string[] = [];
+  const pushString = (val: string) => {
+    const t = val.trim();
+    if (!t || seen.has(t)) return;
+    if (isVideoMediaUrl(t) || t.startsWith('blob:')) return;
+    const isHttpLike =
+      t.startsWith('//') || t.startsWith('/') || /^https?:\/\//i.test(t);
+    const isBase64Img = /^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,[A-Za-z0-9+/=]+$/i.test(
+      t
+    );
+    if (!isHttpLike && !isBase64Img) return;
+    seen.add(t);
+    out.push(t);
+  };
   const pushItem = (entry: unknown) => {
     if (typeof entry === 'string') {
-      const t = entry.trim();
-      if (t) out.push(t);
+      pushString(entry);
       return;
     }
     if (entry && typeof entry === 'object') {
@@ -137,7 +150,8 @@ function extractCandidateStrings(record: Record<string, unknown>): string[] {
       if (rType === 'video') return;
       for (const key of ['secureUrl', 'secure_url', 'url', 'src', 'imageUrl', 'image']) {
         if (typeof obj[key] === 'string' && String(obj[key]).trim()) {
-          out.push(String(obj[key]).trim());
+          pushString(String(obj[key]));
+          break;
         }
       }
     }
@@ -294,6 +308,10 @@ export default async function handler(
       return;
     }
 
+    const rawIdx = Array.isArray(req.query?.idx) ? req.query.idx[0] : req.query?.idx;
+    const parsedIdx = Number.parseInt(String(rawIdx ?? '0'), 10);
+    const requestedIdx = Number.isFinite(parsedIdx) && parsedIdx >= 0 ? parsedIdx : 0;
+
     const record = await findProductRecord(key);
     if (!record) {
       res.redirect(302, fallbackLogo);
@@ -301,50 +319,51 @@ export default async function handler(
     }
 
     const candidates = extractCandidateStrings(record);
-    for (const raw of candidates) {
-      if (isVideoMediaUrl(raw) || raw.startsWith('blob:')) continue;
-      if (raw.startsWith('//')) {
-        res.redirect(302, formatSocialCloudinaryUrl(`https:${raw}`));
-        return;
-      }
-      if (raw.startsWith('/')) {
-        res.redirect(302, `${httpsOrigin}${raw}`);
-        return;
-      }
-      if (/^https?:\/\//i.test(raw)) {
-        const httpsUrl = raw.toLowerCase().startsWith('http://res.cloudinary.com/')
-          ? `https://${raw.slice('http://'.length)}`
-          : raw;
-        res.redirect(302, formatSocialCloudinaryUrl(httpsUrl));
-        return;
-      }
+    if (candidates.length === 0) {
+      res.redirect(302, fallbackLogo);
+      return;
     }
 
-    for (const raw of candidates) {
-      const match = /^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/i.exec(
-        raw
-      );
-      if (match) {
-        const mime =
-          match[1].toLowerCase() === 'image/jpg'
-            ? 'image/jpeg'
-            : match[1].toLowerCase();
-        const buf = Buffer.from(match[2], 'base64');
-        if (buf.byteLength > 0) {
-          res.setHeader('Content-Type', mime);
-          res.setHeader('Content-Length', String(buf.byteLength));
-          res.setHeader(
-            'Cache-Control',
-            'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800'
-          );
-          res.setHeader('X-Content-Type-Options', 'nosniff');
-          if (String(req.method || 'GET').toUpperCase() === 'HEAD') {
-            res.status(200).end();
-            return;
-          }
-          res.status(200).send(buf);
+    const selected = candidates[requestedIdx] || candidates[0];
+    if (selected.startsWith('//')) {
+      res.redirect(302, formatSocialCloudinaryUrl(`https:${selected}`));
+      return;
+    }
+    if (selected.startsWith('/')) {
+      res.redirect(302, `${httpsOrigin}${selected}`);
+      return;
+    }
+    if (/^https?:\/\//i.test(selected)) {
+      const httpsUrl = selected.toLowerCase().startsWith('http://')
+        ? `https://${selected.slice('http://'.length)}`
+        : selected;
+      res.redirect(302, formatSocialCloudinaryUrl(httpsUrl));
+      return;
+    }
+
+    const match = /^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/i.exec(
+      selected
+    );
+    if (match) {
+      const mime =
+        match[1].toLowerCase() === 'image/jpg'
+          ? 'image/jpeg'
+          : match[1].toLowerCase();
+      const buf = Buffer.from(match[2], 'base64');
+      if (buf.byteLength > 0) {
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Content-Length', String(buf.byteLength));
+        res.setHeader(
+          'Cache-Control',
+          'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800'
+        );
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        if (String(req.method || 'GET').toUpperCase() === 'HEAD') {
+          res.status(200).end();
           return;
         }
+        res.status(200).send(buf);
+        return;
       }
     }
 
