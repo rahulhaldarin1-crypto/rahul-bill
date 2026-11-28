@@ -82,9 +82,12 @@ function decodeFirestoreDocument(
   for (const [k, fv] of Object.entries(obj.fields)) {
     parsed[k] = decodeFirestoreValue(fv);
   }
-  if (!parsed.id && typeof obj.name === 'string') {
+  if (typeof obj.name === 'string') {
     const seg = obj.name.split('/').pop();
-    if (seg) parsed.id = seg;
+    if (seg) {
+      parsed._docId = seg;
+      if (!parsed.id) parsed.id = seg;
+    }
   }
   return parsed;
 }
@@ -490,14 +493,18 @@ async function resolveProductByKey(
       for (const d of docs) {
         const decoded = decodeFirestoreDocument(d);
         if (!decoded) continue;
-        const docId = String(decoded.id || '').trim();
+        const fieldId = String(decoded.id || '').trim();
+        const firestoreDocId = String(decoded._docId || fieldId).trim();
         const docNumber = String(decoded.productNumber || '').trim();
         const docSlug = String(decoded.slug || '').trim();
         const docName = String(decoded.name || '').trim();
         const matchesId =
-          docId.toLowerCase() === normalizedTarget ||
-          `cat-${docId}`.toLowerCase() === normalizedTarget ||
-          docId.toLowerCase() === normalizedStripped ||
+          fieldId.toLowerCase() === normalizedTarget ||
+          `cat-${fieldId}`.toLowerCase() === normalizedTarget ||
+          fieldId.toLowerCase() === normalizedStripped ||
+          firestoreDocId.toLowerCase() === normalizedTarget ||
+          `cat-${firestoreDocId}`.toLowerCase() === normalizedTarget ||
+          firestoreDocId.toLowerCase() === normalizedStripped ||
           (Boolean(docNumber) &&
             (docNumber.toLowerCase() === normalizedTarget ||
               docNumber.toLowerCase() === normalizedStripped)) ||
@@ -704,6 +711,12 @@ function injectMetaTags(
 
   const fullBlock = tags.join('\n');
 
+  if (/<meta[^>]+charset=[^>]*>/i.test(cleaned)) {
+    return cleaned.replace(
+      /<meta[^>]+charset=[^>]*>/i,
+      (match) => `${match}\n${fullBlock}`
+    );
+  }
   if (/<head[^>]*>/i.test(cleaned)) {
     return cleaned.replace(/<head[^>]*>/i, (match) => `${match}\n${fullBlock}`);
   }
