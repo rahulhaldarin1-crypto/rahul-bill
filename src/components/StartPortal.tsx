@@ -2164,6 +2164,42 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       tag.setAttribute('content', content);
     };
 
+    const removeMeta = (attrName: 'name' | 'property', attrValue: string) => {
+      const tag = document.head.querySelector<HTMLMetaElement>(
+        `meta[${attrName}="${attrValue}"]`
+      );
+      if (tag) tag.remove();
+    };
+
+    const toSocialOgImage = (rawUrl: string): string => {
+      let url = rawUrl.trim();
+      if (!url || isVideoUrl(url)) return '';
+      if (url.startsWith('//')) url = `https:${url}`;
+      if (!/^https?:\/\//i.test(url)) return '';
+      if (url.toLowerCase().startsWith('http://res.cloudinary.com/')) {
+        url = `https://${url.slice('http://'.length)}`;
+      }
+      const marker = '/image/upload/';
+      if (!url.includes('res.cloudinary.com/') || !url.includes(marker)) {
+        return url;
+      }
+      const idx = url.indexOf(marker);
+      const prefix = url.slice(0, idx + marker.length);
+      const rest = url.slice(idx + marker.length);
+      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_limit';
+      const firstSlash = rest.indexOf('/');
+      if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
+      const firstSeg = rest.slice(0, firstSlash);
+      const afterFirst = rest.slice(firstSlash + 1);
+      if (
+        !/^v\d+$/.test(firstSeg) &&
+        /(^|,)(?:f_|q_|w_|h_|c_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
+      ) {
+        return `${prefix}${socialTransform}/${afterFirst}`;
+      }
+      return `${prefix}${socialTransform}/${rest}`;
+    };
+
     const origin = window.location.origin;
     const defaultTitle = 'Glamour Galleria - Online Shopping';
     const defaultDescription =
@@ -2175,8 +2211,17 @@ export const StartPortal: React.FC<StartPortalProps> = ({
         .replace(/\s+/g, ' ')
         .trim();
       const priceText = formatCurrency(selectedProduct.price, sym);
+      const rawProductDesc =
+        selectedProduct.price > 0 && cleanedDesc
+          ? `${priceText} — ${cleanedDesc}`
+          : cleanedDesc ||
+            (selectedProduct.price > 0
+              ? `${priceText} — Shop ${selectedProduct.name} on Glamour Galleria.`
+              : `${selectedProduct.name} on Glamour Galleria.`);
       const productDescription =
-        cleanedDesc || `${selectedProduct.name} — ${priceText} on Glamour Galleria.`;
+        rawProductDesc.length > 180
+          ? `${rawProductDesc.slice(0, 177).trim()}...`
+          : rawProductDesc;
       const productImages =
         Array.isArray(selectedProduct.imageDataUrls) &&
         selectedProduct.imageDataUrls.length > 0
@@ -2185,7 +2230,7 @@ export const StartPortal: React.FC<StartPortalProps> = ({
             ? [selectedProduct.imageDataUrl]
             : [];
       const primaryHttpImage =
-        productImages.find((u) => /^https?:\/\//i.test(u)) || defaultImage;
+        productImages.map((u) => toSocialOgImage(u)).find(Boolean) || defaultImage;
       const shareUrl = `${origin}/?product=${encodeURIComponent(selectedProduct.id)}`;
 
       document.title = `${selectedProduct.name} | Glamour Galleria`;
@@ -2195,10 +2240,22 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       upsertMeta('property', 'og:type', 'product');
       upsertMeta('property', 'og:url', shareUrl);
       upsertMeta('property', 'og:image', primaryHttpImage);
+      upsertMeta('property', 'og:image:secure_url', primaryHttpImage);
+      upsertMeta('property', 'og:image:alt', selectedProduct.name);
       upsertMeta('name', 'twitter:card', 'summary_large_image');
+      upsertMeta('name', 'twitter:url', shareUrl);
       upsertMeta('name', 'twitter:title', selectedProduct.name);
       upsertMeta('name', 'twitter:description', productDescription);
       upsertMeta('name', 'twitter:image', primaryHttpImage);
+      upsertMeta('name', 'twitter:image:alt', selectedProduct.name);
+      if (selectedProduct.price > 0) {
+        upsertMeta(
+          'property',
+          'product:price:amount',
+          selectedProduct.price.toFixed(2)
+        );
+        upsertMeta('property', 'product:price:currency', 'INR');
+      }
     } else {
       document.title = defaultTitle;
       upsertMeta('name', 'description', defaultDescription);
@@ -2207,10 +2264,16 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       upsertMeta('property', 'og:type', 'website');
       upsertMeta('property', 'og:url', `${origin}/`);
       upsertMeta('property', 'og:image', defaultImage);
+      upsertMeta('property', 'og:image:secure_url', defaultImage);
+      upsertMeta('property', 'og:image:alt', defaultTitle);
       upsertMeta('name', 'twitter:card', 'summary_large_image');
+      upsertMeta('name', 'twitter:url', `${origin}/`);
       upsertMeta('name', 'twitter:title', defaultTitle);
       upsertMeta('name', 'twitter:description', defaultDescription);
       upsertMeta('name', 'twitter:image', defaultImage);
+      upsertMeta('name', 'twitter:image:alt', defaultTitle);
+      removeMeta('property', 'product:price:amount');
+      removeMeta('property', 'product:price:currency');
     }
   }, [selectedProduct, sym]);
 
@@ -2237,7 +2300,10 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     e?: React.MouseEvent
   ) => {
     e?.stopPropagation();
-    const shareUrl = `${window.location.origin}${window.location.pathname}?product=${encodeURIComponent(item.id)}`;
+    const basePath = /^\/product\//i.test(window.location.pathname)
+      ? '/'
+      : window.location.pathname || '/';
+    const shareUrl = `${window.location.origin}${basePath}?product=${encodeURIComponent(item.id)}`;
     const symPrice = formatCurrency(item.price, sym);
     try {
       if (navigator.share) {

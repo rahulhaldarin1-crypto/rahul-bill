@@ -1615,36 +1615,128 @@ async function startServer(): Promise<void> {
     const productKey = queryProd || pathSlug;
     if (!productKey) return html;
 
-    const protoHeader = req.headers['x-forwarded-proto'];
-    const proto = Array.isArray(protoHeader)
-      ? protoHeader[0]
-      : protoHeader || req.protocol || 'https';
     const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
     const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+    const isLocalHost = !host || /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
+    const protoHeader = req.headers['x-forwarded-proto'];
+    const rawProto = Array.isArray(protoHeader)
+      ? protoHeader[0]
+      : protoHeader || req.protocol || (isLocalHost ? 'http' : 'https');
+    const proto = !isLocalHost ? 'https' : rawProto;
     const origin = host ? `${proto}://${host}` : 'https://glamour-galleria.vercel.app';
 
-    const cleanKey = productKey.startsWith('cat-') ? productKey.slice(4) : productKey;
+    const videoRegex = /\.(mp4|webm|mov|m4v|ogg|ogv|avi|mkv)(\?.*)?$/i;
+    const formatSocialCloudinaryUrl = (rawUrl: string): string => {
+      let url = rawUrl.trim();
+      if (!url || url.startsWith('data:') || url.startsWith('blob:')) return '';
+      if (url.toLowerCase().includes('/video/upload/') || videoRegex.test(url)) {
+        return '';
+      }
+      if (url.startsWith('//')) url = `https:${url}`;
+      else if (url.startsWith('/')) url = `${origin}${url}`;
+      if (!/^https?:\/\//i.test(url)) return '';
+      if (url.toLowerCase().startsWith('http://res.cloudinary.com/')) {
+        url = `https://${url.slice('http://'.length)}`;
+      }
+      const marker = '/image/upload/';
+      if (!url.includes('res.cloudinary.com/') || !url.includes(marker)) {
+        return url;
+      }
+      const idx = url.indexOf(marker);
+      const prefix = url.slice(0, idx + marker.length);
+      const rest = url.slice(idx + marker.length);
+      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_limit';
+      const firstSlash = rest.indexOf('/');
+      if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
+      const firstSeg = rest.slice(0, firstSlash);
+      const afterFirst = rest.slice(firstSlash + 1);
+      if (
+        !/^v\d+$/.test(firstSeg) &&
+        /(^|,)(?:f_|q_|w_|h_|c_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
+      ) {
+        return `${prefix}${socialTransform}/${afterFirst}`;
+      }
+      return `${prefix}${socialTransform}/${rest}`;
+    };
+
+    const pickFirstHttpImg = (record: Record<string, unknown>): string => {
+      const candidates: unknown[] = [];
+      if (Array.isArray(record.imageDataUrls)) candidates.push(...record.imageDataUrls);
+      if (typeof record.imageDataUrl === 'string') candidates.push(record.imageDataUrl);
+      if (typeof record.imageUrl === 'string') candidates.push(record.imageUrl);
+      for (const c of candidates) {
+        if (typeof c !== 'string') continue;
+        const formatted = formatSocialCloudinaryUrl(c);
+        if (formatted) return formatted;
+      }
+      return '';
+    };
+
+    const slugifyName = (val: string) =>
+      val
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+    const cleanKey = productKey.startsWith('cat-') ? productKey.slice(4).trim() : productKey;
+    const targetLower = productKey.toLowerCase();
+    const strippedLower = cleanKey.toLowerCase();
+    const targetSlug = slugifyName(productKey);
+
     const workspace = getActiveWorkspace();
     let matchedName = '';
     let matchedDesc = '';
     let matchedPrice = 0;
     let matchedImg = '';
 
-    const localProd = workspace.products.find(
-      (p) => p.id === cleanKey || `cat-${p.id}` === productKey
-    ) as Record<string, unknown> | undefined;
+    const localProd = workspace.products.find((p) => {
+      const pid = String(p.id || '').toLowerCase();
+      const pName = String(p.name || '');
+      return (
+        pid === targetLower ||
+        `cat-${pid}` === targetLower ||
+        pid === strippedLower ||
+        (Boolean(targetSlug) && slugifyName(pName) === targetSlug)
+      );
+    }) as Record<string, unknown> | undefined;
+
     if (localProd) {
       matchedName = String(localProd.name || '');
       matchedDesc = String(localProd.description || '');
-      matchedPrice = Number(localProd.sellingPrice || 0);
-      const localArr = Array.isArray(localProd.imageDataUrls)
-        ? (localProd.imageDataUrls as unknown[]).map((u) => String(u || ''))
+      matchedPrice = Number(localProd.sellingPrice ?? localProd.price ?? 0);
+      matchedImg = pickFirstHttpImg(localProd);
+    } else {
+      const settingsRecord = (workspace.settings || {}) as Record<string, unknown>;
+      const viewPanel =
+        settingsRecord.viewPanel && typeof settingsRecord.viewPanel === 'object'
+          ? (settingsRecord.viewPanel as Record<string, unknown>)
+          : undefined;
+      const shopping =
+        viewPanel?.shopping && typeof viewPanel.shopping === 'object'
+          ? (viewPanel.shopping as Record<string, unknown>)
+          : undefined;
+      const customItems = Array.isArray(shopping?.items)
+        ? (shopping.items as Array<Record<string, unknown>>)
         : [];
-      const singleUrl = String(localProd.imageDataUrl || '');
-      matchedImg =
-        localArr.find((u) => /^https?:\/\//i.test(u)) ||
-        (/^https?:\/\//i.test(singleUrl) ? singleUrl : '');
-    } else if (/^[a-zA-Z0-9_-]{1,128}$/.test(cleanKey)) {
+      const customMatch = customItems.find((item) => {
+        const iid = String(item.id || '').toLowerCase();
+        const iname = String(item.name || '');
+        return (
+          iid === targetLower ||
+          iid === strippedLower ||
+          (Boolean(targetSlug) && slugifyName(iname) === targetSlug)
+        );
+      });
+      if (customMatch) {
+        matchedName = String(customMatch.name || '');
+        matchedDesc = String(customMatch.description || '');
+        matchedPrice = Number(customMatch.sellingPrice ?? customMatch.price ?? 0);
+        matchedImg = pickFirstHttpImg(customMatch);
+      }
+    }
+
+    if (!matchedName && /^[a-zA-Z0-9_-]{1,128}$/.test(cleanKey)) {
       try {
         const resp = await fetch(
           `https://firestore.googleapis.com/v1/projects/rahul-bill/databases/(default)/documents/products/${encodeURIComponent(cleanKey)}`
@@ -1654,17 +1746,37 @@ async function startServer(): Promise<void> {
             fields?: Record<string, { stringValue?: string; doubleValue?: number; integerValue?: string; arrayValue?: { values?: Array<{ stringValue?: string }> } }>;
           };
           const fields = data.fields || {};
-          matchedName = fields.name?.stringValue || '';
-          matchedDesc = fields.description?.stringValue || '';
-          matchedPrice = Number(
-            fields.sellingPrice?.doubleValue ?? fields.sellingPrice?.integerValue ?? 0
-          );
-          const arrUrls = (fields.imageDataUrls?.arrayValue?.values || [])
-            .map((v) => String(v.stringValue || ''))
-            .filter((u) => /^https?:\/\//i.test(u));
-          const singleUrl = String(fields.imageDataUrl?.stringValue || '');
-          matchedImg =
-            arrUrls[0] || (/^https?:\/\//i.test(singleUrl) ? singleUrl : '');
+          const sellerId = String(fields.sellerId?.stringValue || '').trim();
+          const sellerStatus = String(fields.sellerApprovalStatus?.stringValue || '')
+            .trim()
+            .toLowerCase();
+          if (
+            !sellerId ||
+            sellerId.toLowerCase() === 'admin' ||
+            !sellerStatus ||
+            sellerStatus === 'approved'
+          ) {
+            matchedName = fields.name?.stringValue || '';
+            matchedDesc = fields.description?.stringValue || '';
+            matchedPrice = Number(
+              fields.sellingPrice?.doubleValue ??
+                fields.sellingPrice?.integerValue ??
+                fields.price?.doubleValue ??
+                fields.price?.integerValue ??
+                0
+            );
+            const arrUrls = (fields.imageDataUrls?.arrayValue?.values || []).map((v) =>
+              String(v.stringValue || '')
+            );
+            const singleUrl = String(fields.imageDataUrl?.stringValue || '');
+            for (const candidate of [...arrUrls, singleUrl]) {
+              const formatted = formatSocialCloudinaryUrl(candidate);
+              if (formatted) {
+                matchedImg = formatted;
+                break;
+              }
+            }
+          }
         }
       } catch {
         // non-blocking fallback
@@ -1672,6 +1784,7 @@ async function startServer(): Promise<void> {
     }
 
     if (!matchedName) return html;
+
     const esc = (s: string) =>
       s
         .replace(/&/g, '&amp;')
@@ -1679,12 +1792,36 @@ async function startServer(): Promise<void> {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
     const cleanDesc = matchedDesc.replace(/\s+/g, ' ').trim();
+    const formattedPrice =
+      Number.isFinite(matchedPrice) && matchedPrice > 0
+        ? `₹${new Intl.NumberFormat('en-IN', {
+            maximumFractionDigits: matchedPrice % 1 === 0 ? 0 : 2,
+          }).format(matchedPrice)}`
+        : '';
+    const rawFinalDesc =
+      formattedPrice && cleanDesc
+        ? `${formattedPrice} — ${cleanDesc}`
+        : cleanDesc ||
+          (formattedPrice
+            ? `${formattedPrice} — Shop ${matchedName} on Glamour Galleria.`
+            : `${matchedName} on Glamour Galleria.`);
     const finalDesc =
-      cleanDesc ||
-      (matchedPrice > 0
-        ? `${matchedName} — ₹${matchedPrice} on Glamour Galleria.`
-        : `${matchedName} on Glamour Galleria.`);
-    const finalImg = matchedImg || `${origin}/pwa-512x512.png`;
+      rawFinalDesc.length > 180
+        ? `${rawFinalDesc.slice(0, 177).trim()}...`
+        : rawFinalDesc;
+    const storeLogoFallback =
+      formatSocialCloudinaryUrl(String(workspace.settings?.logoDataUrl || '')) ||
+      `${origin}/pwa-512x512.png`;
+    const finalImg = matchedImg || storeLogoFallback;
+    const imgLower = finalImg.toLowerCase();
+    const imgType =
+      imgLower.includes('/f_jpg') ||
+      imgLower.includes(',f_jpg') ||
+      /\.jpe?g(\?|$)/i.test(imgLower)
+        ? 'image/jpeg'
+        : /\.png(\?|$)/i.test(imgLower)
+          ? 'image/png'
+          : '';
     const canonical = pathSlug
       ? `${origin}/product/${encodeURIComponent(productKey)}`
       : `${origin}/?product=${encodeURIComponent(productKey)}`;
@@ -1692,21 +1829,35 @@ async function startServer(): Promise<void> {
     const stripped = html
       .replace(/<title[^>]*>[\s\S]*?<\/title>\s*/gi, '')
       .replace(/<meta[^>]+name=["']description["'][^>]*>\s*/gi, '')
+      .replace(/<link[^>]+rel=["']canonical["'][^>]*>\s*/gi, '')
       .replace(/<meta[^>]+property=["']og:[^"']+["'][^>]*>\s*/gi, '')
+      .replace(/<meta[^>]+property=["']product:[^"']+["'][^>]*>\s*/gi, '')
       .replace(/<meta[^>]+name=["']twitter:[^"']+["'][^>]*>\s*/gi, '');
     const metaTags = [
       `<title>${esc(`${matchedName} | Glamour Galleria`)}</title>`,
       `<meta name="description" content="${esc(finalDesc)}" />`,
+      `<link rel="canonical" href="${esc(canonical)}" />`,
       `<meta property="og:site_name" content="Glamour Galleria" />`,
       `<meta property="og:title" content="${esc(matchedName)}" />`,
       `<meta property="og:description" content="${esc(finalDesc)}" />`,
       `<meta property="og:type" content="product" />`,
       `<meta property="og:url" content="${esc(canonical)}" />`,
       `<meta property="og:image" content="${esc(finalImg)}" />`,
+      `<meta property="og:image:secure_url" content="${esc(finalImg)}" />`,
+      ...(imgType ? [`<meta property="og:image:type" content="${esc(imgType)}" />`] : []),
+      `<meta property="og:image:alt" content="${esc(matchedName)}" />`,
       `<meta name="twitter:card" content="summary_large_image" />`,
+      `<meta name="twitter:url" content="${esc(canonical)}" />`,
       `<meta name="twitter:title" content="${esc(matchedName)}" />`,
       `<meta name="twitter:description" content="${esc(finalDesc)}" />`,
       `<meta name="twitter:image" content="${esc(finalImg)}" />`,
+      `<meta name="twitter:image:alt" content="${esc(matchedName)}" />`,
+      ...(Number.isFinite(matchedPrice) && matchedPrice > 0
+        ? [
+            `<meta property="product:price:amount" content="${esc(matchedPrice.toFixed(2))}" />`,
+            `<meta property="product:price:currency" content="INR" />`,
+          ]
+        : []),
     ].join('\n    ');
     return stripped.replace('<head>', `<head>\n    ${metaTags}`);
   };
