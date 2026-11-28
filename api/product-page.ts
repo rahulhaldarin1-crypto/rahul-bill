@@ -1,8 +1,14 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const FIREBASE_PROJECT_ID = 'rahul-bill';
+const FIREBASE_PROJECT_ID =
+  (
+    process.env.VITE_FIREBASE_PROJECT_ID ||
+    process.env.FIREBASE_PROJECT_ID ||
+    'rahul-bill'
+  ).trim() || 'rahul-bill';
 const DEFAULT_SITE_URL = 'https://glamour-galleria.vercel.app';
 const DEFAULT_TITLE = 'Glamour Galleria - Online Shopping';
 const DEFAULT_DESCRIPTION =
@@ -299,128 +305,160 @@ async function resolveProductByKey(
   fallbackOrigin: string
 ): Promise<{ product: ResolvedProductMeta | null; fallbackLogoUrl: string }> {
   const defaultLogo = `${fallbackOrigin}${DEFAULT_IMAGE_PATH}`;
-  const cleanKey = String(rawKey || '').trim();
-  if (!cleanKey) {
+  try {
+    const cleanKey = String(rawKey || '').trim();
+    if (!cleanKey) {
+      return { product: null, fallbackLogoUrl: defaultLogo };
+    }
+
+    const strippedCatId = cleanKey.startsWith('cat-')
+      ? cleanKey.slice(4).trim()
+      : cleanKey;
+
+    // Fetch settings/business in parallel with direct product lookup when ID looks like a Firestore document ID
+    const directLookupPromise = /^[a-zA-Z0-9_-]{1,128}$/.test(strippedCatId)
+      ? fetchFirestoreJson(`products/${encodeURIComponent(strippedCatId)}`)
+      : Promise.resolve(null);
+    const settingsPromise = fetchFirestoreJson('settings/business');
+
+    const [directDocJson, settingsJson] = await Promise.all([
+      directLookupPromise,
+      settingsPromise,
+    ]);
+    const fallbackLogoUrl = await resolveStoreLogoFallback(
+      fallbackOrigin,
+      settingsJson
+    );
+
+    const decodedDirect = decodeFirestoreDocument(directDocJson);
+    if (decodedDirect) {
+      const meta = toResolvedProductMeta(
+        decodedDirect,
+        fallbackOrigin,
+        fallbackLogoUrl,
+        cleanKey
+      );
+      if (meta) return { product: meta, fallbackLogoUrl };
+    }
+
+    // 2. Check custom shopping items in settings/business
+    const normalizedTarget = cleanKey.toLowerCase();
+    const normalizedStripped = strippedCatId.toLowerCase();
+    const normalizedSlug = slugifyProductName(cleanKey);
+
+    const settingsDecoded = decodeFirestoreDocument(settingsJson);
+    if (
+      settingsDecoded &&
+      typeof settingsDecoded.viewPanel === 'object' &&
+      settingsDecoded.viewPanel
+    ) {
+      const viewPanel = settingsDecoded.viewPanel as Record<string, unknown>;
+      const shopping = viewPanel.shopping as Record<string, unknown> | undefined;
+      const customItems = Array.isArray(shopping?.items) ? shopping.items : [];
+      for (const rawItem of customItems) {
+        if (!rawItem || typeof rawItem !== 'object') continue;
+        const item = rawItem as Record<string, unknown>;
+        const itemId = String(item.id || '').trim();
+        const itemName = String(item.name || '').trim();
+        const matchesId =
+          itemId.toLowerCase() === normalizedTarget ||
+          itemId.toLowerCase() === normalizedStripped;
+        const matchesSlug =
+          Boolean(normalizedSlug) && slugifyProductName(itemName) === normalizedSlug;
+        if (matchesId || matchesSlug) {
+          const meta = toResolvedProductMeta(
+            item,
+            fallbackOrigin,
+            fallbackLogoUrl,
+            cleanKey
+          );
+          if (meta) return { product: meta, fallbackLogoUrl };
+        }
+      }
+    }
+
+    // 3. Paginated scan across products collection (supports slugs, productNumber, and >200 catalog products)
+    let pageToken = '';
+    for (let page = 0; page < 5; page += 1) {
+      const queryPath = pageToken
+        ? `products?pageSize=300&pageToken=${encodeURIComponent(pageToken)}`
+        : 'products?pageSize=300';
+      const productsJson = await fetchFirestoreJson(queryPath);
+      if (!productsJson || typeof productsJson !== 'object') break;
+
+      const typedResp = productsJson as {
+        documents?: unknown[];
+        nextPageToken?: string;
+      };
+      const docs = Array.isArray(typedResp.documents) ? typedResp.documents : [];
+      for (const d of docs) {
+        const decoded = decodeFirestoreDocument(d);
+        if (!decoded) continue;
+        const docId = String(decoded.id || '').trim();
+        const docNumber = String(decoded.productNumber || '').trim();
+        const docName = String(decoded.name || '').trim();
+        const matchesId =
+          docId.toLowerCase() === normalizedTarget ||
+          `cat-${docId}`.toLowerCase() === normalizedTarget ||
+          docId.toLowerCase() === normalizedStripped ||
+          (Boolean(docNumber) &&
+            (docNumber.toLowerCase() === normalizedTarget ||
+              docNumber.toLowerCase() === normalizedStripped));
+        const matchesSlug =
+          Boolean(normalizedSlug) && slugifyProductName(docName) === normalizedSlug;
+        if (matchesId || matchesSlug) {
+          const meta = toResolvedProductMeta(
+            decoded,
+            fallbackOrigin,
+            fallbackLogoUrl,
+            cleanKey
+          );
+          if (meta) return { product: meta, fallbackLogoUrl };
+        }
+      }
+
+      if (!typedResp.nextPageToken) break;
+      pageToken = typedResp.nextPageToken;
+    }
+
+    return { product: null, fallbackLogoUrl };
+  } catch (err) {
+    console.error('[api/product-page] resolveProductByKey fallback:', err);
     return { product: null, fallbackLogoUrl: defaultLogo };
   }
+}
 
-  const strippedCatId = cleanKey.startsWith('cat-')
-    ? cleanKey.slice(4).trim()
-    : cleanKey;
+function getMinimalFallbackHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${DEFAULT_TITLE}</title>
+    <meta name="description" content="${DEFAULT_DESCRIPTION}" />
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>`;
+}
 
-  // Fetch settings/business in parallel with direct product lookup when ID looks like a Firestore document ID
-  const directLookupPromise = /^[a-zA-Z0-9_-]{1,128}$/.test(strippedCatId)
-    ? fetchFirestoreJson(`products/${encodeURIComponent(strippedCatId)}`)
-    : Promise.resolve(null);
-  const settingsPromise = fetchFirestoreJson('settings/business');
-
-  const [directDocJson, settingsJson] = await Promise.all([
-    directLookupPromise,
-    settingsPromise,
-  ]);
-  const fallbackLogoUrl = await resolveStoreLogoFallback(
-    fallbackOrigin,
-    settingsJson
-  );
-
-  const decodedDirect = decodeFirestoreDocument(directDocJson);
-  if (decodedDirect) {
-    const meta = toResolvedProductMeta(
-      decodedDirect,
-      fallbackOrigin,
-      fallbackLogoUrl,
-      cleanKey
-    );
-    if (meta) return { product: meta, fallbackLogoUrl };
-  }
-
-  // 2. Check custom shopping items in settings/business
-  const normalizedTarget = cleanKey.toLowerCase();
-  const normalizedStripped = strippedCatId.toLowerCase();
-  const normalizedSlug = slugifyProductName(cleanKey);
-
-  const settingsDecoded = decodeFirestoreDocument(settingsJson);
-  if (
-    settingsDecoded &&
-    typeof settingsDecoded.viewPanel === 'object' &&
-    settingsDecoded.viewPanel
-  ) {
-    const viewPanel = settingsDecoded.viewPanel as Record<string, unknown>;
-    const shopping = viewPanel.shopping as Record<string, unknown> | undefined;
-    const customItems = Array.isArray(shopping?.items) ? shopping.items : [];
-    for (const rawItem of customItems) {
-      if (!rawItem || typeof rawItem !== 'object') continue;
-      const item = rawItem as Record<string, unknown>;
-      const itemId = String(item.id || '').trim();
-      const itemName = String(item.name || '').trim();
-      const matchesId =
-        itemId.toLowerCase() === normalizedTarget ||
-        itemId.toLowerCase() === normalizedStripped;
-      const matchesSlug =
-        Boolean(normalizedSlug) && slugifyProductName(itemName) === normalizedSlug;
-      if (matchesId || matchesSlug) {
-        const meta = toResolvedProductMeta(
-          item,
-          fallbackOrigin,
-          fallbackLogoUrl,
-          cleanKey
-        );
-        if (meta) return { product: meta, fallbackLogoUrl };
-      }
+function getModuleDirectory(): string {
+  try {
+    if (typeof import.meta?.url === 'string' && import.meta.url) {
+      return path.dirname(fileURLToPath(import.meta.url));
     }
+  } catch {
+    // ignore in non-file environments
   }
-
-  // 3. Paginated scan across products collection (supports slugs, productNumber, and >200 catalog products)
-  let pageToken = '';
-  for (let page = 0; page < 5; page += 1) {
-    const queryPath = pageToken
-      ? `products?pageSize=300&pageToken=${encodeURIComponent(pageToken)}`
-      : 'products?pageSize=300';
-    const productsJson = await fetchFirestoreJson(queryPath);
-    if (!productsJson || typeof productsJson !== 'object') break;
-
-    const typedResp = productsJson as {
-      documents?: unknown[];
-      nextPageToken?: string;
-    };
-    const docs = Array.isArray(typedResp.documents) ? typedResp.documents : [];
-    for (const d of docs) {
-      const decoded = decodeFirestoreDocument(d);
-      if (!decoded) continue;
-      const docId = String(decoded.id || '').trim();
-      const docNumber = String(decoded.productNumber || '').trim();
-      const docName = String(decoded.name || '').trim();
-      const matchesId =
-        docId.toLowerCase() === normalizedTarget ||
-        `cat-${docId}`.toLowerCase() === normalizedTarget ||
-        docId.toLowerCase() === normalizedStripped ||
-        (Boolean(docNumber) &&
-          (docNumber.toLowerCase() === normalizedTarget ||
-            docNumber.toLowerCase() === normalizedStripped));
-      const matchesSlug =
-        Boolean(normalizedSlug) && slugifyProductName(docName) === normalizedSlug;
-      if (matchesId || matchesSlug) {
-        const meta = toResolvedProductMeta(
-          decoded,
-          fallbackOrigin,
-          fallbackLogoUrl,
-          cleanKey
-        );
-        if (meta) return { product: meta, fallbackLogoUrl };
-      }
-    }
-
-    if (!typedResp.nextPageToken) break;
-    pageToken = typedResp.nextPageToken;
-  }
-
-  return { product: null, fallbackLogoUrl };
+  return '';
 }
 
 async function getHtmlTemplate(origin: string): Promise<string> {
+  const moduleDir = getModuleDirectory();
   const candidates = [
     path.join(process.cwd(), 'dist', 'index.html'),
-    path.resolve(__dirname, '..', 'dist', 'index.html'),
+    ...(moduleDir ? [path.resolve(moduleDir, '..', 'dist', 'index.html')] : []),
     path.join(process.cwd(), '.vercel', 'output', 'static', 'index.html'),
   ];
   for (const filePath of candidates) {
@@ -463,18 +501,7 @@ async function getHtmlTemplate(origin: string): Promise<string> {
     // fallback below
   }
 
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${DEFAULT_TITLE}</title>
-    <meta name="description" content="${DEFAULT_DESCRIPTION}" />
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
-</html>`;
+  return getMinimalFallbackHtml();
 }
 
 function stripExistingSeoMetaTags(html: string): string {
@@ -514,8 +541,10 @@ function injectMetaTags(
         ].join('\n')
       : '';
 
-  const structuredDataLine = meta
-    ? `    <script type="application/ld+json">${JSON.stringify({
+  let structuredDataLine = '';
+  if (meta) {
+    try {
+      structuredDataLine = `    <script type="application/ld+json">${JSON.stringify({
         '@context': 'https://schema.org',
         '@type': 'Product',
         name: meta.name,
@@ -532,8 +561,11 @@ function injectMetaTags(
               },
             }
           : {}),
-      }).replace(/</g, '\\u003c')}</script>`
-    : '';
+      }).replace(/</g, '\\u003c')}</script>`;
+    } catch {
+      structuredDataLine = '';
+    }
+  }
 
   const tags = [
     `    <title>${escapeHtmlAttr(pageTitle)}</title>`,
@@ -566,20 +598,49 @@ function injectMetaTags(
   if (/<head[^>]*>/i.test(cleaned)) {
     return cleaned.replace(/<head[^>]*>/i, (match) => `${match}\n${fullBlock}`);
   }
-  return cleaned.replace('</head>', `${fullBlock}\n  </head>`);
+  if (cleaned.includes('</head>')) {
+    return cleaned.replace('</head>', `${fullBlock}\n  </head>`);
+  }
+  return `${fullBlock}\n${cleaned}`;
 }
 
 function getRequestOrigin(req: VercelRequest): string {
-  const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
-  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
-  if (!host) return DEFAULT_SITE_URL;
-  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
-  const protoHeader = req.headers['x-forwarded-proto'];
-  const rawProto = Array.isArray(protoHeader)
-    ? protoHeader[0]
-    : protoHeader || (isLocalHost ? 'http' : 'https');
-  const proto = !isLocalHost ? 'https' : rawProto;
-  return `${proto}://${host}`;
+  try {
+    const rawHostHeader = req?.headers?.['x-forwarded-host'] || req?.headers?.host;
+    const firstHost = (Array.isArray(rawHostHeader) ? rawHostHeader[0] : rawHostHeader) || '';
+    const host = String(firstHost).split(',')[0].trim();
+    if (!host || !/^[a-zA-Z0-9.-]+(:\d+)?$/.test(host)) {
+      return DEFAULT_SITE_URL;
+    }
+    const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
+    const rawProtoHeader = req?.headers?.['x-forwarded-proto'];
+    const firstProto = (Array.isArray(rawProtoHeader) ? rawProtoHeader[0] : rawProtoHeader) || '';
+    const rawProto = String(firstProto).split(',')[0].trim().toLowerCase() || (isLocalHost ? 'http' : 'https');
+    const proto = !isLocalHost ? 'https' : rawProto === 'http' ? 'http' : 'https';
+    return `${proto}://${host}`;
+  } catch {
+    return DEFAULT_SITE_URL;
+  }
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function safeParseRequestUrl(rawUrl: string | undefined, origin: string): URL | null {
+  try {
+    return new URL(rawUrl || '/', origin);
+  } catch {
+    try {
+      return new URL('/', DEFAULT_SITE_URL);
+    } catch {
+      return null;
+    }
+  }
 }
 
 export default async function handler(
@@ -587,49 +648,72 @@ export default async function handler(
   res: VercelResponse
 ): Promise<void> {
   const origin = getRequestOrigin(req);
-  const parsedUrl = new URL(req.url || '/', origin);
+  try {
+    const parsedUrl = safeParseRequestUrl(req?.url, origin);
 
-  const queryProduct = Array.isArray(req.query.product)
-    ? req.query.product[0]
-    : req.query.product;
-  const querySlug = Array.isArray(req.query.slug)
-    ? req.query.slug[0]
-    : req.query.slug;
+    const queryObj = (req?.query && typeof req.query === 'object' ? req.query : {}) as Record<
+      string,
+      string | string[] | undefined
+    >;
+    const queryProduct = Array.isArray(queryObj.product)
+      ? queryObj.product[0]
+      : queryObj.product;
+    const querySlug = Array.isArray(queryObj.slug)
+      ? queryObj.slug[0]
+      : queryObj.slug;
 
-  const urlProduct = parsedUrl.searchParams.get('product') || '';
-  const pathMatch = parsedUrl.pathname.match(/^\/product\/([^/?#]+)/i);
-  const pathSlug = pathMatch ? decodeURIComponent(pathMatch[1]) : '';
+    const urlProduct = parsedUrl?.searchParams.get('product') || '';
+    const pathMatch = (parsedUrl?.pathname || '').match(/^\/product\/([^/?#]+)/i);
+    const pathSlug = pathMatch ? safeDecodeURIComponent(pathMatch[1]) : '';
 
-  const productKey = String(
-    queryProduct || urlProduct || querySlug || pathSlug || ''
-  ).trim();
+    const productKey = String(
+      queryProduct || urlProduct || querySlug || pathSlug || ''
+    ).trim();
 
-  const canonicalUrl = productKey
-    ? pathSlug || querySlug
-      ? `${origin}/product/${encodeURIComponent(productKey)}`
-      : `${origin}/?product=${encodeURIComponent(productKey)}`
-    : `${origin}/`;
+    const canonicalUrl = productKey
+      ? pathSlug || querySlug
+        ? `${origin}/product/${encodeURIComponent(productKey)}`
+        : `${origin}/?product=${encodeURIComponent(productKey)}`
+      : `${origin}/`;
 
-  const [baseHtml, resolved] = await Promise.all([
-    getHtmlTemplate(origin),
-    productKey
-      ? resolveProductByKey(productKey, origin)
-      : Promise.resolve({
-          product: null,
-          fallbackLogoUrl: `${origin}${DEFAULT_IMAGE_PATH}`,
-        }),
-  ]);
+    const [baseHtml, resolved] = await Promise.all([
+      getHtmlTemplate(origin),
+      productKey
+        ? resolveProductByKey(productKey, origin)
+        : Promise.resolve({
+            product: null,
+            fallbackLogoUrl: `${origin}${DEFAULT_IMAGE_PATH}`,
+          }),
+    ]);
 
-  const html = injectMetaTags(
-    baseHtml,
-    resolved.product,
-    canonicalUrl,
-    resolved.fallbackLogoUrl
-  );
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader(
-    'Cache-Control',
-    'public, max-age=0, s-maxage=60, stale-while-revalidate=300'
-  );
-  res.status(200).send(html);
+    const html = injectMetaTags(
+      baseHtml,
+      resolved.product,
+      canonicalUrl,
+      resolved.fallbackLogoUrl
+    );
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader(
+      'Cache-Control',
+      'public, max-age=0, s-maxage=60, stale-while-revalidate=300'
+    );
+    res.status(200).send(html);
+  } catch (err) {
+    console.error('[api/product-page] handler error, serving default fallback:', err);
+    try {
+      const baseHtml = await getHtmlTemplate(origin).catch(() => getMinimalFallbackHtml());
+      const fallbackHtml = injectMetaTags(
+        baseHtml,
+        null,
+        `${origin}/`,
+        `${origin}${DEFAULT_IMAGE_PATH}`
+      );
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.status(200).send(fallbackHtml);
+    } catch {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.status(200).send(getMinimalFallbackHtml());
+    }
+  }
 }
