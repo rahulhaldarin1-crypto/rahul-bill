@@ -1625,6 +1625,9 @@ async function startServer(): Promise<void> {
     const proto = !isLocalHost ? 'https' : rawProto;
     const origin = host ? `${proto}://${host}` : 'https://glamour-galleria.vercel.app';
 
+    const httpsOrigin = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+      ? origin
+      : origin.replace(/^http:\/\//i, 'https://');
     const videoRegex = /\.(mp4|webm|mov|m4v|ogg|ogv|avi|mkv)(\?.*)?$/i;
     const formatSocialCloudinaryUrl = (rawUrl: string): string => {
       let url = rawUrl.trim();
@@ -1633,9 +1636,15 @@ async function startServer(): Promise<void> {
         return '';
       }
       if (url.startsWith('//')) url = `https:${url}`;
-      else if (url.startsWith('/')) url = `${origin}${url}`;
+      else if (url.startsWith('/')) url = `${httpsOrigin}${url}`;
+      else if (
+        !/^https?:\/\//i.test(url) &&
+        /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/|$)/.test(url)
+      ) {
+        url = `https://${url}`;
+      }
       if (!/^https?:\/\//i.test(url)) return '';
-      if (url.toLowerCase().startsWith('http://res.cloudinary.com/')) {
+      if (url.toLowerCase().startsWith('http://')) {
         url = `https://${url.slice('http://'.length)}`;
       }
       const marker = '/image/upload/';
@@ -1645,29 +1654,50 @@ async function startServer(): Promise<void> {
       const idx = url.indexOf(marker);
       const prefix = url.slice(0, idx + marker.length);
       const rest = url.slice(idx + marker.length);
-      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_limit';
+      const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
       const firstSlash = rest.indexOf('/');
       if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
       const firstSeg = rest.slice(0, firstSlash);
       const afterFirst = rest.slice(firstSlash + 1);
       if (
         !/^v\d+$/.test(firstSeg) &&
-        /(^|,)(?:f_|q_|w_|h_|c_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
+        /(^|,)(?:f_|q_|w_|h_|c_|b_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
       ) {
         return `${prefix}${socialTransform}/${afterFirst}`;
       }
       return `${prefix}${socialTransform}/${rest}`;
     };
 
-    const pickFirstHttpImg = (record: Record<string, unknown>): string => {
-      const candidates: unknown[] = [];
-      if (Array.isArray(record.imageDataUrls)) candidates.push(...record.imageDataUrls);
-      if (typeof record.imageDataUrl === 'string') candidates.push(record.imageDataUrl);
-      if (typeof record.imageUrl === 'string') candidates.push(record.imageUrl);
+    const pickFirstHttpImg = (record: Record<string, unknown>, idFallback?: string): string => {
+      const candidates: string[] = [];
+      const pushEntry = (entry: unknown) => {
+        if (typeof entry === 'string' && entry.trim()) {
+          candidates.push(entry.trim());
+        } else if (entry && typeof entry === 'object') {
+          const obj = entry as Record<string, unknown>;
+          if (String(obj.resourceType || obj.type || '').toLowerCase() === 'video') return;
+          for (const k of ['secureUrl', 'secure_url', 'url', 'src', 'imageUrl', 'image']) {
+            if (typeof obj[k] === 'string' && String(obj[k]).trim()) {
+              candidates.push(String(obj[k]).trim());
+            }
+          }
+        }
+      };
+      for (const arrKey of ['imageDataUrls', 'images', 'photos', 'mediaRecords']) {
+        if (Array.isArray(record[arrKey])) {
+          for (const item of record[arrKey] as unknown[]) pushEntry(item);
+        }
+      }
+      for (const singleKey of ['imageDataUrl', 'imageUrl', 'image', 'thumbnail', 'coverImage', 'photo']) {
+        if (record[singleKey]) pushEntry(record[singleKey]);
+      }
       for (const c of candidates) {
-        if (typeof c !== 'string') continue;
         const formatted = formatSocialCloudinaryUrl(c);
         if (formatted) return formatted;
+      }
+      const pid = String(idFallback || record.id || '').trim();
+      if (pid && candidates.some((c) => /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(c))) {
+        return `${httpsOrigin}/api/product-image?id=${encodeURIComponent(pid)}`;
       }
       return '';
     };
@@ -1765,16 +1795,29 @@ async function startServer(): Promise<void> {
                 fields.price?.integerValue ??
                 0
             );
-            const arrUrls = (fields.imageDataUrls?.arrayValue?.values || []).map((v) =>
-              String(v.stringValue || '')
-            );
-            const singleUrl = String(fields.imageDataUrl?.stringValue || '');
-            for (const candidate of [...arrUrls, singleUrl]) {
+            const arrUrls = [
+              ...(fields.imageDataUrls?.arrayValue?.values || []),
+              ...(fields.images?.arrayValue?.values || []),
+            ].map((v) => String(v.stringValue || ''));
+            const singleCandidates = [
+              String(fields.imageDataUrl?.stringValue || ''),
+              String(fields.imageUrl?.stringValue || ''),
+              String(fields.image?.stringValue || ''),
+              String(fields.thumbnail?.stringValue || ''),
+            ];
+            const allRaw = [...arrUrls, ...singleCandidates].filter(Boolean);
+            for (const candidate of allRaw) {
               const formatted = formatSocialCloudinaryUrl(candidate);
               if (formatted) {
                 matchedImg = formatted;
                 break;
               }
+            }
+            if (
+              !matchedImg &&
+              allRaw.some((c) => /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(c))
+            ) {
+              matchedImg = `${httpsOrigin}/api/product-image?id=${encodeURIComponent(cleanKey)}`;
             }
           }
         }
@@ -1845,6 +1888,12 @@ async function startServer(): Promise<void> {
       `<meta property="og:image" content="${esc(finalImg)}" />`,
       `<meta property="og:image:secure_url" content="${esc(finalImg)}" />`,
       ...(imgType ? [`<meta property="og:image:type" content="${esc(imgType)}" />`] : []),
+      ...(imgLower.includes('w_800,h_800,c_pad')
+        ? [
+            `<meta property="og:image:width" content="800" />`,
+            `<meta property="og:image:height" content="800" />`,
+          ]
+        : []),
       `<meta property="og:image:alt" content="${esc(matchedName)}" />`,
       `<meta name="twitter:card" content="summary_large_image" />`,
       `<meta name="twitter:url" content="${esc(canonical)}" />`,

@@ -26,6 +26,8 @@ interface ResolvedProductMeta {
   price?: number;
   imageUrl: string;
   imageType?: string;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 function escapeHtmlAttr(value: string): string {
@@ -96,25 +98,54 @@ function isVideoMediaUrl(url: string): boolean {
   );
 }
 
+function ensureHttpsOrigin(origin: string): string {
+  const trimmed = String(origin || '').trim();
+  if (!trimmed) return DEFAULT_SITE_URL;
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return trimmed.replace(/^http:\/\//i, 'https://');
+}
+
+function extractRawUrlFromCandidate(candidate: unknown): string {
+  if (typeof candidate === 'string') return candidate.trim();
+  if (candidate && typeof candidate === 'object') {
+    const obj = candidate as Record<string, unknown>;
+    const rType = String(obj.resourceType || obj.type || '').toLowerCase();
+    if (rType === 'video') return '';
+    for (const key of ['secureUrl', 'secure_url', 'url', 'src', 'imageUrl', 'image']) {
+      if (typeof obj[key] === 'string' && String(obj[key]).trim()) {
+        return String(obj[key]).trim();
+      }
+    }
+  }
+  return '';
+}
+
 function normalizeImageCandidateUrl(
   rawUrl: unknown,
   fallbackOrigin: string
 ): string {
-  if (typeof rawUrl !== 'string') return '';
-  let trimmed = rawUrl.trim();
+  let trimmed = extractRawUrlFromCandidate(rawUrl);
   if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
     return '';
   }
   if (isVideoMediaUrl(trimmed)) return '';
 
+  const httpsOrigin = ensureHttpsOrigin(fallbackOrigin);
   if (trimmed.startsWith('//')) {
     trimmed = `https:${trimmed}`;
   } else if (trimmed.startsWith('/')) {
-    trimmed = `${fallbackOrigin}${trimmed}`;
+    trimmed = `${httpsOrigin}${trimmed}`;
+  } else if (
+    !/^https?:\/\//i.test(trimmed) &&
+    /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\/|$)/.test(trimmed)
+  ) {
+    trimmed = `https://${trimmed}`;
   }
 
   if (!/^https?:\/\//i.test(trimmed)) return '';
-  if (trimmed.toLowerCase().startsWith('http://res.cloudinary.com/')) {
+  if (trimmed.toLowerCase().startsWith('http://')) {
     trimmed = `https://${trimmed.slice('http://'.length)}`;
   }
 
@@ -131,7 +162,7 @@ function formatSocialOgImageUrl(url: string): string {
 
   const prefix = url.slice(0, idx + marker.length);
   const rest = url.slice(idx + marker.length);
-  const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_limit';
+  const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
 
   const firstSlash = rest.indexOf('/');
   if (firstSlash === -1) {
@@ -143,7 +174,7 @@ function formatSocialOgImageUrl(url: string): string {
   // If first segment is a transformation list (e.g. f_auto,q_auto or c_fill,w_800), replace format/size cleanly
   if (
     !/^v\d+$/.test(firstSeg) &&
-    /(^|,)(?:f_|q_|w_|h_|c_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
+    /(^|,)(?:f_|q_|w_|h_|c_|b_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
   ) {
     return `${prefix}${socialTransform}/${afterFirst}`;
   }
@@ -166,27 +197,87 @@ function detectImageMimeType(url: string): string | undefined {
   return undefined;
 }
 
+function detectImageDimensions(url: string): { width?: number; height?: number } {
+  const lower = url.toLowerCase();
+  if (
+    lower.includes('res.cloudinary.com/') &&
+    lower.includes('w_800,h_800,c_pad')
+  ) {
+    return { width: 800, height: 800 };
+  }
+  if (lower.endsWith('/pwa-512x512.png')) {
+    return { width: 512, height: 512 };
+  }
+  return {};
+}
+
+function collectProductImageCandidates(record: Record<string, unknown>): unknown[] {
+  const rawCandidates: unknown[] = [];
+  for (const arrayKey of ['imageDataUrls', 'images', 'photos', 'mediaRecords']) {
+    const arr = record[arrayKey];
+    if (Array.isArray(arr)) {
+      rawCandidates.push(...arr);
+    }
+  }
+  for (const singleKey of [
+    'imageDataUrl',
+    'imageUrl',
+    'image',
+    'thumbnail',
+    'coverImage',
+    'photo',
+  ]) {
+    if (record[singleKey] !== undefined && record[singleKey] !== null) {
+      rawCandidates.push(record[singleKey]);
+    }
+  }
+  return rawCandidates;
+}
+
 function pickHttpImageUrl(
   record: Record<string, unknown>,
   fallbackOrigin: string,
-  fallbackStoreImage: string
-): string {
-  const rawCandidates: unknown[] = [];
-  if (Array.isArray(record.imageDataUrls)) {
-    rawCandidates.push(...record.imageDataUrls);
-  }
-  if (typeof record.imageDataUrl === 'string') {
-    rawCandidates.push(record.imageDataUrl);
-  }
-  if (typeof record.imageUrl === 'string') {
-    rawCandidates.push(record.imageUrl);
-  }
+  fallbackStoreImage: string,
+  resolvedId?: string
+): { imageUrl: string; imageType?: string } {
+  const rawCandidates = collectProductImageCandidates(record);
 
   for (const candidate of rawCandidates) {
     const normalized = normalizeImageCandidateUrl(candidate, fallbackOrigin);
-    if (normalized) return normalized;
+    if (normalized) {
+      return {
+        imageUrl: normalized,
+        imageType: detectImageMimeType(normalized),
+      };
+    }
   }
-  return fallbackStoreImage;
+
+  // Fallback for legacy base64-only products: serve decoded image over HTTPS via /api/product-image
+  const productId = String(resolvedId || record.id || '').trim();
+  if (productId) {
+    for (const candidate of rawCandidates) {
+      const raw = extractRawUrlFromCandidate(candidate);
+      const dataMatch = /^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,[A-Za-z0-9+/=]+$/i.exec(
+        raw
+      );
+      if (dataMatch) {
+        const mime =
+          dataMatch[1].toLowerCase() === 'image/jpg'
+            ? 'image/jpeg'
+            : dataMatch[1].toLowerCase();
+        const httpsOrigin = ensureHttpsOrigin(fallbackOrigin);
+        return {
+          imageUrl: `${httpsOrigin}/api/product-image?id=${encodeURIComponent(productId)}`,
+          imageType: mime,
+        };
+      }
+    }
+  }
+
+  return {
+    imageUrl: fallbackStoreImage,
+    imageType: detectImageMimeType(fallbackStoreImage),
+  };
 }
 
 function buildProductDescription(
@@ -246,19 +337,24 @@ function toResolvedProductMeta(
 
   const priceRaw = record.sellingPrice ?? record.price;
   const priceNum = Number(priceRaw);
-  const imageUrl = pickHttpImageUrl(
+  const resolvedId = overrideId || String(record.id || '').trim();
+  const { imageUrl, imageType } = pickHttpImageUrl(
     record,
     fallbackOrigin,
-    fallbackStoreImage
+    fallbackStoreImage,
+    resolvedId
   );
+  const dims = detectImageDimensions(imageUrl);
 
   return {
-    id: overrideId || String(record.id || '').trim(),
+    id: resolvedId,
     name,
     description: buildProductDescription(name, record.description, priceNum),
     price: Number.isFinite(priceNum) && priceNum > 0 ? priceNum : undefined,
     imageUrl,
-    imageType: detectImageMimeType(imageUrl),
+    imageType,
+    imageWidth: dims.width,
+    imageHeight: dims.height,
   };
 }
 
@@ -396,6 +492,7 @@ async function resolveProductByKey(
         if (!decoded) continue;
         const docId = String(decoded.id || '').trim();
         const docNumber = String(decoded.productNumber || '').trim();
+        const docSlug = String(decoded.slug || '').trim();
         const docName = String(decoded.name || '').trim();
         const matchesId =
           docId.toLowerCase() === normalizedTarget ||
@@ -403,7 +500,10 @@ async function resolveProductByKey(
           docId.toLowerCase() === normalizedStripped ||
           (Boolean(docNumber) &&
             (docNumber.toLowerCase() === normalizedTarget ||
-              docNumber.toLowerCase() === normalizedStripped));
+              docNumber.toLowerCase() === normalizedStripped)) ||
+          (Boolean(docSlug) &&
+            (docSlug.toLowerCase() === normalizedTarget ||
+              docSlug.toLowerCase() === normalizedStripped));
         const matchesSlug =
           Boolean(normalizedSlug) && slugifyProductName(docName) === normalizedSlug;
         if (matchesId || matchesSlug) {
@@ -531,6 +631,9 @@ function injectMetaTags(
   const description = meta ? meta.description : DEFAULT_DESCRIPTION;
   const imageUrl = meta ? meta.imageUrl : fallbackLogoUrl;
   const imageType = meta ? meta.imageType : detectImageMimeType(fallbackLogoUrl);
+  const fallbackDims = detectImageDimensions(fallbackLogoUrl);
+  const imageWidth = meta ? meta.imageWidth : fallbackDims.width;
+  const imageHeight = meta ? meta.imageHeight : fallbackDims.height;
   const ogType = meta ? 'product' : 'website';
 
   const priceMetaLines =
@@ -580,6 +683,12 @@ function injectMetaTags(
     `    <meta property="og:image:secure_url" content="${escapeHtmlAttr(imageUrl)}" />`,
     ...(imageType
       ? [`    <meta property="og:image:type" content="${escapeHtmlAttr(imageType)}" />`]
+      : []),
+    ...(imageWidth && imageHeight
+      ? [
+          `    <meta property="og:image:width" content="${imageWidth}" />`,
+          `    <meta property="og:image:height" content="${imageHeight}" />`,
+        ]
       : []),
     `    <meta property="og:image:alt" content="${escapeHtmlAttr(ogTitle)}" />`,
     `    <meta name="twitter:card" content="summary_large_image" />`,

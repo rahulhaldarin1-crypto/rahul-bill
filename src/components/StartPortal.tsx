@@ -2173,10 +2173,11 @@ export const StartPortal: React.FC<StartPortalProps> = ({
 
     const toSocialOgImage = (rawUrl: string): string => {
       let url = rawUrl.trim();
-      if (!url || isVideoUrl(url)) return '';
+      if (!url || isVideoUrl(url) || url.startsWith('blob:')) return '';
       if (url.startsWith('//')) url = `https:${url}`;
+      else if (url.startsWith('/')) url = `${window.location.origin}${url}`;
       if (!/^https?:\/\//i.test(url)) return '';
-      if (url.toLowerCase().startsWith('http://res.cloudinary.com/')) {
+      if (url.toLowerCase().startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)/i.test(url)) {
         url = `https://${url.slice('http://'.length)}`;
       }
       const marker = '/image/upload/';
@@ -2186,14 +2187,14 @@ export const StartPortal: React.FC<StartPortalProps> = ({
       const idx = url.indexOf(marker);
       const prefix = url.slice(0, idx + marker.length);
       const rest = url.slice(idx + marker.length);
-      const socialTransform = 'f_jpg,q_auto:good,w_1200,h_1200,c_limit';
+      const socialTransform = 'f_jpg,q_auto:good,w_800,h_800,c_pad,b_white';
       const firstSlash = rest.indexOf('/');
       if (firstSlash === -1) return `${prefix}${socialTransform}/${rest}`;
       const firstSeg = rest.slice(0, firstSlash);
       const afterFirst = rest.slice(firstSlash + 1);
       if (
         !/^v\d+$/.test(firstSeg) &&
-        /(^|,)(?:f_|q_|w_|h_|c_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
+        /(^|,)(?:f_|q_|w_|h_|c_|b_|dpr_|ar_)[a-z0-9_.:-]+/i.test(firstSeg)
       ) {
         return `${prefix}${socialTransform}/${afterFirst}`;
       }
@@ -2201,10 +2202,13 @@ export const StartPortal: React.FC<StartPortalProps> = ({
     };
 
     const origin = window.location.origin;
+    const httpsOrigin = /^http:\/\/(localhost|127\.0\.0\.1)/i.test(origin)
+      ? origin
+      : origin.replace(/^http:\/\//i, 'https://');
     const defaultTitle = 'Glamour Galleria - Online Shopping';
     const defaultDescription =
       'Glamour Galleria - Online Shopping. Your Style, Our Priority.';
-    const defaultImage = `${origin}/pwa-512x512.png`;
+    const defaultImage = `${httpsOrigin}/pwa-512x512.png`;
 
     if (selectedProduct) {
       const cleanedDesc = String(selectedProduct.description || '')
@@ -2229,9 +2233,15 @@ export const StartPortal: React.FC<StartPortalProps> = ({
           : selectedProduct.imageDataUrl
             ? [selectedProduct.imageDataUrl]
             : [];
+      const hasBase64Img = productImages.some((u) =>
+        /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(String(u || '').trim())
+      );
       const primaryHttpImage =
-        productImages.map((u) => toSocialOgImage(u)).find(Boolean) || defaultImage;
-      const shareUrl = `${origin}/?product=${encodeURIComponent(selectedProduct.id)}`;
+        productImages.map((u) => toSocialOgImage(u)).find(Boolean) ||
+        (hasBase64Img
+          ? `${httpsOrigin}/api/product-image?id=${encodeURIComponent(selectedProduct.id)}`
+          : defaultImage);
+      const shareUrl = `${httpsOrigin}/?product=${encodeURIComponent(selectedProduct.id)}`;
 
       document.title = `${selectedProduct.name} | Glamour Galleria`;
       upsertMeta('name', 'description', productDescription);
